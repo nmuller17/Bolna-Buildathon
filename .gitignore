@@ -28,3 +28,6 @@ voices/
 .DS_Store
 Thumbs.db
 .vscode/
+
+# MediaPipe models (downloaded on first run)
+*.task
