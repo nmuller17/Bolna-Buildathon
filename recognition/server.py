@@ -11,65 +11,48 @@ Environment:
     RECOGNITION_MOCK=1           answer with a deterministic mock, no model needed
     RECOGNITION_ALLOWED_ORIGINS  comma-separated CORS allowlist (default http://localhost:3000,http://127.0.0.1:3000)
     RECOGNITION_ALLOWED_HOSTS    extra Host header values to accept (default only localhost, 127.0.0.1)
-    RECOGNITION_TOKEN            if set, /predict requires header X-Recognition-Token
+    RECOGNITION_TOKEN            if set, /predict requires header X-Recognition-Token; if NOT set, any
+                                 client whose address is not 127.0.0.1 / ::1 gets 403
 
 Privacy: request bodies and landmarks are never logged or written to disk; face
 landmarks are not used by the model. Bind to 127.0.0.1 (default). Binding 0.0.0.0
 (e.g. an iPad on the LAN) must come with the origin/host allowlists and RECOGNITION_TOKEN.
 Never expose port 8000 through a tunnel (ngrok etc.).
 
-Rejection rules (the model is skipped and NONE is returned with conf 0.98):
-- fewer than 10% of frames contain a hand (the segment cannot be a sign);
-- fewer than 30% of frames contain both shoulders (the coordinates cannot be normalized).
+The checkpoint must match recognition/model_pin.py (SHA-256) when that is set; otherwise
+the log says "hash mismatch" and /predict answers 503.
+
+The decision rules (NONE when too few frames contain a hand or the shoulders, non-finite
+guard) live in recognition/recognizer.py, shared with the in-process Recognizer.
 """
 import argparse
 import hmac
+import ipaddress
 import logging
 import os
 import sys
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Optional
 
-import numpy as np
 import torch
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from recognition import features
-from recognition.labels import CLASSES, NONE
-from recognition.model import Predictor
+from recognition.labels import CLASSES
+from recognition.recognizer import (COORD_LIMIT, DEFAULT_MODEL, MAX_FRAMES, MIN_HAND_FRACTION,  # noqa: F401
+                                    MIN_POSE_FRACTION, Frame, ModelUnavailable, PredictRequest, decide,
+                                    load_predictor, mock_top, none_top)
 
 log = logging.getLogger("recognition")
 
-MAX_FRAMES = 300
 MAX_BODY_BYTES = 4 * 1024 * 1024
 MAX_INFLIGHT = 8
-COORD_LIMIT = 50.0
-MIN_HAND_FRACTION = 0.1
-MIN_POSE_FRACTION = 0.3
-DEFAULT_MODEL = Path(__file__).parent / "models" / "model.pt"
 DEFAULT_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
 LOCAL_HOSTS = ["localhost", "127.0.0.1"]
-
-Coord = Annotated[float, Field(strict=True, allow_inf_nan=False, ge=-COORD_LIMIT, le=COORD_LIMIT)]
-Point = Annotated[list[Coord], Field(min_length=3, max_length=3)]
-
-
-class Frame(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    pose: Optional[Annotated[list[Point], Field(min_length=33, max_length=33)]] = None
-    lh: Optional[Annotated[list[Point], Field(min_length=21, max_length=21)]] = None
-    rh: Optional[Annotated[list[Point], Field(min_length=21, max_length=21)]] = None
-    face: Optional[Annotated[list[Point], Field(min_length=26, max_length=26)]] = None
-
-
-class PredictRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    frames: Annotated[list[Frame], Field(min_length=1, max_length=MAX_FRAMES)]
 
 
 class Prediction(BaseModel):
@@ -130,19 +113,27 @@ class Guard:
         await send({"type": "http.response.body", "body": body})
 
 
-def mock_top(frames):
-    """Deterministic mock in the contract shape: label from the frame count; every 5th count is low-confidence."""
-    n = len(frames)
-    i = n % len(CLASSES)
-    c1 = 0.45 if n % 5 == 0 else 0.9
-    return [{"label": CLASSES[i], "conf": c1},
-            {"label": CLASSES[(i + 1) % len(CLASSES)], "conf": round((1 - c1) * 0.6, 4)},
-            {"label": CLASSES[(i + 2) % len(CLASSES)], "conf": round((1 - c1) * 0.3, 4)}]
+def is_loopback(client):
+    """True for a 127.0.0.0/8 or ::1 peer (also IPv4-mapped ::ffff:127.x); False for anything else or no peer."""
+    try:
+        ip = ipaddress.ip_address((client or ("",))[0])
+    except ValueError:
+        return False
+    return ip.is_loopback or bool(getattr(ip, "ipv4_mapped", None) and ip.ipv4_mapped.is_loopback)
 
 
-def none_top():
-    others = [c for c in CLASSES if c != NONE][:2]
-    return [{"label": NONE, "conf": 0.98}, {"label": others[0], "conf": 0.01}, {"label": others[1], "conf": 0.01}]
+class LoopbackOnly:
+    """ASGI middleware: 403 for any HTTP client whose socket address is not on this machine."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket") and not is_loopback(scope.get("client")):
+            if scope["type"] == "websocket":
+                return await send({"type": "websocket.close", "code": 1008})
+            return await Guard._reject(send, 403, b"only local clients are accepted")
+        return await self.app(scope, receive, send)
 
 
 def _split_env(name, default=""):
@@ -157,8 +148,7 @@ def create_app(model_path=None, mock=None, allowed_origins=None, token=None, all
         allowed_origins = _split_env("RECOGNITION_ALLOWED_ORIGINS", DEFAULT_ORIGINS)
     if allowed_hosts is None:
         allowed_hosts = LOCAL_HOSTS + _split_env("RECOGNITION_ALLOWED_HOSTS")
-    if token is None:
-        token = os.environ.get("RECOGNITION_TOKEN") or None
+    token = token or os.environ.get("RECOGNITION_TOKEN") or None  # "" never disables the loopback guard
 
     torch.set_num_threads(2)
     predictor = None
@@ -166,9 +156,9 @@ def create_app(model_path=None, mock=None, allowed_origins=None, token=None, all
         log.warning("RECOGNITION_MOCK is on: /predict returns invented signs, not model output")
     elif model_path.exists():
         try:
-            predictor = Predictor(model_path)
+            predictor = load_predictor(model_path)
             log.info("model loaded from %s", model_path)
-        except Exception as e:  # keep serving /health; /predict answers 503
+        except Exception as e:  # keep serving /health; /predict answers 503 (hash mismatch is logged by load_predictor)
             log.error("could not load %s: %s", model_path, e)
     else:
         log.error("model file not found: %s. Train one (python -m recognition.train) or set RECOGNITION_MOCK=1.",
@@ -181,11 +171,13 @@ def create_app(model_path=None, mock=None, allowed_origins=None, token=None, all
             raise HTTPException(status_code=401, detail="missing or wrong X-Recognition-Token")
 
     api = FastAPI(title="SignBridge recognition", docs_url=None, redoc_url=None, openapi_url=None)
-    # Added inner to outer: Guard, then CORS, then the Host check outermost.
+    # Added inner to outer: Guard, CORS, the Host check, then (without a token) the loopback check outermost.
     api.add_middleware(Guard, max_bytes=MAX_BODY_BYTES, max_inflight=MAX_INFLIGHT)
     api.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_methods=["GET", "POST"],
                        allow_headers=["Content-Type", "X-Recognition-Token"])
     api.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+    if token is None:  # no token: only this laptop may connect, whatever address uvicorn is bound to
+        api.add_middleware(LoopbackOnly)
 
     @api.exception_handler(RequestValidationError)
     async def compact_422(request: Request, exc: RequestValidationError):
@@ -199,21 +191,11 @@ def create_app(model_path=None, mock=None, allowed_origins=None, token=None, all
 
     @api.post("/predict", response_model=PredictResponse, dependencies=[Depends(check_token)])
     def predict(req: PredictRequest):
-        frames = [f.model_dump() for f in req.frames]
-        if mock:
-            return {"top": mock_top(frames)}
-        if predictor is None:
+        try:
+            return {"top": decide([f.model_dump() for f in req.frames], predictor, mock)}
+        except ModelUnavailable:
             raise HTTPException(status_code=503, detail="model not loaded (see the server log); "
                                                         "train one or set RECOGNITION_MOCK=1")
-        seq = features.to_seq(frames)
-        if features.hand_fraction(seq) < MIN_HAND_FRACTION or features.pose_fraction(seq) < MIN_POSE_FRACTION:
-            return {"top": none_top()}
-        top = predictor.top(seq, k=3)
-        if not all(np.isfinite(p["conf"]) for p in top):
-            return {"top": none_top()}
-        for p in top:
-            p["conf"] = min(1.0, max(0.0, p["conf"]))
-        return {"top": top}
 
     return api
 
