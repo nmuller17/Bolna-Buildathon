@@ -16,6 +16,7 @@ web/next-env.d.ts
 # Raw captures and training data
 data/
 *.mp4
+!capture/reference/*.mp4
 *.pt
 !recognition/models/.gitkeep
 
