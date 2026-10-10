@@ -1,62 +1,64 @@
-# Two-Way Sign Language Translator: Receptionist ↔ Deaf Visitor
+# Two-Way Sign Language Translator: Hotel Receptionist ↔ Deaf Guest
 
-An iPad on the reception desk translates live between a hearing receptionist (spoken English) and a Deaf visitor (American Sign Language, ASL).
+An iPad on the hotel reception desk translates live between a hearing receptionist (spoken English) and a Deaf guest (American Sign Language, ASL).
 
 ## 1. Workflow overview
 
 ```mermaid
-flowchart LR
-    R([Receptionist]) -- speech --> A1[Speech → Text]
-    A1 --> A2[Text → Sign]
-    A2 --> A3[Sign video / avatar + captions]
-    A3 --> D([Deaf visitor])
+flowchart TB
+    subgraph A[Path A: Receptionist → Deaf guest]
+        direction TB
+        R1([Receptionist]) -- speech --> A1[Microphone]
+        A1 -- Whisper --> A2[Text]
+        A2 -- Claude API --> A3[Intention]
+        A3 -- 80-word vocabulary + avatars --> A4[Sign Avatar]
+        A4 --> D1([Deaf guest])
+    end
 
-    D -- signs --> B1[Camera capture]
-    B1 --> B2[Hand / body tracking]
-    B2 --> B3[Sign → Text]
-    B3 --> B4[Text cleanup]
-    B4 --> B5[Text → Speech]
-    B5 --> R
+    subgraph B[Path B: Deaf guest → Receptionist]
+        direction BT
+        D2([Deaf guest]) -- MediaPipe Python --> B1[Landmarks]
+        B1 -- Open-source model --> B2[Translation]
+        B2 -- Piper --> B3[Voice]
+        B3 --> R2([Receptionist])
+    end
 ```
 
 ```
-RECEPTIONIST ──speech──► [iPad] ──► text ──► sign video ──► DEAF
-RECEPTIONIST ◄──speech── [iPad] ◄── text ◄── sign video ◄── DEAF
+PATH A: RECEPTIONIST ─speech─► Microphone ─Whisper─► Text ─Claude API─► Intention ─80 words + avatars─► Sign Avatar ─► DEAF
+PATH B: DEAF ─MediaPipe (Python)─► Landmarks ─open-source model─► Translation ─Piper─► Voice ─► RECEPTIONIST
 ```
 
 ---
 
-## 2. Path A: Receptionist speaks → Deaf visitor sees signing
+## 2. Path A: Receptionist speaks → Deaf guest sees signing
 
-| # | Step | What it does | Free options | Paid / closed options |
-|---|------|--------------|--------------|-----------------------|
-| A1 | Audio capture | Records the receptionist's voice | iPad microphone (AVAudioEngine or Web Audio API) | n/a |
-| A2 | Speech → Text | Transcribes spoken English | **Apple Speech framework** (on-device) · **Whisper** (open source; *WhisperKit* for iPad, *whisper.cpp*) · **Web Speech API** (browser) | Google Cloud Speech-to-Text, Deepgram, AssemblyAI |
-| A3 | Text → Sign | Converts English into sign-language poses | **sign.mt** (open source text-to-sign translation and pose generation) · English → ASL gloss with a local LLM (Gemma, Llama) | Signapse, Hand Talk (app only, no API), Sign-Speak |
-| A4 | Display | Shows the avatar or signer, **plus captions** | **sign.mt renderer** · captions in the app UI | Signapse photorealistic signers |
+| # | Block | What it does | Tool |
+|---|-------|--------------|------|
+| A1 | Microphone | Records the receptionist's voice | iPad microphone |
+| A2 | Text | Transcribes spoken English | **Whisper** |
+| A3 | Intention | Maps the transcript to one of the **80 predefined hotel phrases** (check-in, ID please, room number, breakfast time, Wi-Fi, checkout…) and pulls out details like numbers and times | **Claude API** |
+| A4 | Sign Avatar | Plays the premade avatar clip for that phrase (one clip per phrase). Names and numbers are fingerspelled. Captions are always shown too | **sign.mt** (avatar clip generation) |
 
-**Note:** Always show captions next to the avatar. Many Deaf users prefer text for quick exchanges, and captions are accurate even when the avatar isn't.
+**Vocabulary:** starts at **80 phrases** and can be expanded later. The same list is used in Path B.
+
+**Cost note:** the Claude API is pay-per-use, though it costs very little at this scale. Every other tool here is free and open source.
 
 ---
 
-## 3. Path B: Deaf visitor signs → Receptionist hears speech
+## 3. Path B: Deaf guest signs → Receptionist hears speech
 
-| # | Step | What it does | Free options | Paid / closed options |
-|---|------|--------------|--------------|-----------------------|
-| B1 | Video capture | iPad front camera films the signer | iPad camera (AVFoundation or getUserMedia) | n/a |
-| B2 | Hand / body tracking | Extracts hand, face and body points | **Google MediaPipe Holistic / Hands** (open source, web + iOS) · **Apple Vision** (hand-pose detection) | n/a |
-| B3 | Sign → Text | Recognizes signs from the tracked points | Open models from Google's **Kaggle ASL competitions** (isolated signs, fingerspelling) · custom model trained on **ASL Citizen**, **WLASL**, **YouTube-ASL**, **How2Sign** | **Sorenson OmniBridge** (SDK) · **Sign-Speak** (API) · Google **SL2T** (Gboard on Pixel 11 only, no API) · **SignGemma** (announced, not released) |
-| B4 | Text cleanup | Turns sign gloss ("YOU NAME WHAT") into natural English ("What's your name?") | Local LLM: **Gemma**, **Llama**, **Mistral** via **Ollama** | Gemini, Claude or GPT APIs |
-| B5 | Text → Speech | Speaks the sentence to the receptionist | **Apple AVSpeechSynthesizer** (on-device) · **Piper** (open source) · **Coqui XTTS** (open source, voice cloning) · **ElevenLabs** free tier (limited credits, non-commercial) | ElevenLabs paid tiers (custom or cloned voice) |
-| B6 | Display | Shows the recognized text on screen too | App UI | n/a |
-
-**Differentiator:** The Deaf visitor can pick or design a **personal voice** (for example with ElevenLabs Voice Design) instead of a generic robot voice.
+| # | Block | What it does | Tool |
+|---|-------|--------------|------|
+| B1 | Landmarks | Captures the guest on the iPad camera and extracts hand, face and body points per frame | **MediaPipe Holistic (Python)** |
+| B2 | Translation | Recognizes signs from the landmarks (same **80-sign vocabulary** as Path A) and turns them into a natural English sentence | **Open-source sign classifier** (LSTM or Transformer, based on the Kaggle ASL competition models, trained on ASL Citizen / WLASL subsets + own recordings) |
+| B3 | Voice | Speaks the sentence to the receptionist. The text is also shown on screen | **Piper** (open-source text-to-speech) |
 
 ---
 
 ## 4. App shell
 
-| Option | Cost | Pros | Cons |
-|--------|------|------|------|
-| **Web app (Safari on iPad)** | Free | Fastest to prototype. MediaPipe JS, Web Speech API and sign.mt all run in the browser | Slightly lower performance |
-| **Native iPad app (SwiftUI)** | Free to build and run on your own device (Xcode) | Best performance, on-device Apple frameworks | App Store publishing costs $99/year |
+| Layer | Tool | Role |
+|-------|------|------|
+| Front end | **Web app (Safari on iPad)** | Mic and camera capture, avatar and caption display, audio playback |
+| Back end | **Python (FastAPI)** | Runs Whisper, the Claude API calls, MediaPipe, the sign classifier and Piper |

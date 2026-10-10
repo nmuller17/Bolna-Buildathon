@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "phrases": [
+    {
+      "id": "welcome",
+      "text": "Welcome to the hotel.",
+      "gloss": "WELCOME HOTEL",
+      "avatar": "welcome.mp4"
+    },
+    {
+      "id": "id_please",
+      "text": "May I see your ID, please?",
+      "gloss": "YOUR ID SHOW PLEASE",
+      "avatar": "id_please.mp4"
+    },
+    {
+      "id": "room_number",
+      "text": "Your room number is {number}.",
+      "gloss": "YOUR ROOM NUMBER {number}",
+      "avatar": "room_number.mp4"
+    }
+  ]
+}

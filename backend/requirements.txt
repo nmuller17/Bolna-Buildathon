@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+anthropic
+openai-whisper
+mediapipe
+opencv-python
+numpy
+torch
+piper-tts
+pytest
