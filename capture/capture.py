@@ -2,7 +2,7 @@
 
 Two modes:
   train   N takes per sign for the classifier  -> data/train/<SIGN>/<user>_<n>.json
-  avatar  a few takes, replay them, keep best  -> signs/team/<SIGN>.json (+ signs/index.json)
+  avatar  1 take, replay it, keep or redo      -> signs/team/<SIGN>.json (+ signs/index.json)
 
 Examples (from the repo root):
   python capture/capture.py --mode avatar --signs HELLO WELCOME --user cosme
@@ -37,13 +37,13 @@ def parse_args():
     p.add_argument("--mode", choices=["train", "avatar"], default="train")
     p.add_argument("--signs", nargs="+", required=True, help="sign IDs, or a .txt file with one ID per line")
     p.add_argument("--user", required=True, help="signer name, e.g. cosme")
-    p.add_argument("--reps", type=int, help="takes per sign (default: 20 train, 3 avatar)")
+    p.add_argument("--reps", type=int, help="takes per sign (default: 20 train, 1 avatar)")
     p.add_argument("--out", type=Path, help="output dir (default: data/train or signs/team)")
     p.add_argument("--duration", type=float, default=2.0, help="seconds per take (3 for FS-* and compounds)")
     p.add_argument("--countdown", type=float, default=3.0, help="seconds before each take")
     p.add_argument("--camera", type=int, help="camera index (default: first one that is not black)")
     a = p.parse_args()
-    a.reps = a.reps or (20 if a.mode == "train" else 3)
+    a.reps = a.reps or (20 if a.mode == "train" else 1)
     a.out = (a.out or (ROOT / ("data/train" if a.mode == "train" else "signs/team"))).resolve()
     signs = []
     for s in a.signs:
