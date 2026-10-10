@@ -20,6 +20,9 @@ export type SignFile = {
 /** Facial marker applied to the whole sentence (gloss starts with BROWS-UP or BROWS-DOWN). */
 export type Brows = "up" | "down" | null;
 
+/** Look of the avatar: glowing skeleton, or Sam the receptionist in toon style. */
+export type AvatarStyle = "hologram" | "concierge";
+
 export type PlayOptions = {
   /** Called with the gloss index of the token being signed, each time it changes. */
   onToken?: (index: number) => void;

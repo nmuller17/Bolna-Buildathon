@@ -2,21 +2,26 @@
 // Avatar test page (P2 + P4): play HELLO or any gloss, loop, FPS counter in dev.
 import { useEffect, useRef, useState } from "react";
 import AvatarCaptions from "@/components/AvatarCaptions";
-import { getAvatarFps, mountAvatar, playGloss } from "@/lib/avatar/player";
+import { getAvatarFps, mountAvatar, playGloss, setAvatarStyle } from "@/lib/avatar/player";
+import type { AvatarStyle } from "@/lib/avatar/types";
 
-// Intents from docs/vocabulary.md whose signs are already recorded.
+// Intents from docs/vocabulary.md.
 const PRESETS = [
   { text: "Hello!", gloss: "HELLO" },
   { text: "Welcome!", gloss: "HELLO WELCOME" },
   { text: "Do you have a reservation?", gloss: "BROWS-UP YOU HAVE RESERVATION" },
   { text: "What's your name?", gloss: "BROWS-DOWN YOUR NAME WHAT" },
   { text: "Can I see your ID?", gloss: "FS:ID SHOW PLEASE" },
+  { text: "The Wi-Fi password is on your key card.", gloss: "FS:WIFI PRIVATE WORD YOUR KEY CARD" },
+  { text: "Breakfast is from 7 to 10.", gloss: "BREAKFAST TIME 7 UNTIL 10" },
 ];
 
 const SHOW_FPS = process.env.NODE_ENV !== "production";
+const INITIAL_STYLE: AvatarStyle = "concierge";
 
 export default function AvatarPreviewPage() {
   const stageRef = useRef<HTMLDivElement>(null);
+  const [style, setStyle] = useState<AvatarStyle>(INITIAL_STYLE);
   const [webgl, setWebgl] = useState(true);
   const [glossInput, setGlossInput] = useState("BROWS-UP HELLO");
   const [caption, setCaption] = useState<{ text: string; gloss: string[] }>({ text: "", gloss: [] });
@@ -31,7 +36,7 @@ export default function AvatarPreviewPage() {
   }, [loop]);
 
   useEffect(() => {
-    const mount = mountAvatar(stageRef.current!);
+    const mount = mountAvatar(stageRef.current!, { style: INITIAL_STYLE });
     setWebgl(mount.webgl);
     return () => {
       playId.current++; // stops a running loop
@@ -86,9 +91,23 @@ export default function AvatarPreviewPage() {
             Play
           </button>
         </div>
-        <label style={styles.check}>
-          <input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} /> Loop
-        </label>
+        <div style={styles.row}>
+          <label style={styles.check}>
+            <input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} /> Loop
+          </label>
+          <select
+            style={styles.select}
+            value={style}
+            onChange={(e) => {
+              const next = e.target.value as AvatarStyle;
+              setStyle(next);
+              setAvatarStyle(next);
+            }}
+          >
+            <option value="concierge">Concierge (Sam)</option>
+            <option value="hologram">Hologram</option>
+          </select>
+        </div>
         <div style={styles.presets}>
           {PRESETS.map((p) => (
             <button key={p.gloss} type="button" style={styles.preset} onClick={() => play(p.text, p.gloss)}>
@@ -149,7 +168,14 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     cursor: "pointer",
   },
-  check: { display: "flex", alignItems: "center", gap: 6 },
+  check: { display: "flex", alignItems: "center", gap: 6, flex: 1 },
+  select: {
+    padding: "4px 6px",
+    borderRadius: 6,
+    border: "1px solid rgba(125, 211, 252, 0.4)",
+    background: "#0b1a30",
+    color: "#fff",
+  },
   presets: { display: "flex", flexWrap: "wrap", gap: 4 },
   preset: {
     padding: "3px 8px",
