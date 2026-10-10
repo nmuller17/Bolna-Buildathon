@@ -16,7 +16,7 @@ SignBridge AI is a two-way interpreter between a hotel receptionist (spoken Engl
 
 ### Honest limitations (keep them in mind, mention them in the pitch)
 - Concatenating dictionary signs is closer to Signed English than full ASL grammar (no spatial grammar, limited facial grammar).
-- Recognition covers a closed vocabulary of 16 isolated signs, not continuous free signing.
+- Recognition covers a closed vocabulary of 21 isolated signs (plus `NONE`), not continuous free signing.
 - Team captures are made by hearing non-native signers. Signs come from ASL dictionaries.
 
 ## 2. Architecture
@@ -50,7 +50,7 @@ Each person owns specific paths. **Agents must only edit files inside their owne
 | P3 | Sign recognition | `recognition/`, `web/lib/recognition/` (shares `capture/` with P2) |
 | P4 | App, TTS, integration, demo | `web/app/` (except P1 API routes), `web/app/api/english/`, `web/app/api/tts/`, `web/components/`, `docs/` |
 
-Shared and protected: `CLAUDE.md`, section 6 contracts, `fixtures/`. Change only with team agreement.
+Shared and protected: `CLAUDE.md`, section 6 contracts, `docs/vocabulary.md`, `fixtures/`. Change only with team agreement.
 
 ## 4. Repository structure
 
@@ -61,6 +61,7 @@ CamelHack/
 ├── .gitignore                    # must ignore .env*, data/, *.mp4, node_modules, __pycache__
 ├── requirements.txt              # Python deps (mediapipe, opencv-python, numpy, torch, fastapi, uvicorn)
 ├── docs/
+│   ├── vocabulary.md             # every sign, gloss and classifier label (shared, protected)
 │   ├── demo-script.md            # exact demo dialogue (P4)
 │   └── requests.md               # cross-team change requests
 ├── fixtures/                     # small shared samples so everyone can mock other modules
@@ -161,9 +162,11 @@ Face indices (MediaPipe face mesh), in order:
 `source` is one of `team`, `public`, `alphabet`. Files are already cleaned (trimmed, hands forward-filled, 3-frame moving average).
 
 ### 6.4 Gloss
-- Array of uppercase tokens: `["BREAKFAST", "7", "TO", "10"]`
+- Array of uppercase tokens: `["BREAKFAST", "TIME", "7", "UNTIL", "10"]`
 - Unknown words are fingerspelled with the prefix `FS:` → `"FS:MARRIOTT"`
-- Allowed tokens = keys of `signs/index.json` plus `FS:*`
+- Optional first token `BROWS-UP` (yes/no question) or `BROWS-DOWN` (wh-question): a facial marker for the whole sentence, not a sign
+- Allowed tokens = keys of `signs/index.json` plus `FS:*` plus the two markers
+- Naming rules and the full token list: `docs/vocabulary.md`
 
 ### 6.5 API routes
 | Route | Request | Response | Owner |
@@ -183,6 +186,7 @@ type Prediction = { label: string; conf: number };   // conf in [0, 1]
 playGloss(gloss: string[]): Promise<void>   // resolves when the sequence finishes
 ```
 Lookup priority for each token: `signs/team` → `signs/public` → fingerspell via `signs/alphabet`.
+If the gloss starts with `BROWS-UP` or `BROWS-DOWN`, the player raises or lowers the eyebrow face points for the whole sequence (signs are captured with a neutral face).
 Transitions: 7 linearly interpolated frames between the last frame of a sign and the first of the next. Playback at 30 fps.
 
 ### 6.7 BroadcastChannel messages
@@ -210,36 +214,22 @@ Transitions: 7 linearly interpolated frames between the last frame of a sign and
 6. `/api/tts` speaks it. `/staff` shows the sentence and the recognized signs with scores.
 
 ### 7.3 Offline preparation
-- **capture.py**: shows the sign name, 3 s countdown, records 2 s, saves video (`.mp4`, gitignored, backup only) and landmarks (`.json`). Args: `--signs`, `--reps`, `--user`, `--out`.
-- **Training data**: each of the 4 team members records 20 takes per guest sign (section 8.2) into `data/train/`.
-- **Output signs**: one team member records the demo signs, alphabet and numbers 0 to 10 (3 takes each, keep the best) into `signs/team/` and `signs/alphabet/`.
+- **capture.py**: shows the sign name, 3 s countdown, records 2 s (3 s for fingerspelled and compound classes), saves video (`.mp4`, gitignored, backup only) and landmarks (`.json`). Args: `--signs`, `--reps`, `--user`, `--out`, `--duration`.
+- **Training data**: each of the 4 team members records 20 takes per classifier class (section 8.2) into `data/train/`.
+- **Output signs**: one team member records the 42 avatar signs, alphabet and numbers 0 to 11 (3 takes each, keep the best) into `signs/team/` and `signs/alphabet/`.
 - **Public dictionary**: `build_dictionary.py` runs MediaPipe on dataset videos for words in `word_list.txt`, normalizes, cleans, writes to `signs/public/`. Run it in the background from H1.
 
 ## 8. Vocabulary
 
-### 8.1 Staff intents covered by the demo (all must sign correctly with team captures)
-| # | Example sentence |
-|---|---|
-| 1 | Welcome! |
-| 2 | Do you have a reservation? |
-| 3 | What's your name? |
-| 4 | Can I see your ID? |
-| 5 | You're in room 412. |
-| 6 | The elevator is on your left. |
-| 7 | Breakfast is from 7 to 10. |
-| 8 | The Wi-Fi password is on your key card. |
-| 9 | Checkout is at 11. |
-| 10 | Late checkout is fine, until 1 PM. |
-| 11 | I'll send towels to your room. |
-| 12 | One moment, please. |
-| 13 | Sorry, can you repeat? |
-| 14 | Anything else? |
-| 15 | Enjoy your stay! |
+Full list in `docs/vocabulary.md` (source of truth: intents, glosses, capture list, ASL decisions). Summary:
 
+### 8.1 Staff to guest (avatar)
+20 receptionist intents, each with a fixed gloss. They use 42 lexical signs, digits `0` to `11` and letters `A` to `Z`, all captured by the team (80 sign files).
 Any other sentence goes through the generic gloss path (public dictionary + fingerspelling).
 
-### 8.2 Guest signs recognized by the classifier (17 classes)
-`YES, NO, RESERVATION, NAME, THANK-YOU, WHERE, ELEVATOR, WIFI, PASSWORD, BREAKFAST, TIME, TOWEL, MORE, CHECKOUT, LATE, PLEASE, NONE`
+### 8.2 Guest signs recognized by the classifier (22 classes)
+`YES, NO, RESERVATION, NAME, THANK-YOU, WHERE, ELEVATOR, FS-WIFI, PASSWORD, BREAKFAST, TIME, TOWEL, MORE, FS-CHECKOUT, LATE, PLEASE, PARKING, TAXI, HELP, ROOM, RESTAURANT, NONE`
+`FS-WIFI` and `FS-CHECKOUT` are fingerspelled words recognized as one unit, `PASSWORD` is the compound PRIVATE-WORD.
 `NONE` = idle hands, scratching, random movement. Record it like any other class.
 Guest names are typed on a keyboard on the guest screen, not fingerspelled.
 
@@ -248,11 +238,12 @@ Guest names are typed on a keyboard on the guest screen, not fingerspelled.
 |---|---|
 | Welcome! Do you have a reservation? | YES RESERVATION |
 | What's your name? | NAME + types name |
-| You're in room 412. The elevator is on your left. | THANK-YOU, WHERE ELEVATOR |
-| (answer) | WIFI PASSWORD |
+| You're in room 412. Here is your key card. | THANK-YOU, WHERE ELEVATOR |
+| The elevator is on your left. | FS-WIFI PASSWORD |
 | The Wi-Fi password is on your key card. | BREAKFAST TIME |
-| Breakfast is from 7 to 10. | MORE TOWEL PLEASE |
-| (deliberately unclear sign) | system asks to repeat, then confirms |
+| Breakfast is from 7 to 10. | MORE TOWEL PLEASE (one sign deliberately unclear: system asks to repeat, guest repeats) |
+| I'll send towels to your room. Anything else? | NO THANK-YOU |
+| Enjoy your stay! | |
 | A juror says a free sentence into the mic | avatar signs it via the generic path |
 
 ## 10. Timeline and checkpoints
