@@ -57,9 +57,14 @@ def parse_args():
 
 # ---------- display ----------
 
-def show(img, lines, color=WHITE):
-    """Show a mirrored copy of img with text lines at the top."""
+def show(img, lines, color=WHITE, inset=None):
+    """Show a mirrored copy of img with text lines at the top and an optional inset image bottom-right."""
     view = cv2.flip(img, 1)
+    if inset is not None:
+        ih, iw = inset.shape[:2]
+        h, w = view.shape[:2]
+        view[h - ih - 20: h - 20, w - iw - 20: w - 20] = inset
+        cv2.rectangle(view, (w - iw - 22, h - ih - 22), (w - 18, h - 18), WHITE, 2)
     for i, text in enumerate(lines):
         y = 50 + i * 45
         cv2.putText(view, text, (20, y), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 6, cv2.LINE_AA)
