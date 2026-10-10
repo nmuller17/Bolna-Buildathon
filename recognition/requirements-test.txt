@@ -1,0 +1,6 @@
+# Test-only dependencies (runtime deps are in the root requirements.txt).
+pytest
+httpx
+# Only for the GISLR converter and its test; not needed by the server.
+pandas
+pyarrow
