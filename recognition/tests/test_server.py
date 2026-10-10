@@ -13,10 +13,11 @@ from recognition.server import MAX_BODY_BYTES, MAX_FRAMES, Guard, create_app
 from recognition.tests.helpers import raw_frames
 
 LOCAL = "http://localhost"
+LOOPBACK = ("127.0.0.1", 50000)
 
 
-def make_client(**kw):
-    return TestClient(create_app(**kw), base_url=LOCAL)
+def make_client(peer=LOOPBACK, **kw):
+    return TestClient(create_app(**kw), base_url=LOCAL, client=peer)
 
 
 @pytest.fixture(scope="module")
@@ -218,3 +219,36 @@ def test_cors_allowlist(client):
         assert ok.headers.get("access-control-allow-origin") == origin
     bad = client.options("/predict", headers={"Origin": "http://evil.example", **pre})
     assert "access-control-allow-origin" not in bad.headers
+
+
+def test_lan_client_without_token_is_403(ckpt):
+    c = make_client(peer=("192.168.1.5", 50000), model_path=ckpt, mock=False, token=None)
+    assert c.get("/health").status_code == 403
+    r = c.post("/predict", json={"frames": raw_frames(5, np.random.default_rng(9))})
+    assert r.status_code == 403 and "frames" not in r.text
+
+
+@pytest.mark.parametrize("peer", [("::1", 50000), ("127.0.0.1", 1), ("::ffff:127.0.0.1", 50000)])
+def test_loopback_clients_are_accepted(ckpt, peer):
+    assert make_client(peer=peer, model_path=ckpt, mock=False, token=None).get("/health").status_code == 200
+
+
+@pytest.mark.parametrize("peer", [("testclient", 50000), ("10.0.0.2", 50000), ("::ffff:192.168.1.5", 50000)])
+def test_non_loopback_peers_are_403(ckpt, peer):
+    assert make_client(peer=peer, model_path=ckpt, mock=False, token=None).get("/health").status_code == 403
+
+
+def test_empty_token_keeps_the_loopback_guard(ckpt, monkeypatch):
+    monkeypatch.delenv("RECOGNITION_TOKEN", raising=False)
+    c = make_client(peer=("192.168.1.5", 50000), model_path=ckpt, mock=False, token="")
+    assert c.get("/health").status_code == 403
+    assert c.post("/predict", json={"frames": raw_frames(5, np.random.default_rng(9))}).status_code == 403
+    local = make_client(model_path=ckpt, mock=False, token="")
+    assert local.post("/predict", json={"frames": raw_frames(5, np.random.default_rng(9))}).status_code == 200
+
+
+def test_lan_client_with_token_uses_token_rules(ckpt):
+    c = make_client(peer=("192.168.1.5", 50000), model_path=ckpt, mock=False, token="s3cret")
+    body = {"frames": raw_frames(5, np.random.default_rng(6))}
+    assert c.post("/predict", json=body).status_code == 401
+    assert c.post("/predict", json=body, headers={"X-Recognition-Token": "s3cret"}).status_code == 200
