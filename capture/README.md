@@ -26,7 +26,7 @@ The classifier is tested by holding out one person at a time, so a typo creates 
 - The window shows the sign to perform and a **reference video** in the bottom-right corner.
   Do the sign exactly like the reference so everyone records the same variant.
 - `SPACE` starts your 12 takes for that sign. 3 s countdown, then 2 s of recording (3 s for
-  `FS-WIFI`, `PASSWORD`, `FS-CHECKOUT`), then the next take starts after 1.5 s.
+  `FS-WIFI`, `PASSWORD`), then the next take starts after 1.5 s.
 - `R` right after "saved": redo the last take. `P`: pause. `N`: next sign. `Q`: quit.
 - Quitting is safe: run the same command again and it continues where you stopped.
 - `NONE` = no sign at all: scratch your head, touch your hair, adjust your glasses, random moves.

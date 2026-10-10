@@ -13,10 +13,10 @@ Sign IDs below are the exact keys used in `signs/index.json`, sign file names, g
 ## Totals
 | Category | Count |
 |---|---|
-| Lexical signs (avatar and/or recognition) | 48 |
+| Lexical signs (avatar and/or recognition) | 49 |
 | Digits 0 to 11 | 12 |
 | Letters A to Z (fingerspelling) | 26 |
-| **Total signs to capture for the avatar** | **42 + 12 + 26 = 80** |
+| **Total signs to capture for the avatar** | **43 + 12 + 26 = 81** |
 | **Classifier classes** | **22** (21 signs + `NONE`) |
 
 ## Decisions from the ASL check
@@ -26,7 +26,7 @@ Sign IDs below are the exact keys used in `signs/index.json`, sign file names, g
 | on | Not signed | Usually incorporated into other signs |
 | ID | `FS:ID` | No common dedicated sign |
 | Wi-Fi | `FS:WIFI` | Sign exists but varies, fingerspelling is safer |
-| checkout | `FS:CHECKOUT` | No standard hotel checkout sign found |
+| checkout | `LEAVE` | No standard hotel checkout sign; fingerspelling C-H-E-C-K-O-U-T (8 letters) was too long to sign and to recognize |
 | password | `PRIVATE` + `WORD` | No single established sign, PRIVATE-WORD is the documented compound |
 
 ## 1. Staff to guest, 20 intents (avatar)
@@ -45,8 +45,8 @@ Signs are captured with a neutral face. The marker is sent as the first gloss to
 | 8 | The elevator is on your left. | `ELEVATOR THERE LEFT` | |
 | 9 | Breakfast is from 7 to 10. | `BREAKFAST TIME 7 UNTIL 10` | |
 | 10 | The Wi-Fi password is on your key card. | `FS:WIFI PRIVATE WORD YOUR KEY CARD` | |
-| 11 | Checkout is at 11. | `FS:CHECKOUT TIME 11` | |
-| 12 | Late checkout is fine, until 1 PM. | `LATE FS:CHECKOUT FINE UNTIL 1` | |
+| 11 | Checkout is at 11. | `LEAVE TIME 11` | |
+| 12 | Late checkout is fine, until 1 PM. | `LATE LEAVE FINE UNTIL 1` | |
 | 13 | I'll send towels to your room. | `TOWEL ME SEND YOUR ROOM` | |
 | 14 | Parking is downstairs. | `PARKING DOWN` | |
 | 15 | The restaurant is open until 10 PM. | `RESTAURANT OPEN UNTIL 10 NIGHT` | |
@@ -69,8 +69,8 @@ Signs are captured with a neutral face. The marker is sent as the first gloss to
 | 8 | `BREAKFAST TIME` | What time is breakfast? |
 | 9 | `WHERE BREAKFAST` | Where is breakfast served? |
 | 10 | `MORE TOWEL PLEASE` | Could I have more towels, please? |
-| 11 | `FS-CHECKOUT TIME` | What time is checkout? |
-| 12 | `LATE FS-CHECKOUT PLEASE` | Could I have a late checkout? |
+| 11 | `LEAVE TIME` | What time is checkout? |
+| 12 | `LATE LEAVE PLEASE` | Could I have a late checkout? |
 | 13 | `WHERE PARKING` | Where can I park? |
 | 14 | `TAXI PLEASE` | Could you call me a taxi? |
 | 15 | `HELP PLEASE` | I need some help, please. |
@@ -98,7 +98,7 @@ Each class: 4 signers x 20 takes (15 if time is short). Default capture window 2
 | `TIME` | sign | 2 s |
 | `TOWEL` | sign | 2 s |
 | `MORE` | sign | 2 s |
-| `FS-CHECKOUT` | fingerspell C-H-E-C-K-O-U-T as one unit | 3 s |
+| `LEAVE` | sign (both hands pull back toward the shoulder, closing) | 2 s |
 | `LATE` | sign | 2 s |
 | `PLEASE` | sign | 2 s |
 | `PARKING` | sign | 2 s |
@@ -108,7 +108,7 @@ Each class: 4 signers x 20 takes (15 if time is short). Default capture window 2
 | `RESTAURANT` | sign | 2 s |
 | `NONE` | idle hands, scratching, adjusting hair, random movement | 2 s |
 
-## 4. Master capture list (48 lexical signs)
+## 4. Master capture list (49 lexical signs)
 Avatar = recorded once by the main signer (3 takes, keep the best) into `signs/team/`.
 Recognition = recorded by all 4 team members into `data/train/` (section 3).
 Check every sign on Lifeprint or Handspeak before recording. Tick the box when done.
@@ -163,8 +163,9 @@ Check every sign on Lifeprint or Handspeak before recording. Tick the box when d
 | 46 | `WHERE` | | x | | [ ] |
 | 47 | `MORE` | | x | | [ ] |
 | 48 | `HELP` | | x | | [ ] |
+| 49 | `LEAVE` | x | x | used for "checkout" | [x] |
 
-Recognition-only units built from the list above or the alphabet: `PASSWORD` (PRIVATE-WORD), `FS-WIFI`, `FS-CHECKOUT`.
+Recognition-only units built from the list above or the alphabet: `PASSWORD` (PRIVATE-WORD), `FS-WIFI`.
 
 ## 5. Digits (avatar, `signs/alphabet/`)
 `0` `1` `2` `3` `4` `5` `6` `7` `8` `9` `10` `11`

@@ -28,12 +28,12 @@ from capture.capture import (  # noqa: E402
 
 # Classifier classes, docs/vocabulary.md section 3.
 CLASSES = ["YES", "NO", "RESERVATION", "NAME", "THANK-YOU", "WHERE", "ELEVATOR", "FS-WIFI",
-           "PASSWORD", "BREAKFAST", "TIME", "TOWEL", "MORE", "FS-CHECKOUT", "LATE", "PLEASE",
+           "PASSWORD", "BREAKFAST", "TIME", "TOWEL", "MORE", "LEAVE", "LATE", "PLEASE",
            "PARKING", "TAXI", "HELP", "ROOM", "RESTAURANT", "NONE"]
-LONG_SIGNS = {"FS-WIFI", "PASSWORD", "FS-CHECKOUT"}
+LONG_SIGNS = {"FS-WIFI", "PASSWORD"}
 HINTS = {
     "FS-WIFI": "fingerspell W-I-F-I in one go",
-    "FS-CHECKOUT": "fingerspell C-H-E-C-K-O-U-T in one go",
+    "LEAVE": "means checkout",
     "PASSWORD": "PRIVATE then WORD in one go",
     "NONE": "NO sign: scratch, touch hair, random moves (vary!)",
 }

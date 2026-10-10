@@ -16,3 +16,10 @@ Proposal: add these lines to CLAUDE.md 6.2.
 - A newer `playGloss` call interrupts the current one (which resolves).
 - Windows: git checks out the `web/public/signs` symlink as a text file when `core.symlinks` is off, so `/signs/*` returns 404. Local fix, no repo change: `Remove-Item web/public/signs; cmd /c mklink /J web\public\signs <repo>\signs; git update-index --skip-worktree web/public/signs`. Needed on the demo laptop if it runs Windows.
 Why: the guest screen needs to know which sign is playing, and must not crash on a machine without WebGL.
+
+## 2026-10-10, from P2 to P3 (+ P1, P4): FS-CHECKOUT replaced by LEAVE
+Fingerspelling C-H-E-C-K-O-U-T (8 letters) in 3 s was too long to sign consistently and to recognize.
+- Classifier class `FS-CHECKOUT` -> `LEAVE` (ASL sign "leave", 2 s). Still 22 classes. Please update `recognition/labels.py`.
+- Guest intents: `LEAVE TIME` = "What time is checkout?", `LATE LEAVE PLEASE` = "Could I have a late checkout?" (`/api/english` should map LEAVE to checkout in the hotel context).
+- Staff glosses: `LEAVE TIME 11`, `LATE LEAVE FINE UNTIL 1` (`/api/gloss` should use `LEAVE` for "checkout", not `FS:CHECKOUT`).
+- docs/vocabulary.md, CLAUDE.md 8.2 and capture/train_session.py are updated on p2-avatar.
