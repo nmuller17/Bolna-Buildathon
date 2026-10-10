@@ -216,7 +216,7 @@ Transitions: 7 linearly interpolated frames between the last frame of a sign and
 ### 7.3 Offline preparation
 - **capture.py**: shows the sign name, 3 s countdown, records 2 s (3 s for fingerspelled and compound classes), saves video (`.mp4`, gitignored, backup only) and landmarks (`.json`). Args: `--signs`, `--reps`, `--user`, `--out`, `--duration`.
 - **Training data**: each of the 4 team members records 20 takes per classifier class (section 8.2) into `data/train/`.
-- **Output signs**: one team member records the 42 avatar signs, alphabet and numbers 0 to 11 (3 takes each, keep the best) into `signs/team/` and `signs/alphabet/`.
+- **Output signs**: one team member records the 43 avatar signs, alphabet and numbers 0 to 11 (3 takes each, keep the best) into `signs/team/` and `signs/alphabet/`.
 - **Public dictionary**: `build_dictionary.py` runs MediaPipe on dataset videos for words in `word_list.txt`, normalizes, cleans, writes to `signs/public/`. Run it in the background from H1.
 
 ## 8. Vocabulary
@@ -224,12 +224,12 @@ Transitions: 7 linearly interpolated frames between the last frame of a sign and
 Full list in `docs/vocabulary.md` (source of truth: intents, glosses, capture list, ASL decisions). Summary:
 
 ### 8.1 Staff to guest (avatar)
-20 receptionist intents, each with a fixed gloss. They use 42 lexical signs, digits `0` to `11` and letters `A` to `Z`, all captured by the team (80 sign files).
+20 receptionist intents, each with a fixed gloss. They use 43 lexical signs, digits `0` to `11` and letters `A` to `Z`, all captured by the team (81 sign files).
 Any other sentence goes through the generic gloss path (public dictionary + fingerspelling).
 
 ### 8.2 Guest signs recognized by the classifier (22 classes)
-`YES, NO, RESERVATION, NAME, THANK-YOU, WHERE, ELEVATOR, FS-WIFI, PASSWORD, BREAKFAST, TIME, TOWEL, MORE, FS-CHECKOUT, LATE, PLEASE, PARKING, TAXI, HELP, ROOM, RESTAURANT, NONE`
-`FS-WIFI` and `FS-CHECKOUT` are fingerspelled words recognized as one unit, `PASSWORD` is the compound PRIVATE-WORD.
+`YES, NO, RESERVATION, NAME, THANK-YOU, WHERE, ELEVATOR, FS-WIFI, PASSWORD, BREAKFAST, TIME, TOWEL, MORE, LEAVE, LATE, PLEASE, PARKING, TAXI, HELP, ROOM, RESTAURANT, NONE`
+`FS-WIFI` is a fingerspelled word recognized as one unit, `LEAVE` stands for checkout, `PASSWORD` is the compound PRIVATE-WORD.
 `NONE` = idle hands, scratching, random movement. Record it like any other class.
 Guest names are typed on a keyboard on the guest screen, not fingerspelled.
 
