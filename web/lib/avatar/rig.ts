@@ -62,6 +62,8 @@ export type RigLook = {
   trailStrength: number;
   trailWidth: number;
   particleColor: number;
+  /** false when the rig draws its own face features: the shared face lines are hidden. Default true. */
+  faceStrokes?: boolean;
 };
 
 export interface Rig {
@@ -73,6 +75,7 @@ export interface Rig {
   readonly look: RigLook;
   /** Depth of the face strokes in front of the head center. */
   faceFront(radii: THREE.Vector3): number;
+  /** Dresses the pose. May move p.head.center / p.head.radii to where it draws the head (the intro particles use them). */
   update(p: WorldPose): void;
   /** Called on resize with the canvas height in CSS pixels. */
   resize(height: number): void;
@@ -91,7 +94,7 @@ export const CURVE_STEPS = 4;
 const catmull = (a: number, b: number, c: number, d: number, t: number, t2: number, t3: number) =>
   0.5 * (2 * b + (c - a) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (3 * b - a - 3 * c + d) * t3);
 
-function catmullRom(p0: THREE.Vector3, p1: THREE.Vector3, p2: THREE.Vector3, p3: THREE.Vector3, t: number, out: Float32Array, o: number) {
+export function catmullRom(p0: THREE.Vector3, p1: THREE.Vector3, p2: THREE.Vector3, p3: THREE.Vector3, t: number, out: Float32Array, o: number) {
   const t2 = t * t;
   const t3 = t2 * t;
   out[o] = catmull(p0.x, p1.x, p2.x, p3.x, t, t2, t3);

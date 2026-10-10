@@ -21,55 +21,81 @@ export const THEME = {
   particles: { count: 1800, size: 3.2 },
   bloom: { strength: 0.6, radius: 0.3, threshold: 0 },
 
-  // ---- "concierge" style: Sam, the SignBridge receptionist (original character), soft 3D toon ----
+  // ---- "concierge" style: Sam, the SignBridge receptionist (original character), soft 3D cartoon ----
   concierge: {
-    skin: 0xc98d5e,
-    skinShade: 0xb3774c, // nose
-    lips: 0x9a4e3e,
-    eyeWhite: 0xf6f3ec,
-    hair: 0x3b2417,
-    blazer: 0x1f2d4f,
-    lapel: 0x18233f,
-    seam: 0x0d1427,
-    shirt: 0xf5f7fa,
-    shirtShade: 0xc7d0dc,
-    tie: 0x0f9488, // SignBridge teal
-    tieShade: 0x0b6e66,
-    gold: 0xd9ad3c,
-    goldShade: 0x9c7618,
+    skin: 0xeba57c,
+    skinShade: 0xdb8e66, // nose
+    blush: 0xff7f7a,
+    hair: 0x4b2a1a,
+    brow: 0x3a2116,
+    eyeWhite: 0xfdfbf7,
+    eyeLine: 0x3a2418,
+    pupil: 0x2a170f,
+    mouthLine: 0x6e2c25,
+    mouthInside: 0x7c2532,
+    blazer: 0x1c2f66,
+    lapel: 0x16275a,
+    seam: 0x101c40,
+    shirt: 0xf7f9fc,
+    shirtShade: 0xc9d2de,
+    tie: 0x10a596, // SignBridge teal
+    tieShade: 0x0b7a70,
+    gold: 0xe3b53f,
+    goldShade: 0xa27b1c,
     badgeText: 0x1c1917,
-    gloves: 0xf7f5ef, // set to `skin` for bare hands
-    outline: 0x0b1020,
-    features: 0x2a1a12, // brows, eyes, mouth strokes
-    pupil: 0x1c120c,
+    gloves: 0xfbfaf5, // set to `skin` for bare hands
+    outline: 0x2b2233, // dark navy-brown, softer than black
 
-    toneSteps: [110, 165, 215, 255], // toon gradient, darkest to brightest
-    light: { key: 2.6, sky: 0xe6eeff, ground: 0x3a3340, ambient: 1.1 },
-    rim: { color: 0x9fd3ff, strength: 0.32 },
-    outlinePx: 2.2,
-    handOutlinePx: 1.6,
+    // Soft shading: a 5-tone ramp read with linear filtering (smooth wrap lighting, no hard bands).
+    toneSteps: [118, 152, 188, 224, 255],
+    light: { key: 2.6, sky: 0xeef2ff, ground: 0x4a3a40, ambient: 1.15 },
+    rim: { color: 0xb3dcff, strength: 0.22 },
+    outlinePx: 1.3,
+    handOutlinePx: 1.1,
 
-    // Head shape relative to the face measurements (rounder than the hologram shell), and chin narrowing.
-    head: { width: 1.1, height: 1.0, depth: 1.05, jaw: 0.14 },
+    // Cartoon head: fixed size (radii in shoulder widths x scale), resting on the shoulders.
+    head: {
+      scale: 1.3, // 1.4+ needs a wider camera framing (the hair reaches the top of the frame)
+      radii: { x: 0.26, y: 0.335, z: 0.25 },
+      jaw: 0.08, // chin narrowing (0 = round)
+      lift: 0.2, // height of the chin above the shoulder line
+      follow: 0.35, // how much the head follows the real face position (0 = fixed on the shoulders)
+    },
+
+    // Face features, as fractions of the head radii (they grow with head.scale).
+    face: {
+      spanX: 1.15, // face point layout, horizontally (per eye span)
+      spanY: 0.9, // vertically (per brow-to-chin height)
+      eyeLine: 0.0, // height of the eye line on the head
+      browLift: 1.3, // brows sit higher and move more than the raw points
+      eye: { x: 0.155, y: 0.145 }, // eye white radii
+      pupil: 0.62, // pupil radius, fraction of the eye width
+      browWidth: 0.075,
+      smile: 0.035, // mouth corners raised at rest
+      mouthScale: 0.6, // mouth width, fraction of the real one
+      mouthOpen: 1.0, // gain on the mouth opening
+      mouthLine: 0.024,
+      nose: 0.095,
+      cheek: { x: 0.52, y: -0.3, w: 0.36, h: 0.18 },
+    },
 
     sizes: {
-      shoulder: 0.112, // sleeve radius at the shoulder joint
-      upperArm: 0.11,
-      elbow: 0.094,
-      forearm: 0.092,
-      cuff: 0.068,
-      neck: 0.155,
-      pupil: 0.016,
-      finger: 0.02,
-      thumb: 0.023,
-      knuckle: 0.023,
-      tip: 0.024,
-      palmThickness: 0.05,
+      sleeve: [0.118, 0.097, 0.082], // radius at shoulder, elbow, sleeve end
+      cuff: 0.07,
+      neck: 0.17,
+      palm: 0.034, // half thickness
+      // Finger radius at each of the 4 points (base to tip): thumb, index, middle, ring, pinky.
+      fingers: [
+        [0.027, 0.025, 0.023, 0.022],
+        [0.023, 0.022, 0.021, 0.02],
+        [0.023, 0.022, 0.021, 0.02],
+        [0.022, 0.021, 0.02, 0.019],
+        [0.02, 0.019, 0.018, 0.017],
+      ],
     },
     badge: { width: 0.24, height: 0.09 },
 
-    face: { lineWidth: 2.4, browWidth: 4.5, lipWidth: 2 },
-    trail: { color: 0x7fdcd2, strength: 0.45, width: 2.5 },
+    trail: { color: 0x7fdcd2, strength: 0.4, width: 2.5 },
     particles: 0x5eead4,
   },
 } as const;
