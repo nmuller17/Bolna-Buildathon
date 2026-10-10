@@ -115,48 +115,48 @@ Check every sign on Lifeprint or Handspeak before recording. Tick the box when d
 
 | # | ID | Avatar | Recognition | Notes | Done |
 |---|---|---|---|---|---|
-| 1 | `HELLO` | x | | | [ ] |
-| 2 | `WELCOME` | x | | | [ ] |
-| 3 | `YOU` | x | | point at the guest | [ ] |
-| 4 | `YOUR` | x | | flat hand toward the guest | [ ] |
-| 5 | `ME` | x | | pronoun "I", point at self | [ ] |
-| 6 | `HAVE` | x | | | [ ] |
-| 7 | `RESERVATION` | x | x | | [ ] |
-| 8 | `NAME` | x | x | | [ ] |
-| 9 | `WHAT` | x | | | [ ] |
-| 10 | `SHOW` | x | | | [ ] |
-| 11 | `PLEASE` | x | x | | [ ] |
-| 12 | `NIGHT` | x | | | [ ] |
-| 13 | `HOW-MANY` | x | | | [ ] |
-| 14 | `ROOM` | x | x | | [ ] |
-| 15 | `KEY` | x | | | [ ] |
-| 16 | `CARD` | x | | | [ ] |
-| 17 | `HERE` | x | | | [ ] |
-| 18 | `THERE` | x | | point to the side | [ ] |
-| 19 | `LEFT` | x | | | [ ] |
-| 20 | `ELEVATOR` | x | x | | [ ] |
-| 21 | `BREAKFAST` | x | x | | [ ] |
-| 22 | `TIME` | x | x | | [ ] |
-| 23 | `UNTIL` | x | | | [ ] |
-| 24 | `PRIVATE` | x | | first half of PASSWORD | [ ] |
-| 25 | `WORD` | x | | second half of PASSWORD | [ ] |
-| 26 | `LATE` | x | x | | [ ] |
-| 27 | `FINE` | x | | | [ ] |
-| 28 | `TOWEL` | x | x | | [ ] |
-| 29 | `SEND` | x | | | [ ] |
-| 30 | `PARKING` | x | x | | [ ] |
-| 31 | `DOWN` | x | | | [ ] |
-| 32 | `RESTAURANT` | x | x | | [ ] |
-| 33 | `OPEN` | x | | | [ ] |
-| 34 | `TAXI` | x | x | | [ ] |
-| 35 | `CALL` | x | | as in phone call | [ ] |
-| 36 | `WAIT` | x | | | [ ] |
-| 37 | `SORRY` | x | | | [ ] |
-| 38 | `AGAIN` | x | | | [ ] |
-| 39 | `OTHER` | x | | | [ ] |
-| 40 | `QUESTION` | x | | | [ ] |
-| 41 | `ENJOY` | x | | | [ ] |
-| 42 | `STAY` | x | | | [ ] |
+| 1 | `HELLO` | x | | | [x] |
+| 2 | `WELCOME` | x | | | [x] |
+| 3 | `YOU` | x | | point at the guest | [x] |
+| 4 | `YOUR` | x | | flat hand toward the guest | [x] |
+| 5 | `ME` | x | | pronoun "I", point at self | [x] |
+| 6 | `HAVE` | x | | | [x] |
+| 7 | `RESERVATION` | x | x | | [x] |
+| 8 | `NAME` | x | x | | [x] |
+| 9 | `WHAT` | x | | | [x] |
+| 10 | `SHOW` | x | | | [x] |
+| 11 | `PLEASE` | x | x | | [x] |
+| 12 | `NIGHT` | x | | | [x] |
+| 13 | `HOW-MANY` | x | | | [x] |
+| 14 | `ROOM` | x | x | | [x] |
+| 15 | `KEY` | x | | | [x] |
+| 16 | `CARD` | x | | | [x] |
+| 17 | `HERE` | x | | | [x] |
+| 18 | `THERE` | x | | point to the side | [x] |
+| 19 | `LEFT` | x | | | [x] |
+| 20 | `ELEVATOR` | x | x | | [x] |
+| 21 | `BREAKFAST` | x | x | | [x] |
+| 22 | `TIME` | x | x | | [x] |
+| 23 | `UNTIL` | x | | | [x] |
+| 24 | `PRIVATE` | x | | first half of PASSWORD | [x] |
+| 25 | `WORD` | x | | second half of PASSWORD | [x] |
+| 26 | `LATE` | x | x | | [x] |
+| 27 | `FINE` | x | | | [x] |
+| 28 | `TOWEL` | x | x | | [x] |
+| 29 | `SEND` | x | | | [x] |
+| 30 | `PARKING` | x | x | | [x] |
+| 31 | `DOWN` | x | | | [x] |
+| 32 | `RESTAURANT` | x | x | | [x] |
+| 33 | `OPEN` | x | | | [x] |
+| 34 | `TAXI` | x | x | | [x] |
+| 35 | `CALL` | x | | as in phone call | [x] |
+| 36 | `WAIT` | x | | | [x] |
+| 37 | `SORRY` | x | | | [x] |
+| 38 | `AGAIN` | x | | | [x] |
+| 39 | `OTHER` | x | | | [x] |
+| 40 | `QUESTION` | x | | | [x] |
+| 41 | `ENJOY` | x | | | [x] |
+| 42 | `STAY` | x | | | [x] |
 | 43 | `YES` | | x | | [ ] |
 | 44 | `NO` | | x | | [ ] |
 | 45 | `THANK-YOU` | | x | | [ ] |
