@@ -45,7 +45,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from recognition.labels import CLASSES
 from recognition.recognizer import (COORD_LIMIT, DEFAULT_MODEL, MAX_FRAMES, MIN_HAND_FRACTION,  # noqa: F401
                                     MIN_POSE_FRACTION, Frame, ModelUnavailable, PredictRequest, decide,
-                                    load_predictor, mock_top, none_top)
+                                    frame_dicts, load_predictor, mock_top, none_top)
 
 log = logging.getLogger("recognition")
 
@@ -192,7 +192,7 @@ def create_app(model_path=None, mock=None, allowed_origins=None, token=None, all
     @api.post("/predict", response_model=PredictResponse, dependencies=[Depends(check_token)])
     def predict(req: PredictRequest):
         try:
-            return {"top": decide([f.model_dump() for f in req.frames], predictor, mock)}
+            return {"top": decide(frame_dicts(req.frames), predictor, mock)}
         except ModelUnavailable:
             raise HTTPException(status_code=503, detail="model not loaded (see the server log); "
                                                         "train one or set RECOGNITION_MOCK=1")

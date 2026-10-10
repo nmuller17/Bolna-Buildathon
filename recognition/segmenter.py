@@ -10,6 +10,11 @@
                 ...
     seg.flush()                           # end of a video: close what is still open
 
+A sign event is a SignEvent: still the tuple ("sign", frames), plus .times (capture time of
+each frame), .tags (whatever was passed as push(..., tag=)), .t_start (first frame), .t_end
+(last frame that was still moving) and .t_close (capture time of the frame that closed it).
+recognition.stream builds on this (cleaning, framing gate, timestamps).
+
 Time: pass each frame's capture time t (seconds, increasing). Speeds are displacement per
 elapsed second and every *_SEC rule is in seconds, so a landmarker running slower than the
 camera changes nothing. Without t, frame i is taken to be at i / fps.
@@ -43,6 +48,10 @@ Rules (all thresholds are named constants below):
 - a sign reaching max_frames (the server's limit) is force-closed and sent;
 - after at least one sign, the utterance ends after UTTERANCE_SEC with no hand in the area,
   or REST_UTTERANCE_SEC of idle frames (hands resting still inside the area).
+Segmenter(close_sec=, utterance_sec=) override CLOSE_SEC and UTTERANCE_SEC (latency knobs; the
+resting-hands rule scales with utterance_sec: REST_UTTERANCE_SEC * utterance_sec / UTTERANCE_SEC);
+max_sec force-closes a sign that lasts that long (recognition.stream uses it so a cleaned
+segment resampled to 30 frames/s stays within the server's MAX_FRAMES).
 The thresholds are first guesses, checked on synthetic streams and on GISLR clips (cut
 tightly to the sign, unknown aspect ratio; tests/test_segmenter_gislr.py), not on our own
 webcam takes. Re-tune them on the first real takes (classify_video --trace prints the
@@ -102,13 +111,28 @@ def hand_motion(cur, prev, dt):
     return max(travel, shape) / dt
 
 
-class Segmenter:
-    """push(frame, t=None) -> list of events: ("sign", frames) when a sign closes, ("utterance_end",)."""
+class SignEvent(tuple):
+    """("sign", frames) with the frames' capture times and tags (see the module docstring)."""
 
-    def __init__(self, fps=30, max_frames=MAX_FRAMES, y_scale=1.0):
+    def __new__(cls, frames, times, tags, t_end, t_close):
+        ev = super().__new__(cls, ("sign", frames))
+        ev.times, ev.tags, ev.t_start, ev.t_end, ev.t_close = times, tags, times[0], t_end, t_close
+        return ev
+
+
+class Segmenter:
+    """push(frame, t=None, tag=None) -> list of events: SignEvent ("sign", frames) when a sign
+    closes, ("utterance_end",) when the utterance ends."""
+
+    def __init__(self, fps=30, max_frames=MAX_FRAMES, y_scale=1.0, close_sec=CLOSE_SEC,
+                 utterance_sec=UTTERANCE_SEC, max_sec=None):
         self.fps = float(fps)
         self.max_frames = max_frames
         self.y_scale = float(y_scale)
+        self.close_sec = float(close_sec)
+        self.utterance_sec = float(utterance_sec)
+        self.rest_sec = REST_UTTERANCE_SEC * self.utterance_sec / UTTERANCE_SEC
+        self.max_sec = max_sec
         self.reset()
 
     def reset(self):
@@ -138,7 +162,7 @@ class Segmenter:
         self.hist.append((t, hands))
         return speed
 
-    def push(self, frame, t=None):
+    def push(self, frame, t=None, tag=None):
         t = self.n / self.fps if t is None else float(t)
         if self.t is not None:
             if t <= self.t:  # repeated or out-of-order time: one frame interval later
@@ -162,40 +186,45 @@ class Segmenter:
             fast = up and speed > START_SPEED
             if fast or (up and entered):
                 pre = list(self.before) if fast else []
-                self.active, self.pre, self.path, self.fast = pre + [frame], len(pre), speed * self.dt, fast
+                self.active = [f for f, _, _ in pre] + [frame]
+                self.a_t, self.a_tag = [x for _, x, _ in pre] + [t], [g for _, _, g in pre] + [tag]
+                self.pre, self.path, self.fast = len(pre), speed * self.dt, fast
                 self.t_start = self.t_move = t
                 self.i_move = len(self.active) - 1
                 self.before.clear()
             else:
-                self.before.append(frame)
+                self.before.append((frame, t, tag))
         else:
             self.active.append(frame)
+            self.a_t.append(t)
+            self.a_tag.append(tag)
             self.path += speed * step
             self.fast = self.fast or speed > START_SPEED
             if busy:
                 self.t_move, self.i_move = t, len(self.active) - 1
-            if t - self.t_move >= CLOSE_SEC - EPS:
-                events += self._close()
-            elif len(self.active) >= self.max_frames:
+            if t - self.t_move >= self.close_sec - EPS:
+                events += self._close(t)
+            elif len(self.active) >= self.max_frames or (self.max_sec and t - self.a_t[0] >= self.max_sec - EPS):
                 self.t_move, self.i_move = t, len(self.active) - 1
-                events += self._close()
-        if self.pending and (t - self.t_up >= UTTERANCE_SEC - EPS or t - self.t_busy >= REST_UTTERANCE_SEC - EPS):
+                events += self._close(t)
+        if self.pending and (t - self.t_up >= self.utterance_sec - EPS or t - self.t_busy >= self.rest_sec - EPS):
             self.pending = False
             events.append(("utterance_end",))
         return events
 
-    def _close(self):
-        frames = self.active[:self.i_move + 1 + TAIL_KEEP]
+    def _close(self, t_close):
+        k = self.i_move + 1 + TAIL_KEEP
+        frames, times, tags = self.active[:k], self.a_t[:k], self.a_tag[:k]
         moving = self.t_move - self.t_start + self.dt
         self.active, path, self.path = None, self.path, 0.0
         if not self.fast or moving < MIN_SIGN_SEC - EPS or path < MIN_PATH:
             return []
         self.pending = True
-        return [("sign", frames)]
+        return [SignEvent(frames, times, tags, self.t_move, t_close)]
 
     def flush(self):
         """End of stream: close an open sign (same guards) and end a pending utterance."""
-        events = self._close() if self.active is not None else []
+        events = self._close(self.t) if self.active is not None else []
         if self.pending:
             events.append(("utterance_end",))
         self.reset()

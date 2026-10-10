@@ -165,7 +165,8 @@ def latency(checkpoint, frames, n=200):
     torch.set_num_threads(2)  # same as the server
     pred = Predictor(checkpoint)
     fwd = pred.time_forward(frames, n)
-    client = TestClient(create_app(model_path=checkpoint, mock=False, token=None), base_url="http://localhost")
+    client = TestClient(create_app(model_path=checkpoint, mock=False, token=None), base_url="http://localhost",
+                        client=("127.0.0.1", 50000))
     body = {"frames": frames}
     for _ in range(5):
         client.post("/predict", json=body)

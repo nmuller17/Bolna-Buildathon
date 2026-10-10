@@ -34,6 +34,15 @@ Streams: use one FrameAdapter per stream. A frame without a usable pose reuses t
 shoulders (as features.normalize does) and the last pose wrists for hand assignment; with
 no earlier pose its hands are dropped (lh = rh = None), because they cannot be normalized.
 A part whose normalized coordinates exceed MAX_ABS is dropped (the server would reject it).
+
+mode="capture" (live.py and classify_video.py use it): exact parity with the training
+captures. The frame is capture.landmarks.normalize(capture.landmarks.to_frame(result, w / h)),
+the teammate's own code (imported lazily): x and z times w / h, origin = shoulder midpoint in
+x, y only, z only scaled, rounded to 5 decimals, MediaPipe's lh/rh labels kept (features.py
+reassigns hands by the pose wrists for training and serving alike). A frame without pose is
+None, as in capture.py. Minimisation and the MAX_ABS check are applied after that conversion.
+Holistic results only (as capture.py); y_scale is 1. Segments must then be cleaned with
+capture.clean.clean before prediction (recognition.stream does it).
 """
 from pathlib import Path
 
@@ -99,21 +108,55 @@ def _shoulders(pose):
     return (l + r) / 2, scale
 
 
-class FrameAdapter:
-    """Stateful converter for one video stream: adapter(result) -> Frame dict (JSON-ready lists)."""
+def capture_modules():
+    """(capture.landmarks, capture.clean), imported on first use (capture.landmarks imports mediapipe)."""
+    try:
+        from capture import clean, landmarks
+    except ModuleNotFoundError as e:
+        if e.name != "capture":
+            raise
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from capture import clean, landmarks
+    return landmarks, clean
 
-    def __init__(self, minimize=True, image_size=None, aspect_correct=False):
-        if aspect_correct and not image_size:
-            raise ValueError("aspect_correct=True needs image_size=(width, height)")
+
+class _Flat:
+    """A Holistic result with flat landmark lists ([] when missing), as capture.landmarks.to_frame reads it."""
+
+    def __init__(self, result):
+        self.pose_landmarks, self.left_hand_landmarks, self.right_hand_landmarks, face = (
+            _landmarks(getattr(result, name, None)) or []
+            for name in ("pose_landmarks", "left_hand_landmarks", "right_hand_landmarks", "face_landmarks"))
+        self.face_landmarks = face if len(face) >= FACE_MESH_N else []
+
+
+class FrameAdapter:
+    """Stateful converter for one video stream: adapter(result) -> Frame dict (JSON-ready lists).
+
+    mode="legacy" (default): the conversion described above. mode="capture": capture.py parity
+    (needs image_size; returns None for a frame without pose)."""
+
+    def __init__(self, minimize=True, image_size=None, aspect_correct=False, mode="legacy"):
+        if mode not in ("legacy", "capture"):
+            raise ValueError("mode must be 'legacy' or 'capture'")
+        if (aspect_correct or mode == "capture") and not image_size:
+            raise ValueError("aspect_correct=True and mode='capture' need image_size=(width, height)")
+        self.mode = mode
         self.minimize = minimize
+        self.aspect = image_size[0] / image_size[1] if image_size else None
         self.xz_scale = image_size[0] / image_size[1] if aspect_correct else 1.0
         self.y_scale = image_size[1] / image_size[0] if image_size and not aspect_correct else 1.0
+        if mode == "capture":
+            self.y_scale = 1.0
         self._shoulders = None
         self._wrists = None
 
     def __call__(self, result, hands=None, face=None):
         """result: a Holistic result (tasks or legacy), or a PoseLandmarker result (or None).
         hands / face: HandLandmarker / FaceLandmarker results, only with a PoseLandmarker result."""
+        if self.mode == "capture":
+            return self._capture(result, hands, face)
         if hands is None and face is None and result is not None and hasattr(result, "left_hand_landmarks"):
             pose = _points(result.pose_landmarks, POSE_N)
             lh = _points(result.left_hand_landmarks, HAND_N)
@@ -126,6 +169,23 @@ class FrameAdapter:
             lh, rh = self._place([self._aspect(h) for h in found if h is not None], pose)
             fc = self._aspect(_face(_first(getattr(face, "face_landmarks", None))))
         return self._finish(pose, lh, rh, fc)
+
+    def _capture(self, result, hands, face):
+        if hands is not None or face is not None or (result is not None and not hasattr(result, "left_hand_landmarks")):
+            raise ValueError("mode='capture' takes a HolisticLandmarker result, as capture.py does")
+        if result is None:
+            return None
+        lm, _ = capture_modules()
+        frame = lm.normalize(lm.to_frame(_Flat(result), self.aspect))
+        if frame is None:
+            return None
+        if self.minimize:
+            frame["face"] = None
+            frame["pose"] = [list(frame["pose"][NOSE]) if i in FACE_POSE else p for i, p in enumerate(frame["pose"])]
+        for p, a in frame.items():
+            if a is not None and not (np.abs(np.asarray(a, np.float64)) <= MAX_ABS).all():
+                frame[p] = None
+        return frame if frame["pose"] is not None else None
 
     def _aspect(self, a):
         if a is None or self.xz_scale == 1.0:
@@ -173,9 +233,9 @@ class FrameAdapter:
         return {p: (None if a is None or not (np.abs(a) <= MAX_ABS).all() else a.tolist()) for p, a in out.items()}
 
 
-def to_frame(result, hands=None, face=None, minimize=True, image_size=None, aspect_correct=False):
+def to_frame(result, hands=None, face=None, minimize=True, image_size=None, aspect_correct=False, mode="legacy"):
     """One-shot conversion of a single result (no memory of earlier frames). Use FrameAdapter for video."""
-    return FrameAdapter(minimize, image_size, aspect_correct)(result, hands, face)
+    return FrameAdapter(minimize, image_size, aspect_correct, mode)(result, hands, face)
 
 
 def load_holistic(task_path=DEFAULT_TASK, video=True):

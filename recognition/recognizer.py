@@ -10,7 +10,13 @@ server.py calls decide() and the same validation models, so the two cannot diver
   server answers 422;
 - NONE (conf 0.98) without running the model when fewer than MIN_HAND_FRACTION of the frames
   contain a hand or fewer than MIN_POSE_FRACTION contain both shoulders;
-- NONE when the model returns a non-finite confidence; confidences are clipped to [0, 1].
+- NONE when the model returns a non-finite confidence; confidences are clipped to [0, 1];
+- the in-process helper converts a null whole frame (capture.landmarks.normalize returns
+  None when MediaPipe found no pose) to a frame with every part null before validation.
+  The HTTP API still requires Frame objects, as in the protected team contract.
+
+needs_repeat(signs) is the CLAUDE.md 7.2 step 4 rule (any top-1 NONE or below REPEAT_BELOW);
+recognition.stream uses it for the utterance event, and the app applies the same rule.
 
 The checkpoint is checked against model_pin.EXPECTED_SHA256 before it is loaded (the bytes
 that were hashed are the bytes that are loaded); a mismatch raises ModelPinError.
@@ -35,6 +41,8 @@ MAX_FRAMES = 300
 COORD_LIMIT = 50.0
 MIN_HAND_FRACTION = 0.1
 MIN_POSE_FRACTION = 0.3
+REPEAT_BELOW = 0.6
+EMPTY_FRAME = {"pose": None, "lh": None, "rh": None, "face": None}
 DEFAULT_MODEL = Path(__file__).parent / "models" / "model.pt"
 
 Coord = Annotated[float, Field(strict=True, allow_inf_nan=False, ge=-COORD_LIMIT, le=COORD_LIMIT)]
@@ -52,6 +60,11 @@ class Frame(BaseModel):
 class PredictRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     frames: Annotated[list[Frame], Field(min_length=1, max_length=MAX_FRAMES)]
+
+
+def frame_dicts(frames):
+    """Parsed Frame models -> plain Frame dicts."""
+    return [f.model_dump() for f in frames]
 
 
 class ModelUnavailable(RuntimeError):
@@ -97,10 +110,17 @@ def load_predictor(path):
 
 
 def validate(frames):
-    """Frame[] -> plain Frame dicts, exactly as the server parses a request body. Raises
-    pydantic.ValidationError (a ValueError) on malformed input."""
+    """Capture frames -> Frame dicts, using the HTTP schema after replacing missing frames.
+    Raises pydantic.ValidationError (a ValueError) on malformed input."""
+    if isinstance(frames, (list, tuple)):
+        frames = [dict(EMPTY_FRAME) if f is None else f for f in frames]
     req = PredictRequest.model_validate({"frames": frames})
-    return [f.model_dump() for f in req.frames]
+    return frame_dicts(req.frames)
+
+
+def needs_repeat(signs):
+    """CLAUDE.md 7.2 step 4: True when any sign's top prediction is NONE or below REPEAT_BELOW."""
+    return any(p["label"] == NONE or p["conf"] < REPEAT_BELOW for p in signs)
 
 
 def decide(frames, predictor, mock=False):
