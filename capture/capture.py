@@ -1,1 +1,1 @@
-"""Webcam recorder: video + landmarks per sign. Args: --signs, --reps, --user, --out."""
+"""Webcam recorder: video + landmarks per sign. Args: --signs, --reps, --user, --out, --duration."""
