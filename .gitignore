@@ -17,6 +17,11 @@ web/next-env.d.ts
 data/
 *.mp4
 *.pt
+
+# Piper voice models
+voices/
+*.onnx
+*.onnx.json
 !recognition/models/.gitkeep
 
 # OS / editors
