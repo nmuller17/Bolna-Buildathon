@@ -4,15 +4,20 @@ __pycache__/
 .venv/
 venv/
 
-# Secrets
-.env
+# Node / Next.js
+node_modules/
+web/.next/
+web/next-env.d.ts
 
-# Large / private data
-model/data/*
-!model/data/.gitkeep
-model/checkpoints/*
-!model/checkpoints/.gitkeep
-backend/models/
+# Secrets
+.env*
+!.env.example
+
+# Raw captures and training data
+data/
+*.mp4
+*.pt
+!recognition/models/.gitkeep
 
 # OS / editors
 .DS_Store
