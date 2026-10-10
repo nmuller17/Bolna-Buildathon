@@ -34,7 +34,7 @@ LIVE: STAFF ──► GUEST
 
 LIVE: GUEST ──► STAFF
   Webcam (browser) ─► MediaPipe Holistic JS ─► segmenter ─► FastAPI /predict (PyTorch)
-  ─► confidence check ─► /api/english (Claude) ─► /api/tts (ElevenLabs) ─► speaker + staff screen
+  ─► confidence check ─► /api/english (Claude) ─► /api/tts (ElevenLabs, Piper backup) ─► speaker + staff screen
 ```
 
 Two browser windows on the same machine: `/staff` (laptop screen) and `/guest` (external monitor facing the guest, webcam on top). They sync through a `BroadcastChannel` named `signbridge`.
@@ -59,7 +59,7 @@ CamelHack/
 ├── CLAUDE.md                     # this file
 ├── .env.example                  # list of required keys, no values
 ├── .gitignore                    # must ignore .env*, data/, *.mp4, node_modules, __pycache__
-├── requirements.txt              # Python deps (mediapipe, opencv-python, numpy, torch, fastapi, uvicorn)
+├── requirements.txt              # Python deps (mediapipe, opencv-python, numpy, torch, fastapi, uvicorn, piper-tts)
 ├── docs/
 │   ├── vocabulary.md             # every sign, gloss and classifier label (shared, protected)
 │   ├── demo-script.md            # exact demo dialogue (P4)
@@ -113,7 +113,7 @@ CamelHack/
 | Frontend | Next.js (App Router), TypeScript | Two routes, `/staff` and `/guest` |
 | Speech to text | OpenAI Whisper API (`whisper-1`) | Fallback: browser Web Speech API |
 | English to gloss, gloss to English | Anthropic Claude API | Server-side only, in API routes |
-| Text to speech | ElevenLabs API | Fallback: browser `speechSynthesis` |
+| Text to speech | ElevenLabs API (model `eleven_flash_v2_5`, voice "Sarah", WAV output) | Main voice. Backup: Piper (`piper-tts`, local, voice `en_US-lessac-medium` in `voices/`, gitignored). Last resort: browser `speechSynthesis`. See below |
 | Landmarks (offline) | MediaPipe Holistic, Python | In `capture/` and `dictionary/` |
 | Landmarks (live) | MediaPipe for web (`@mediapipe/tasks-vision`) | Use HolisticLandmarker if available in the installed version, else Pose + Hand + Face landmarkers |
 | Classifier | PyTorch GRU, served by FastAPI + uvicorn | `http://localhost:8000/predict` |
@@ -121,12 +121,19 @@ CamelHack/
 | Screen sync | `BroadcastChannel("signbridge")` | Same machine, two windows |
 | Public sign videos | ASL Citizen or WLASL | Check license and download size first |
 
+### Text to speech: ElevenLabs, with Piper as backup
+- **ElevenLabs is the main voice.** It sounds natural and is fast: about 0.3 s for a new sentence, instant once cached. It returns WAV directly (`output_format=wav_22050`), so the `/api/tts` contract stays `audio/wav`.
+- **Piper stays as an automatic backup** because it runs offline with no API key. `/api/tts` switches to Piper if ElevenLabs fails (no internet, quota used up), takes more than 2 s, or has no `ELEVENLABS_API_KEY`.
+- Piper takes about 7 s per run, mostly loading the voice. So the first `/api/tts` call pre-generates the 19 known guest sentences with Piper in one run. The guest page triggers it on load with `warmUpVoice()` from `web/components/speakSigns.ts`.
+- **Last resort:** if `/api/tts` has not answered within 2.5 s, `speakSigns()` speaks with the browser's `speechSynthesis`.
+
 ### Environment variables (`web/.env.local`, never committed)
 ```
 OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 ELEVENLABS_API_KEY=
-ELEVENLABS_VOICE_ID=
+ELEVENLABS_VOICE_ID=EXAVITQu4vr4xnSDxMaL
+PIPER_VOICE=../voices/en_US-lessac-medium.onnx
 RECOGNITION_URL=http://localhost:8000
 ```
 
@@ -174,7 +181,7 @@ Face indices (MediaPipe face mesh), in order:
 | `POST /api/transcribe` | audio blob (webm) | `{ "text": string }` | P1 |
 | `POST /api/gloss` | `{ "text": string }` | `{ "gloss": string[] }` | P1 |
 | `POST /api/english` | `{ "signs": Prediction[] }` | `{ "text": string }` | P4 |
-| `POST /api/tts` | `{ "text": string }` | `audio/mpeg` | P4 |
+| `POST /api/tts` | `{ "text": string }` | `audio/wav` | P4 |
 | `POST {RECOGNITION_URL}/predict` | `{ "frames": Frame[] }` (one segmented sign) | `{ "top": Prediction[] }` (top 3) | P3 |
 
 ```ts
@@ -211,7 +218,7 @@ Transitions: 7 linearly interpolated frames between the last frame of a sign and
 3. Each sign segment is sent to `/predict`, which returns the top 3 predictions.
 4. Confidence check (P4): if the top prediction of any sign is below **0.6** or is `NONE`, post `repeat_request` and show "Could you repeat?" on the guest screen. Stop here.
 5. Otherwise `/api/english` asks Claude to turn the sign list into one natural English sentence in the hotel context.
-6. `/api/tts` speaks it. `/staff` shows the sentence and the recognized signs with scores.
+6. `/api/tts` speaks it (ElevenLabs, Piper backup). `/staff` shows the sentence and the recognized signs with scores.
 
 ### 7.3 Offline preparation
 - **capture.py**: shows the sign name, 3 s countdown, records 2 s (3 s for fingerspelled and compound classes), saves video (`.mp4`, gitignored, backup only) and landmarks (`.json`). Args: `--signs`, `--reps`, `--user`, `--out`, `--duration`.
@@ -286,6 +293,6 @@ uvicorn recognition.server:app --port 8000 --reload   # classifier server
 4. Keep Python normalization (`capture/landmarks.py`, `recognition/features.py`) and TS normalization (`web/lib/recognition/features.ts`) strictly identical.
 5. API keys stay server-side (Next.js API routes). Never expose them to the browser.
 6. Prefer the simplest working solution. This is a 15-hour demo, not production.
-7. Every live step needs a fallback: Web Speech API for Whisper, `speechSynthesis` for ElevenLabs, MP4 playback for the avatar, manual retry for recognition.
+7. Every live step needs a fallback: Web Speech API for Whisper, Piper then `speechSynthesis` for ElevenLabs, MP4 playback for the avatar, manual retry for recognition.
 8. Do not build features outside the demo script without asking your human.
 9. When you finish a task, update the relevant part of this file only if your human agrees.
