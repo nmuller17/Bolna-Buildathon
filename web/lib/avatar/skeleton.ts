@@ -342,6 +342,8 @@ export class AvatarScene {
     this.trailColor.set(look.trailColor);
     this.trailMaterial.linewidth = look.trailWidth;
     this.particleMaterial.uniforms.uColor.value.set(look.particleColor);
+    // A rig that draws its own face (Sam) hides the shared face lines.
+    for (const s of this.faceStrokes) s.strokes.line.visible = look.faceStrokes !== false;
   }
 
   private resize() {
