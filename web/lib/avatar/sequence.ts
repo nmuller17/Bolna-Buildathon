@@ -14,39 +14,68 @@ export type Sequence = {
 
 const MARKERS: Record<string, Brows> = { "BROWS-UP": "up", "BROWS-DOWN": "down" };
 
-const lerp3 = (a: Point, b: Point, t: number): Point => [
-  a[0] + (b[0] - a[0]) * t,
-  a[1] + (b[1] - a[1]) * t,
-  a[2] + (b[2] - a[2]) * t,
-];
+const newPoints = (n: number): Point[] => Array.from({ length: n }, () => [0, 0, 0] as Point);
 
-function lerpPart(a: Point[] | null, b: Point[] | null, t: number): Point[] | null {
-  if (a && b) return a.map((p, i) => lerp3(p, b[i] ?? p, t));
-  return a ?? b;
+/** Fixed point arrays that lerpFrameInto writes into, so per-frame playback allocates nothing. */
+export class FrameBuffer {
+  private readonly pose = newPoints(33);
+  private readonly lh = newPoints(21);
+  private readonly rh = newPoints(21);
+  private readonly face = newPoints(26);
+  readonly frame: Frame = { pose: null, lh: null, rh: null, face: null };
+
+  target(key: keyof Frame, length: number): Point[] | null {
+    const out = this[key];
+    return out.length === length ? out : null; // the contract sizes; anything else falls back to a fresh array
+  }
+}
+
+/** a + (b - a) * t + shift, written into out (or a new array when out is null). */
+function lerpPart(out: Point[] | null, a: Point[] | null, b: Point[] | null, t: number, dx = 0, dy = 0): Point[] | null {
+  const src = a ?? b;
+  if (!src) return null;
+  const to = a && b ? b : src;
+  const k = a && b ? t : 0;
+  const res = out ?? newPoints(src.length);
+  for (let i = 0; i < src.length; i++) {
+    const p = src[i];
+    const q = to[i] ?? p;
+    const o = res[i];
+    o[0] = p[0] + (q[0] - p[0]) * k + dx;
+    o[1] = p[1] + (q[1] - p[1]) * k + dy;
+    o[2] = p[2] + (q[2] - p[2]) * k;
+  }
+  return res;
 }
 
 /** When only one side has the hand, keep its shape and carry it with the interpolated pose wrist. */
-function lerpHand(a: Frame, b: Frame, key: "lh" | "rh", pose: Point[] | null, t: number): Point[] | null {
+function lerpHand(buf: FrameBuffer, a: Frame, b: Frame, key: "lh" | "rh", pose: Point[] | null, t: number): Point[] | null {
   const ha = a[key];
   const hb = b[key];
-  if (ha && hb) return lerpPart(ha, hb, t);
   const hand = ha ?? hb;
+  if (!hand) return null;
+  const out = buf.target(key, hand.length);
   const from = ha ? a.pose : b.pose;
-  if (!hand || !pose || !from) return hand;
+  if ((ha && hb) || !pose || !from) return lerpPart(out, ha, hb, t);
   const wrist = key === "lh" ? 15 : 16;
-  const dx = pose[wrist][0] - from[wrist][0];
-  const dy = pose[wrist][1] - from[wrist][1];
-  return hand.map(([x, y, z]) => [x + dx, y + dy, z] as Point);
+  return lerpPart(out, hand, null, 0, pose[wrist][0] - from[wrist][0], pose[wrist][1] - from[wrist][1]);
 }
 
+/** Interpolated frame written into `buf` (its arrays are reused by the next call). */
+export function lerpFrameInto(buf: FrameBuffer, a: Frame, b: Frame, t: number): Frame {
+  const out = buf.frame;
+  const poseSize = (a.pose ?? b.pose)?.length ?? 0;
+  const faceSize = (a.face ?? b.face)?.length ?? 0;
+  out.pose = lerpPart(buf.target("pose", poseSize), a.pose, b.pose, t);
+  out.lh = lerpHand(buf, a, b, "lh", out.pose, t);
+  out.rh = lerpHand(buf, a, b, "rh", out.pose, t);
+  out.face = lerpPart(buf.target("face", faceSize), a.face, b.face, t);
+  return out;
+}
+
+/** Interpolated frame with its own arrays (for sequences that are kept). */
 export function lerpFrame(a: Frame, b: Frame, t: number): Frame {
-  const pose = lerpPart(a.pose, b.pose, t);
-  return {
-    pose,
-    lh: lerpHand(a, b, "lh", pose, t),
-    rh: lerpHand(a, b, "rh", pose, t),
-    face: lerpPart(a.face, b.face, t),
-  };
+  return { ...lerpFrameInto(new FrameBuffer(), a, b, t) };
 }
 
 /** `count` frames strictly between a and b. */

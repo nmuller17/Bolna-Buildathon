@@ -2,9 +2,10 @@
 // Data runs at 30 fps and is interpolated at display rate. Between sentences the avatar rests and breathes.
 // Backward-compatible addition: playGloss(gloss, { onToken }) reports the gloss index being signed (karaoke captions).
 import { REST_FRAME } from "./rest";
-import { buildSequence, FPS, lerpFrame, transition } from "./sequence";
-import { AvatarScene } from "./skeleton";
-import type { Brows, Frame, PlayOptions } from "./types";
+import { buildSequence, FPS, FrameBuffer, lerpFrameInto, transition } from "./sequence";
+import { AvatarScene, type AvatarState } from "./skeleton";
+import { THEME } from "./theme";
+import type { AvatarStyle, Brows, Frame, PlayOptions } from "./types";
 
 const LEAD_IN = 8; // frames from the current pose to the first sign (not part of the contract sequence)
 const LEAD_OUT = 12; // frames from the last sign back to the rest pose
@@ -24,8 +25,11 @@ type Playback = {
 };
 
 let scene: AvatarScene | null = null;
+let style: AvatarStyle = THEME.defaultStyle;
 let playback: Playback | null = null;
+const buffer = new FrameBuffer();
 let current: Frame = REST_FRAME;
+const state: AvatarState = { frame: REST_FRAME, brows: null, browAmount: 0, idle: 1 }; // reused every frame
 let browMode: Brows = null;
 let browAmount = 0;
 let idle = 1;
@@ -39,11 +43,12 @@ let fpsSince = 0;
 export type AvatarMount = { webgl: boolean; unmount: () => void };
 
 /** Renders the avatar into `container` (it fills it and follows its size). Without WebGL, playGloss still runs. */
-export function mountAvatar(container: HTMLElement): AvatarMount {
+export function mountAvatar(container: HTMLElement, options: { style?: AvatarStyle } = {}): AvatarMount {
+  if (options.style) style = options.style;
   scene?.dispose();
   scene = null;
   try {
-    scene = new AvatarScene(container);
+    scene = new AvatarScene(container, style);
   } catch (err) {
     console.warn("[avatar] WebGL unavailable, captions only:", err);
   }
@@ -85,6 +90,12 @@ export async function playGloss(gloss: string[], options: PlayOptions = {}): Pro
   });
 }
 
+/** Switches the look: "concierge" (Sam, default) or "hologram". Applies now if mounted, and to later mounts. */
+export function setAvatarStyle(next: AvatarStyle) {
+  style = next;
+  scene?.setStyle(next);
+}
+
 /** Display frames per second over the last half second (for a dev counter). */
 export function getAvatarFps(): number {
   return fps;
@@ -109,7 +120,7 @@ function advance(now: number, dt: number) {
       finish(p);
       playback = null;
     } else {
-      current = lerpFrame(p.frames[i], p.frames[i + 1], pos - i);
+      current = lerpFrameInto(buffer, p.frames[i], p.frames[i + 1], pos - i);
       const token = p.tokenIndex[i];
       if (token >= 0 && token !== p.lastToken) {
         p.lastToken = token;
@@ -132,7 +143,11 @@ function tick(now: number) {
   advance(now, dt);
 
   if (scene) {
-    scene.update({ frame: current, brows: browMode, browAmount, idle }, now / 1000, dt);
+    state.frame = current;
+    state.brows = browMode;
+    state.browAmount = browAmount;
+    state.idle = idle;
+    scene.update(state, now / 1000, dt);
     scene.render();
   }
 
