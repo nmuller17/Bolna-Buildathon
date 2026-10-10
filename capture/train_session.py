@@ -5,8 +5,9 @@ then the session moves to the next sign. A reference video of the sign loops in 
 (Cosme's avatar capture, or else the first training take of that sign). Takes already on disk
 are counted, so a session can be stopped and restarted where it left off.
 
-  python capture/train_session.py --camera 1
-  python capture/train_session.py --camera 1 --signs YES NO --users maya cosme
+  python capture/train_session.py --users maya          # one person on their own laptop
+  python capture/train_session.py --camera 1            # whole team in turn on one laptop
+  python capture/train_session.py --signs YES NO --users maya cosme
 
 Waiting screen: SPACE start   S skip this person   N next sign   Q quit
 During takes:   R redo the last take   P pause (back to the waiting screen)
@@ -39,6 +40,7 @@ HINTS = {
 # Cosme goes first: his first take becomes the reference video for signs without an avatar capture.
 USERS = ["cosme", "maya", "roni", "thanya", "nath"]
 DATA_DIR = ROOT / "data" / "train"
+REFERENCE_DIR = ROOT / "capture" / "reference"  # shared reference videos, see make_references.py
 INSET_WIDTH = 360
 
 
@@ -65,7 +67,8 @@ class Reference:
 
     def __init__(self, sign):
         self.frames = []
-        candidates = [VIDEO_DIR / "avatar" / f"{sign}.mp4"] + sorted((VIDEO_DIR / "train" / sign).glob("*.mp4"))
+        candidates = ([REFERENCE_DIR / f"{sign}.mp4", VIDEO_DIR / "avatar" / f"{sign}.mp4"]
+                      + sorted((VIDEO_DIR / "train" / sign).glob("*.mp4")))
         for path in candidates:
             if path.exists():
                 self.frames = self._load(path)
