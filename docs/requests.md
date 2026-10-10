@@ -30,3 +30,24 @@ Proposal: add these lines to CLAUDE.md 6.2.
 - A newer `playGloss` call interrupts the current one (which resolves).
 - Windows: git checks out the `web/public/signs` symlink as a text file when `core.symlinks` is off, so `/signs/*` returns 404. Local fix, no repo change: `Remove-Item web/public/signs; cmd /c mklink /J web\public\signs <repo>\signs; git update-index --skip-worktree web/public/signs`. Needed on the demo laptop if it runs Windows.
 Why: the guest screen needs to know which sign is playing, and must not crash on a machine without WebGL.
+
+## 2026-10-10, from P3 to P4: streaming recognition bridge
+
+The backend closure adds immediate `sign` events, followed by `utterance` events, plus
+`framing` and `status` events. The payload examples and timestamps are in
+`recognition/README.md`, section "App bridge". `live.py --post` sends each event to
+`/api/guest/signs` with `X-Bridge-Key`; it sends no images or landmarks.
+
+The draft `p4-app` plan and `web/lib/app/types.ts` still accept only a `signs` batch.
+Update the receiver and its validators for these four event types during the app build.
+Display each sign immediately, use the completed utterance for the confirmation step,
+and never speak an utterance marked `needs_repeat`, a mock result, or a stale event
+from an ended guest session. Keep the bridge loopback-only and require the configured
+key. Sequence numbers restart with the recognizer process; they are not session IDs.
+Bind incoming events to the active guest session and reject stale/replayed events.
+The transport is best effort and drops queued events under backpressure, so account
+for missing sequence numbers. The protected `/predict` Frame[] contract is unchanged.
+
+Validation and release remain separate: the current local checkpoint is synthetic,
+benchmark accuracy is unaudited, and real held-out signer recordings are still needed.
+No security attack testing should run on Talha's own Mac.

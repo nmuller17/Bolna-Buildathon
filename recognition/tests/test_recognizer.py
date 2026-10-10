@@ -49,6 +49,16 @@ def test_recognizer_mock_matches_server(tmp_path):
     assert code == 200 and body["top"] == Recognizer(mock=True).predict(frames)
 
 
+def test_benchmark_latency_uses_a_loopback_client(ckpt):
+    from recognition.benchmark import latency
+
+    frames = raw_frames(12, np.random.default_rng(4))
+    report = latency(ckpt, frames, n=4)
+    assert report["segment_frames"] == len(frames)
+    for kind in ("model_forward", "http_predict_testclient"):
+        assert 0 <= report[kind]["p50_ms"] <= report[kind]["p95_ms"]
+
+
 @pytest.mark.parametrize("bad", [
     [],
     [{"pose": [[0, 0, 0]] * 32, "lh": None, "rh": None, "face": None}],

@@ -1,119 +1,254 @@
-"""REFERENCE webcam loop: camera -> HolisticLandmarker -> mediapipe_adapter -> Segmenter -> Recognizer.
+"""Webcam loop: camera -> HolisticLandmarker -> recognition.stream (framing gate, capture-parity
+frames, Segmenter, capture.clean, Recognizer) -> events printed and, with --post, sent to the app.
 
-    python -m recognition.live [--camera 0] [--post http://localhost:3000/api/english] [--mock]
+    python -m recognition.live [--camera 0] [--post http://127.0.0.1:3000/api/guest/signs] [--mock]
+                               [--utterance-gap 1.5] [--waist hips|none]
 
-This is a reference, not the product: the landmarks teammate may replace it by calling
-FrameAdapter, Segmenter and Recognizer directly from their own loop (README, "Python
-MediaPipe input"). Rules it demonstrates:
-- MediaPipe gets the UNMIRRORED camera frame; only the on-screen preview is flipped;
-- predictions are printed; with --post, an utterance is POSTed as {"signs": [Prediction]}
-  (top 1 per sign, the CLAUDE.md 6.5 /api/english request) only when it passes the CLAUDE.md
-  7.2 step 4 check (every sign >= 0.6 and not NONE). Otherwise nothing is posted and a repeat
-  request is printed: /api/english would turn a guess into a spoken sentence. No video or
-  landmarks ever leave the process.
-- each frame's capture time goes to the segmenter, so its speeds and timings stay right
-  however fast the landmarker runs (camera start-up included).
+- MediaPipe gets the UNMIRRORED camera image at 1280x720, as capture.py records the training
+  takes; only the preview is flipped. The preview shows the framing guide (head to waist).
+- A reader thread keeps only the newest camera frame, stamped with its capture time, so a
+  slow landmarker never works on stale frames (skipped frames are counted).
+- Events (README "App bridge"): "sign" the moment each sign closes, "utterance", "framing",
+  "status" (at most once a second). --post sends each one as JSON from a worker thread with a
+  bounded queue (the oldest event is dropped when the app is down), timeout POST_TIMEOUT,
+  header X-Bridge-Key from the BRIDGE_KEY environment variable (never printed), no redirects,
+  no proxies. Every event is sent, including repeat requests; no video or landmarks ever are.
+- A rolling latency summary is printed after each utterance, every SUMMARY_SEC and at exit.
 Quit with q or Esc in the preview window, or Ctrl+C.
 """
 import argparse
 import json
+import os
+import queue
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
-from recognition import mediapipe_adapter as mpa
-from recognition.classify_video import REPEAT_BELOW, add_args, format_top, import_cv2, load, needs_repeat
+from recognition import framing
+from recognition.classify_video import add_args, import_cv2, load_landmarker, load_recognizer, make_stream, show
 
-RATE_FRAMES = 30  # report the processing rate over the first 30 frame intervals
+WIDTH, HEIGHT = 1280, 720      # capture.py's camera settings
+POST_TIMEOUT = 1.0
+QUEUE_MAX = 64
+SUMMARY_SEC = 10.0
+READ_FAIL_SEC = 2.0
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 
-def post(url, signs):
-    """POST {"signs": [...]} in a background thread; failures are printed, never fatal."""
-    def send():
-        req = urllib.request.Request(url, data=json.dumps({"signs": signs}).encode(), method="POST",
-                                     headers={"Content-Type": "application/json"})
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None            # a redirect would carry X-Bridge-Key to another URL
+
+
+class Poster:
+    """POSTs events as JSON from one worker thread; send() never blocks (drop-oldest queue)."""
+
+    def __init__(self, url, key=None, maxsize=QUEUE_MAX, timeout=POST_TIMEOUT):
+        if maxsize < 1:
+            raise ValueError("maxsize must be positive")
+        self.url, self.key, self.timeout = url, key, timeout
+        self.q = queue.Queue(maxsize)
+        self.sent = self.failed = self.dropped = 0
+        self._last_err = None
+        self._lock = threading.Lock()
+        self._closing, self._stop = threading.Event(), threading.Event()
+        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def send(self, event):
+        with self._lock:
+            if self._closing.is_set():
+                self.dropped += 1
+                return
+            while True:
+                try:
+                    self.q.put_nowait(event)
+                    return
+                except queue.Full:
+                    try:
+                        self.q.get_nowait()
+                        self.dropped += 1
+                    except queue.Empty:
+                        pass
+
+    def close(self, timeout=2.0):
+        """Drain for at most timeout seconds, then discard queued events and stop.
+
+        An in-flight request can finish within its own POST timeout; queued events will
+        not keep posting after close returns, even if the app was unavailable.
+        """
+        with self._lock:
+            self._closing.set()
+        self.thread.join(timeout)
+        self._stop.set()
+        while True:
+            try:
+                self.q.get_nowait()
+                self.dropped += 1
+            except queue.Empty:
+                break
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                ev = self.q.get(timeout=0.05)
+            except queue.Empty:
+                if self._closing.is_set():
+                    return
+                continue
+            if self._stop.is_set():
+                self.dropped += 1
+                return
+            self._post(ev)
+
+    def _post(self, ev):
+        headers = {"Content-Type": "application/json"}
+        if self.key:
+            headers["X-Bridge-Key"] = self.key
+        req = urllib.request.Request(self.url, data=json.dumps(ev, separators=(",", ":")).encode(),
+                                     method="POST", headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=3) as r:
-                print(f"  posted -> HTTP {r.status}")
-        except Exception as e:
-            print(f"  post failed: {type(e).__name__}: {e}", file=sys.stderr)
-    t = threading.Thread(target=send, daemon=True)
-    t.start()
-    return t
+            with self._opener.open(req, timeout=self.timeout):
+                pass  # Only the response status is needed; do not buffer the response body.
+            self.sent += 1
+        except Exception as e:  # the app being down must never stop recognition
+            self.failed += 1
+            now = time.monotonic()
+            if self._last_err is None or now - self._last_err >= 5:
+                self._last_err = now
+                why = f"HTTP {e.code}" if isinstance(e, urllib.error.HTTPError) else type(e).__name__
+                print(f"  post failed ({why}; {self.failed} failed so far)", file=sys.stderr)
 
 
-def on_utterance(signs, url=None):
-    """Print one utterance; POST it to url only if no sign needs a repeat (CLAUDE.md 7.2 step 4).
-    Returns the posting thread, or None when nothing was posted."""
-    words = " ".join(p["label"] for p in signs)
-    if needs_repeat(signs):
-        print(f"utterance: {words}  -> repeat request (a sign is NONE or below {REPEAT_BELOW}; not posted)")
-        return None
-    print(f"utterance: {words}")
-    return post(url, list(signs)) if url else None
+class CameraReader:
+    """Reads the camera in a thread; get() returns the newest (bgr, capture time), skipping older ones."""
+
+    def __init__(self, cap, clock=time.monotonic):
+        self.cap, self.clock = cap, clock
+        self.cond = threading.Condition()
+        self.latest, self.n, self.taken, self.skipped = None, 0, 0, 0
+        self.done = self._stop = False
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        fail_since = None
+        while not self._stop:
+            ok, img = self.cap.read()
+            t = self.clock()
+            if not ok:
+                fail_since = t if fail_since is None else fail_since
+                if t - fail_since >= READ_FAIL_SEC:
+                    break
+                time.sleep(0.05)
+                continue
+            fail_since = None
+            with self.cond:
+                self.latest, self.n = (img, t), self.n + 1
+                self.cond.notify()
+        with self.cond:
+            self.done = True
+            self.cond.notify()
+
+    def get(self, timeout=READ_FAIL_SEC + 1):
+        with self.cond:
+            self.cond.wait_for(lambda: self.n > self.taken or self.done, timeout)
+            if self.n == self.taken:
+                return None
+            self.skipped += self.n - self.taken - 1
+            self.taken = self.n
+            return self.latest
+
+    def stop(self):
+        self._stop = True
+        self.thread.join(1.0)
+
+
+def draw_guide(cv2, view, status, line2=""):
+    """Guide box (the framing margin) and guidance text on the mirrored preview."""
+    h, w = view.shape[:2]
+    m = framing.MARGIN
+    color = (80, 220, 80) if status == framing.OK else (0, 165, 255)
+    cv2.rectangle(view, (int(m * w), int(m * h)), (int((1 - m) * w), int((1 - m) * h)), color, 3)
+    for i, text in enumerate([framing.GUIDANCE.get(status, status), line2]):
+        if text:
+            y = int(m * h) + 40 + 40 * i
+            cv2.putText(view, text, (int(m * w) + 15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 5, cv2.LINE_AA)
+            cv2.putText(view, text, (int(m * w) + 15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2, cv2.LINE_AA)
+    return view
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--camera", type=int, default=0)
-    ap.add_argument("--post", default=None, metavar="URL", help='POST {"signs": [...]} to this http(s) URL for each utterance that passes the 0.6 / NONE check')
+    ap.add_argument("--width", type=int, default=WIDTH, help=f"camera width (default {WIDTH}, as capture.py)")
+    ap.add_argument("--height", type=int, default=HEIGHT, help=f"camera height (default {HEIGHT}, as capture.py)")
+    ap.add_argument("--post", default=None, metavar="URL", help="POST every event as JSON to this http(s) URL")
     ap.add_argument("--no-preview", action="store_true", help="no window (stop with Ctrl+C)")
     add_args(ap)
     args = ap.parse_args(argv)
     if args.post and urlparse(args.post).scheme not in ("http", "https"):
         sys.exit("--post needs an http:// or https:// URL")
+    if args.post and urlparse(args.post).scheme == "http" and urlparse(args.post).hostname not in LOOPBACK:
+        print("WARNING: --post over plain http to another machine sends X-Bridge-Key unencrypted", file=sys.stderr)
     cv2 = import_cv2()
-    from recognition.segmenter import Segmenter
-
-    rec, landmarker = load(args)
+    rec, state = load_recognizer(args, allow_missing=True)
+    landmarker = load_landmarker(args)
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
         sys.exit(f"cannot open camera {args.camera} (on macOS, allow camera access for the terminal)")
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+    cap.set(cv2.CAP_PROP_FPS, 30)
     w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    adapter = mpa.FrameAdapter(image_size=(w, h), aspect_correct=args.aspect_correct)
-    seg, signs, status = Segmenter(y_scale=adapter.y_scale), [], "ready"
-    t0, last_ts, n = None, -1, 0
-    print(f"camera {args.camera}: {w}x{h}" + (" (MOCK predictions)" if args.mock else "") + "; sign when ready")
+    if w * HEIGHT != h * WIDTH:
+        print(f"WARNING: camera gives {w}x{h}; training captures are {WIDTH}x{HEIGHT} (16:9). "
+              "Landmarks are aspect-corrected, but the field of view differs.", file=sys.stderr)
+    stream = make_stream(rec, (w, h), args, clock=time.monotonic, time_offset=time.time() - time.monotonic())
+    poster = Poster(args.post, os.environ.get("BRIDGE_KEY") or None) if args.post else None
+    reader = CameraReader(cap)
+    status_line, last_summary = "", time.monotonic()
+    print(f"camera {args.camera}: {w}x{h}, recognizer {state}, waist={args.waist}"
+          + (f", posting events to {args.post}" if poster else "") + "; sign when ready")
     try:
         while True:
-            ok, bgr = cap.read()
-            if not ok:
-                print("camera read failed", file=sys.stderr)
+            got = reader.get()
+            if got is None:
+                print("camera stopped sending frames", file=sys.stderr)
                 break
-            t = time.monotonic()                                  # capture time of this frame
-            t0 = t if t0 is None else t0
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)            # unmirrored: what MediaPipe must see
-            ts = max(last_ts + 1, int((t - t0) * 1000))
-            last_ts = ts
-            frame = adapter(landmarker.detect_for_video(mpa.mp_image(rgb), ts))
-            n += 1
-            if n == RATE_FRAMES + 1:
-                print(f"processing at {RATE_FRAMES / max(1e-3, t - t0):.1f} frames/s")
-            for ev in seg.push(frame, t):
-                if ev[0] == "sign":
-                    top = rec.predict(ev[1])
-                    signs.append(top[0])
-                    status = f"{top[0]['label']} {top[0]['conf']:.2f}"
-                    print(f"  sign {len(signs)}: {format_top(top)}")
-                else:
-                    on_utterance(signs, args.post)
-                    status, signs = "ready", []
+            bgr, t = got
+            events = stream.detect(landmarker, cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), t)
+            st = stream.status_event(state)
+            for ev in events + ([st] if st else []):
+                show(ev, args.json)
+                if poster:
+                    poster.send(ev)
+                if ev["type"] == "sign":
+                    status_line = f"{ev['top'][0]['label']} {ev['top'][0]['conf']:.2f}"
+            now = time.monotonic()
+            if any(ev["type"] == "utterance" for ev in events) or now - last_summary >= SUMMARY_SEC:
+                print(stream.timings.summary(stream.fps()) + f" | {reader.skipped} camera frames skipped")
+                last_summary = now
             if not args.no_preview:
-                view = cv2.flip(bgr, 1)                             # mirror only the preview
-                hands = "hands" if (frame["lh"] or frame["rh"]) else "no hands"
-                cv2.putText(view, f"{status} ({hands})", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                view = draw_guide(cv2, cv2.flip(bgr, 1), stream.status, status_line)   # mirror only the preview
                 cv2.imshow("recognition (preview is mirrored)", view)
                 if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
                     break
     except KeyboardInterrupt:
         pass
     finally:
+        reader.stop()
         cap.release()
         landmarker.close()
+        if poster:
+            poster.close()
         if not args.no_preview:
             cv2.destroyAllWindows()
+        print(stream.timings.summary(stream.fps()))
 
 
 if __name__ == "__main__":
