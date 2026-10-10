@@ -1,5 +1,6 @@
 // P2: the avatar scene: camera, background, landmarks -> world solver, face strokes, fingertip trails, intro particles.
-// The body itself is drawn by a Rig: "hologram" (hologram.ts) or "concierge", Sam the receptionist (concierge.ts).
+// The body itself is drawn by a Rig: "hologram" (hologram.ts), "concierge", Sam the receptionist (concierge.ts),
+// or "bellhop", a rigged 3D model driven by retargeting (bellhop.ts).
 // Files are y-down (CLAUDE.md 6.2), the renderer flips y. One world unit = one shoulder width.
 // Nothing is allocated per frame: all vectors and buffers below are reused.
 import * as THREE from "three";
@@ -11,6 +12,7 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { BellhopRig } from "./bellhop";
 import { ConciergeRig } from "./concierge";
 import { HologramRig } from "./hologram";
 import {
@@ -154,6 +156,7 @@ export class AvatarScene {
   private readonly background = new THREE.Color(THEME.background);
   private readonly black = new THREE.Color(0x000000);
   private camDist = 6;
+  private readonly lookAt = LOOK_AT.clone(); // per rig (Rig.frame)
 
   private readonly rigs: Record<AvatarStyle, Rig>;
   private rig: Rig;
@@ -234,7 +237,7 @@ export class AvatarScene {
     }));
     this.world.hands = this.hands;
 
-    this.rigs = { hologram: new HologramRig(), concierge: new ConciergeRig() };
+    this.rigs = { hologram: new HologramRig(), concierge: new ConciergeRig(), bellhop: new BellhopRig(this.renderer) };
     for (const rig of Object.values(this.rigs)) {
       this.scene.add(rig.root);
       this.overlay.add(rig.overlay);
@@ -344,6 +347,8 @@ export class AvatarScene {
     this.particleMaterial.uniforms.uColor.value.set(look.particleColor);
     // A rig that draws its own face (Sam) hides the shared face lines.
     for (const s of this.faceStrokes) s.strokes.line.visible = look.faceStrokes !== false;
+    this.lookAt.set(LOOK_AT.x, this.rig.frame?.lookAtY ?? LOOK_AT.y, LOOK_AT.z);
+    this.resize();
   }
 
   private resize() {
@@ -362,7 +367,9 @@ export class AvatarScene {
     // Frame head to hips whatever the screen shape.
     this.camera.aspect = w / h;
     const tan = Math.tan(THREE.MathUtils.degToRad(FOV / 2));
-    this.camDist = Math.max(FRAME_HALF_HEIGHT / tan, FRAME_HALF_WIDTH / (tan * this.camera.aspect));
+    const halfHeight = this.rig.frame?.halfHeight ?? FRAME_HALF_HEIGHT;
+    const halfWidth = this.rig.frame?.halfWidth ?? FRAME_HALF_WIDTH;
+    this.camDist = Math.max(halfHeight / tan, halfWidth / (tan * this.camera.aspect));
     this.camera.updateProjectionMatrix();
     const fog = this.scene.fog as THREE.Fog;
     fog.near = this.camDist + 1.5;
@@ -406,11 +413,11 @@ export class AvatarScene {
     // Slow sway for depth, small enough not to disturb reading.
     const phase = 2 * Math.PI * time;
     this.camera.position.set(
-      LOOK_AT.x + Math.sin(phase / 16) * 0.22,
-      LOOK_AT.y + 0.28 + Math.sin(phase / 21) * 0.04,
+      this.lookAt.x + Math.sin(phase / 16) * 0.22,
+      this.lookAt.y + 0.28 + Math.sin(phase / 21) * 0.04,
       this.camDist,
     );
-    this.camera.lookAt(LOOK_AT);
+    this.camera.lookAt(this.lookAt);
   }
 
   private solveHand(h: 0 | 1, data: Frame["lh"], dt: number) {
@@ -620,7 +627,7 @@ export class AvatarScene {
       _v.lerpVectors(segments[s][0], segments[s][1], lengths[s] > 0 ? u / lengths[s] : 0);
       const j = () => (Math.random() - 0.5) * 0.05;
       this.particleTarget.set([_v.x + j(), _v.y + j(), _v.z + j()], i * 3);
-      _w.randomDirection().multiplyScalar(2.5 + Math.random() * 2).add(LOOK_AT);
+      _w.randomDirection().multiplyScalar(2.5 + Math.random() * 2).add(this.lookAt);
       this.particleStart.set([_w.x, _w.y, _w.z], i * 3);
       this.particleDelay[i] = Math.random() * 0.4;
     }

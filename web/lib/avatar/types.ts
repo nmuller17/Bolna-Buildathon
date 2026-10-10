@@ -20,8 +20,8 @@ export type SignFile = {
 /** Facial marker applied to the whole sentence (gloss starts with BROWS-UP or BROWS-DOWN). */
 export type Brows = "up" | "down" | null;
 
-/** Look of the avatar: glowing skeleton, or Sam the receptionist in toon style. */
-export type AvatarStyle = "hologram" | "concierge";
+/** Look of the avatar: glowing skeleton, Sam the receptionist in toon style, or the rigged 3D bellhop. */
+export type AvatarStyle = "hologram" | "concierge" | "bellhop";
 
 export type PlayOptions = {
   /** Called with the gloss index of the token being signed, each time it changes. */

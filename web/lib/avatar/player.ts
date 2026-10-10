@@ -90,7 +90,7 @@ export async function playGloss(gloss: string[], options: PlayOptions = {}): Pro
   });
 }
 
-/** Switches the look: "concierge" (Sam, default) or "hologram". Applies now if mounted, and to later mounts. */
+/** Switches the look: "bellhop" (default), "concierge" (Sam) or "hologram". Applies now if mounted, and to later mounts. */
 export function setAvatarStyle(next: AvatarStyle) {
   style = next;
   scene?.setStyle(next);

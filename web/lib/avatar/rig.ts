@@ -73,6 +73,8 @@ export interface Rig {
   readonly overlay: THREE.Object3D;
   readonly bloom: boolean;
   readonly look: RigLook;
+  /** Camera framing when the body differs from the landmark skeleton (look-at height, half sizes, shoulder widths). */
+  readonly frame?: { lookAtY: number; halfHeight: number; halfWidth: number };
   /** Depth of the face strokes in front of the head center. */
   faceFront(radii: THREE.Vector3): number;
   /** Dresses the pose. May move p.head.center / p.head.radii to where it draws the head (the intro particles use them). */
