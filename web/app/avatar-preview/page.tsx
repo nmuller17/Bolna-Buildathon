@@ -17,7 +17,7 @@ const PRESETS = [
 ];
 
 const SHOW_FPS = process.env.NODE_ENV !== "production";
-const INITIAL_STYLE: AvatarStyle = "concierge";
+const INITIAL_STYLE: AvatarStyle = "bellhop";
 
 export default function AvatarPreviewPage() {
   const stageRef = useRef<HTMLDivElement>(null);
@@ -105,6 +105,7 @@ export default function AvatarPreviewPage() {
             }}
           >
             <option value="concierge">Concierge (Sam)</option>
+            <option value="bellhop">Bellhop (3D)</option>
             <option value="hologram">Hologram</option>
           </select>
         </div>

@@ -2,7 +2,7 @@
 // Sizes are in shoulder widths (the normalization unit, CLAUDE.md 6.2).
 
 export const THEME = {
-  defaultStyle: "concierge", // "hologram" | "concierge"
+  defaultStyle: "bellhop", // "hologram" | "concierge" | "bellhop"
 
   // Shared background (both styles).
   background: 0x050a14,
@@ -97,5 +97,25 @@ export const THEME = {
 
     trail: { color: 0x7fdcd2, strength: 0.4, width: 2.5 },
     particles: 0x5eead4,
+  },
+
+  // ---- "bellhop" style: rigged 3D cartoon bellhop (web/public/avatar/bellhop.glb), glossy toy look ----
+  bellhop: {
+    url: "/avatar/bellhop.glb",
+    // Camera framing for this body (big cartoon head): look-at height and half sizes, in shoulder widths.
+    frame: { lookAtY: 0.2, halfHeight: 1.85, halfWidth: 2.0 },
+    humanReach: 1.7, // shoulder to middle knuckle of a stretched human arm; maps onto the bellhop's own reach
+    handDepth: 3, // gain on hand z relative to the wrist (the solver damps it to 0.3 of the raw value)
+    bodyGap: 0.035, // min gap (model units) between the hand bones and the chest / face front
+    smoothing: 0.5, // per 30 fps frame: share of the way to the new bone rotations
+    forearmTwist: 0.5, // share of the wrist twist carried by the forearm (the rest by the hand)
+    neckShare: 0.4, // share of the head rotation carried by the neck
+    torso: { maxYaw: 0.3, maxRoll: 0.15 }, // radians
+    // Relaxed arm when its hand is missing (directions in the torso frame, x toward the side of that arm).
+    restArm: { upper: [0.35, -1, 0.05], fore: [0.2, -1, 0.45] },
+    restCurl: [0.2, 0.3, 0.2], // radians per phalanx, relaxed fingers
+    material: { clearcoat: 1, clearcoatRoughness: 0.15, sheen: 0.25, sheenRoughness: 0.5, envMapIntensity: 0.9 },
+    rimLight: { color: 0xbfe3ff, intensity: 2.2 },
+    particles: 0xffc061,
   },
 } as const;
