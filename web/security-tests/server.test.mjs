@@ -1,8 +1,12 @@
-// End-to-end regression tests: replays the red-team attacks (B1-B9, C3, D1-D6) against the real app.
+// End-to-end regression tests: replays the red-team attacks (B1-B9, C3, D1-D6) against the real app,
+// and the Tier 0 app routes (docs/app-plan.md 8 and 11: staff capability, Mode 0 pairing on localhost,
+// event streams, the recognizer bridge, Help, End guest, no logging of codes, tokens or guest text).
 //
-// Starts, one after the other, (1) `node server.mjs` on 127.0.0.1, (2) `node server.mjs --lan` bound to
-// this Mac's own LAN address (requests to it come from a non-loopback socket, like a LAN attacker),
-// and (3) plain `next dev -H 127.0.0.1`, to check that the routes fail closed without server.mjs.
+// Starts, one after the other, `node server.mjs` on 127.0.0.1 (several configurations) and plain
+// `next dev -H 127.0.0.1`, to check that the routes fail closed without server.mjs. Every listener is on
+// 127.0.0.1; the old plain-HTTP --lan mode was removed (decision record D3) and must refuse to start.
+// The staff cookie comes from the one-time #k= link the server prints at start (plan 9.6), exactly as
+// the receptionist would claim it.
 // No vendor is ever contacted: ANTHROPIC_API_KEY and ELEVENLABS_API_KEY are removed from the
 // server's environment, and Piper is replaced by a spy script that records argv, env NAMES and stdin.
 // Every server is killed (whole process group) after its block.
@@ -65,11 +69,9 @@ function lanIPv4() {
   }
   return null;
 }
+// Only used to check that NOTHING listens on this Mac's LAN address (a connection attempt to our own
+// address; no listener is ever bound off loopback, per the 2026-10-10 rule and decision record D3).
 const LAN_IP = lanIPv4();
-// The "--lan" block binds a real listener on this Mac's LAN address. Per the 2026-10-10 rule (no attack
-// testing that exposes services on this Mac's network interfaces) it only runs on an isolated test
-// machine, opted in with SB_SECTEST_LAN=1. See docs/security-testing.md.
-const LAN_ATTACK = process.env.SB_SECTEST_LAN === "1";
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -82,10 +84,13 @@ function freePort() {
   });
 }
 
+/** Staff cookie of the server under test ("sb_staff=..."), sent by request() unless noAuth is set. */
+let AUTH_COOKIE = null;
+
 /** Raw HTTP request (lets us set Host, Origin, chunked bodies). Resolves {status, headers, body} or {error}. */
-function request({ ip = "127.0.0.1", port, method = "GET", path: p = "/", headers = {}, body, chunked = false }) {
+function request({ ip = "127.0.0.1", port, method = "GET", path: p = "/", headers = {}, body, chunked = false, noAuth = false }) {
   return new Promise((resolve) => {
-    const h = { Host: `${ip}:${port}`, ...headers };
+    const h = { Host: `${ip}:${port}`, ...(AUTH_COOKIE && !noAuth ? { Cookie: AUTH_COOKIE } : {}), ...headers };
     if (body !== undefined && !chunked) h["Content-Length"] = Buffer.byteLength(body);
     const req = http.request({ host: ip, port, method, path: p, headers: h, agent: false }, (res) => {
       const chunks = [];
@@ -107,7 +112,7 @@ const signs = (...labels) => json({ signs: labels.map((label) => ({ label, conf:
 
 function serverEnv(extra = {}) {
   const env = { ...process.env, ...extra };
-  for (const k of ["ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY", "GUEST_LAN", "LAN_IP", "SB_PROOF", "SB_ALLOWED_HOSTS"]) delete env[k];
+  for (const k of ["ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY", "GUEST_LAN", "LAN_IP", "SB_PROOF", "SB_ALLOWED_HOSTS", "SB_STAFF_HOST", "SB_PROFILE", "MODE0_GUEST_INPUT", "SB_SIMULATE", "VLM_FALLBACK", "IDLE_WIPE_MS", "SESSION_CAP_MS", "PIPER_FALLBACK"]) delete env[k];
   return {
     ...env,
     NODE_ENV: "development",
@@ -157,6 +162,19 @@ function stopServer(child) {
 
 const spyLog = () => (existsSync(SPY_LOG) ? readFileSync(SPY_LOG, "utf8") : "");
 
+/** The newest one-time staff link the server printed (plan 9.6). */
+function staffLink(out) {
+  const all = [...out.text.matchAll(/\/staff#k=([A-Za-z0-9_-]+)/g)];
+  return all.length ? all[all.length - 1][1] : null;
+}
+
+/** Claims a staff link like the staff page does; returns {status, cookie}. */
+async function claimStaff(port, k) {
+  const r = await request({ port, method: "POST", path: "/api/staff/claim", noAuth: true, headers: { ...JSON_H, Origin: `http://127.0.0.1:${port}`, "Sec-Fetch-Site": "same-origin" }, body: json({ k }) });
+  const set = r.headers?.["set-cookie"]?.[0] ?? "";
+  return { status: r.status, set, cookie: set.split(";")[0] || null };
+}
+
 describe("server.mjs, default (loopback) mode", { concurrency: false }, () => {
   let port, srv;
   before(async () => {
@@ -164,8 +182,14 @@ describe("server.mjs, default (loopback) mode", { concurrency: false }, () => {
     // Piper is off by default since the p4-app merge (27e6b51, ElevenLabs only); the Piper hardening
     // tests below run with the opt-in PIPER_FALLBACK=1, which is where the hardening matters.
     srv = await startServer(["server.mjs"], serverEnv({ PORT: String(port), PIPER_FALLBACK: "1" }), { port, path: "/guest" });
+    const c = await claimStaff(port, staffLink(srv.out));
+    assert.equal(c.status, 200, "staff claim");
+    AUTH_COOKIE = c.cookie;
   });
-  after(async () => srv && (await stopServer(srv.child)));
+  after(async () => {
+    AUTH_COOKIE = null;
+    if (srv) await stopServer(srv.child);
+  });
 
   test("B1: listens on 127.0.0.1 only; the LAN address is refused", { skip: !LAN_IP && "no LAN address" }, async () => {
     const r = await request({ ip: LAN_IP, port, path: "/guest" });
@@ -369,56 +393,17 @@ describe("server.mjs, default (loopback) mode", { concurrency: false }, () => {
   });
 });
 
-describe("server.mjs --lan, attacked from this Mac's LAN address", { concurrency: false, skip: (!LAN_IP && "no LAN address") || (!LAN_ATTACK && "LAN listener tests run only on an isolated machine (SB_SECTEST_LAN=1)") }, () => {
-  let port, srv;
-  before(async () => {
-    port = await freePort();
-    srv = await startServer(["server.mjs", "--lan"], serverEnv({ PORT: String(port), LAN_IP }), { port, path: "/guest" });
-  });
-  after(async () => srv && (await stopServer(srv.child)));
-
-  test("B1: a LAN client reaches the guest page but none of the staff, vendor or bridge routes", async () => {
-    assert.equal((await request({ ip: LAN_IP, port, path: "/guest" })).status, 200);
-    assert.equal((await request({ ip: LAN_IP, port, path: "/staff" })).status, 403);
-    for (const p of ["/api/english", "/api/tts", "/api/transcribe", "/api/gloss", "/api/guest/signs", "/api/staff/action"]) {
-      const r = await request({ ip: LAN_IP, port, method: "POST", path: p, headers: JSON_H, body: signs("YES") });
-      assert.equal(r.status, 403, p);
-    }
-  });
-
-  test("B1: spoofed X-Forwarded-For / x-sb-loopback / x-sb-proof headers do not grant loopback", async () => {
-    const r = await request({
-      ip: LAN_IP, port, method: "POST", path: "/api/english",
-      headers: { ...JSON_H, "X-Forwarded-For": "127.0.0.1", "X-Real-IP": "127.0.0.1", Forwarded: "for=127.0.0.1", "x-sb-loopback": "1", "x-sb-proof": "guess" },
-      body: signs("YES"),
-    });
-    assert.equal(r.status, 403);
-    for (const p of ["/guest/../staff", "/%2e%2e/staff", "//staff"]) {
-      assert.equal((await request({ ip: LAN_IP, port, path: p })).status, 403, p);
-    }
-    assert.equal((await request({ ip: LAN_IP, port, path: "/guest", headers: { Host: "attacker.evil.example" } })).status, 403);
-  });
-
-  test("B2: the guest device gets sign files, without the signer's name", async () => {
-    const r = await request({ ip: LAN_IP, port, path: "/signs/team/HELLO.json" });
-    assert.equal(r.status, 200);
-    assert.equal("signer" in JSON.parse(r.body), false);
-  });
-
-  test("regression: the laptop itself still uses the API in LAN mode", async () => {
-    const r = await request({ port, method: "POST", path: "/api/english", headers: JSON_H, body: signs("WHERE", "ELEVATOR") });
-    assert.equal(r.status, 200, r.body);
-    assert.deepEqual(JSON.parse(r.body), { text: "Where is the elevator?" });
-  });
-});
-
 describe("server.mjs, default voice: ElevenLabs only, Piper off (p4-app 27e6b51)", { concurrency: false }, () => {
   let port, srv;
   before(async () => {
     port = await freePort();
     srv = await startServer(["server.mjs"], serverEnv({ PORT: String(port) }), { port, path: "/guest" });
+    AUTH_COOKIE = (await claimStaff(port, staffLink(srv.out))).cookie;
   });
-  after(async () => srv && (await stopServer(srv.child)));
+  after(async () => {
+    AUTH_COOKIE = null;
+    if (srv) await stopServer(srv.child);
+  });
 
   test("merge: with no ElevenLabs key and no PIPER_FALLBACK, /api/tts answers 500 and never starts Piper", async () => {
     const before = spyLog().length;
@@ -445,5 +430,217 @@ describe("plain `next dev` (no server.mjs): loopback-only routes fail closed", {
       const r = await request({ port, method: "POST", path: p, headers: { ...JSON_H, "x-sb-loopback": "1", "x-sb-proof": "guess" }, body });
       assert.equal(r.status, 403, p);
     }
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Tier 0 app routes (docs/app-plan.md 8, 9, 11), all on 127.0.0.1       */
+/* ------------------------------------------------------------------ */
+
+const ZQ = "Zq7Canary";
+const ZQ_NAME = "Zqsevencanary";
+
+/** Opens an SSE stream and keeps its text; close() ends it. */
+function openStream({ port, host, cookie, path: p }) {
+  return new Promise((resolve) => {
+    const state = { status: 0, headers: {}, text: "", ended: false };
+    const req = http.request({ host: "127.0.0.1", port, path: p, agent: false, headers: { Host: host, Cookie: cookie ?? "", "Sec-Fetch-Site": "same-origin", Accept: "text/event-stream" } }, (res) => {
+      state.status = res.statusCode;
+      state.headers = res.headers;
+      res.setEncoding("utf8");
+      res.on("data", (c) => (state.text += c));
+      res.on("end", () => (state.ended = true));
+      res.on("close", () => (state.ended = true));
+      resolve({ state, close: () => req.destroy(), messages: () => [...state.text.matchAll(/^data: (.*)$/gm)].map((m) => JSON.parse(m[1]).msg) });
+    });
+    req.on("error", () => {
+      state.ended = true;
+      resolve({ state, close: () => {}, messages: () => [] });
+    });
+    req.end();
+  });
+}
+
+const until = async (cond, ms = 5000) => {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (await cond()) return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return false;
+};
+
+describe("Tier 0 app routes on server.mjs (stage profile, guest input on)", { concurrency: false }, () => {
+  let port, srv;
+  const staffH = () => ({ ...JSON_H, Origin: `http://127.0.0.1:${port}`, "Sec-Fetch-Site": "same-origin" });
+  const guestH = (cookie) => ({ ...JSON_H, Host: `localhost:${port}`, Origin: `http://localhost:${port}`, "Sec-Fetch-Site": "same-origin", ...(cookie ? { Cookie: cookie } : {}) });
+  const BRIDGE = `${CANARY}-bridge-key-not-a-real-one-xxxxxxxx`;
+  const bridgeH = (key = BRIDGE) => ({ ...JSON_H, "X-Bridge-Key": key });
+  const staff = (body) => request({ port, method: "POST", path: "/api/staff/action", headers: staffH(), body: json(body) });
+  let n = 0;
+  const guest = (cookie, body) => request({ port, method: "POST", path: "/api/guest/action", noAuth: true, headers: guestH(cookie), body: json({ n: (++n).toString(16).padStart(32, "0"), ...body }) });
+  const bridge = (ev, key) => request({ port, method: "POST", path: "/api/guest/signs", noAuth: true, headers: bridgeH(key), body: json(ev) });
+
+  async function newGuestWindow() {
+    assert.equal((await staff({ type: "new_guest" })).status, 200);
+    const o = await staff({ type: "open_guest_window" });
+    assert.equal(o.status, 200, o.body);
+    const url = new URL(JSON.parse(o.body).guestUrl);
+    assert.equal(url.host, `localhost:${port}`);
+    return url.hash.slice(3);
+  }
+  async function join(code) {
+    const r = await request({ port, method: "POST", path: "/api/guest/join", noAuth: true, headers: guestH(), body: json({ code }) });
+    return { ...r, cookie: (r.headers?.["set-cookie"]?.[0] ?? "").split(";")[0] || null };
+  }
+
+  before(async () => {
+    port = await freePort();
+    srv = await startServer(["server.mjs"], serverEnv({ PORT: String(port), SB_PROFILE: "stage", MODE0_GUEST_INPUT: "1" }), { port, path: "/guest" });
+    const c = await claimStaff(port, staffLink(srv.out));
+    assert.equal(c.status, 200);
+    assert.match(c.set, /^sb_staff=[A-Za-z0-9_-]+; HttpOnly; SameSite=Strict; Path=\/$/);
+    AUTH_COOKIE = c.cookie;
+  });
+  after(async () => {
+    AUTH_COOKIE = null;
+    if (srv) await stopServer(srv.child);
+  });
+
+  test("SRV-10: staff routes and the P1/Nath routes need the staff cookie; the staff link works once", async () => {
+    for (const [p, body] of [["/api/staff/action", json({ type: "new_guest" })], ["/api/tts", json({ id: 3 })], ["/api/english", signs("YES")], ["/api/gloss", json({ text: "Hi" })]]) {
+      const r = await request({ port, method: "POST", path: p, noAuth: true, headers: staffH(), body });
+      assert.equal(r.status, 401, p);
+    }
+    assert.equal((await request({ port, path: "/api/events?role=staff", noAuth: true, headers: { "Sec-Fetch-Site": "same-origin" } })).status, 401);
+    assert.equal((await claimStaff(port, staffLink(srv.out))).status, 410, "the printed link is single use");
+    assert.equal((await claimStaff(port, "x".repeat(43))).status, 410);
+    assert.equal((await request({ port, method: "POST", path: "/api/dev/simulate", headers: staffH(), body: json({ type: "status", recognizer: "ok" }) })).status, 404, "simulator off");
+  });
+
+  test("SRV-4a/SES-4a: guest routes only on localhost, staff routes only on 127.0.0.1; sb_g is never set for 127.0.0.1", async () => {
+    const code = await newGuestWindow();
+    const wrong = await request({ port, method: "POST", path: "/api/guest/join", headers: staffH(), body: json({ code }) });
+    assert.equal(wrong.status, 403);
+    assert.equal(wrong.headers["set-cookie"], undefined);
+    const onGuestHost = await request({ port, method: "POST", path: "/api/staff/action", headers: { ...staffH(), Host: `localhost:${port}`, Origin: `http://localhost:${port}` }, body: json({ type: "end_guest" }) });
+    assert.equal(onGuestHost.status, 403);
+    const j = await join(code);
+    assert.equal(j.status, 200, j.body);
+    assert.match(j.headers["set-cookie"][0], /^sb_g=[A-Za-z0-9_-]+; HttpOnly; SameSite=Strict; Path=\/$/);
+    assert.doesNotMatch(j.body, new RegExp(j.cookie.split("=")[1]), "token not in the body");
+    assert.equal((await join(code)).status, 410, "single use");
+    assert.equal((await staff({ type: "end_guest" })).status, 200);
+  });
+
+  test("SES-7/SES-10/SES-13: a full Mode 0 conversation over the real streams; End guest wipes, the staff cookie survives", async () => {
+    const code = await newGuestWindow();
+    const { cookie: g } = await join(code);
+    const st = await openStream({ port, host: `127.0.0.1:${port}`, cookie: AUTH_COOKIE, path: "/api/events?role=staff" });
+    const gs = await openStream({ port, host: `localhost:${port}`, cookie: g, path: "/api/events?role=guest" });
+    assert.equal(st.state.status, 200);
+    assert.equal(gs.state.status, 200);
+    assert.match(gs.state.headers["content-type"], /^text\/event-stream/);
+    assert.ok(await until(() => gs.messages().some((m) => m.type === "snapshot")), "guest hello and snapshot");
+    assert.ok(await until(() => /: p\n\n/.test(gs.state.text), 3000), "guest ping within 2 s");
+    assert.equal((await staff({ type: "say_quick", intent: "welcome" })).status, 200);
+    assert.ok(await until(() => gs.messages().some((m) => m.type === "staff_utterance" && m.text === "Welcome!")));
+    // The recognizer reports in; the guest chooses Sign; LEAVE TIME in reverse order is a proposal.
+    assert.equal((await bridge({ type: "status", recognizer: "ok", fps: 27 })).status, 200);
+    assert.equal((await guest(g, { type: "guest_choice", choice: "sign" })).status, 200);
+    for (const [seq, label] of [[1, "TIME"], [2, "LEAVE"]]) assert.equal((await bridge({ type: "sign", seq, top: [{ label, conf: 0.93 }] })).status, 200);
+    const u = await bridge({ type: "utterance", signs: [{ label: "TIME", conf: 0.93 }, { label: "LEAVE", conf: 0.93 }], seqs: [1, 2], needs_repeat: false });
+    assert.equal(JSON.parse(u.body).outcome, "proposal");
+    assert.ok(await until(() => gs.messages().some((m) => m.type === "guest_proposal")));
+    const prop = gs.messages().find((m) => m.type === "guest_proposal");
+    assert.equal(prop.candidates[0].text, "What time is checkout?");
+    assert.doesNotMatch(JSON.stringify(gs.messages()), /"conf"|skeleton|bridgeEvents/, "AS-1: no scores to the guest");
+    assert.equal(st.messages().some((m) => m.type === "guest_utterance"), false, "nothing to speak before Send");
+    assert.equal((await guest(g, { type: "guest_confirm", proposalId: prop.proposalId, candidateId: prop.candidates[0].candidateId })).status, 200);
+    assert.ok(await until(() => st.messages().some((m) => m.type === "guest_utterance")));
+    assert.deepEqual(st.messages().find((m) => m.type === "guest_utterance").speak, { mode: "tts", intentId: 11, fixedText: "What time is checkout?" });
+    // Help: dispatched first, merged with a count, never a warning.
+    for (let i = 0; i < 3; i++) assert.equal((await guest(g, { type: "emergency" })).status, 200);
+    assert.ok(await until(() => st.messages().some((m) => m.type === "emergency" && m.count === 3)));
+    assert.equal(st.messages().some((m) => m.type === "warning"), false);
+    // End guest.
+    const end = await staff({ type: "end_guest" });
+    assert.equal(end.status, 200);
+    assert.equal(end.headers["clear-site-data"], undefined, "never Clear-Site-Data on the staff listener");
+    assert.ok(await until(() => gs.messages().some((m) => m.type === "session_end") && gs.state.ended), "guest stream got session_end and closed");
+    assert.equal((await guest(g, { type: "heartbeat" })).status, 401);
+    assert.equal((await staff({ type: "new_guest" })).status, 200, "staff still signed in after End guest");
+    assert.equal((await bridge({ type: "sign", seq: 3, top: [{ label: "YES", conf: 0.9 }] })).status, 409, "no signs without a signing guest");
+    st.close();
+    gs.close();
+  });
+
+  test("BRG-1: the bridge refuses a wrong key (401), browsers (403), bodies over 8 KB (413) and floods (429)", async () => {
+    assert.equal((await bridge({ type: "status", recognizer: "ok" }, "wrong-key-wrong-key-wrong-key-wrong-key")).status, 401);
+    const browser = await request({ port, method: "POST", path: "/api/guest/signs", noAuth: true, headers: { ...bridgeH(), Origin: `http://127.0.0.1:${port}`, "Sec-Fetch-Site": "same-origin" }, body: json({ type: "status", recognizer: "ok" }) });
+    assert.equal(browser.status, 403);
+    const big = await bridge({ type: "status", recognizer: "ok", pad: "x".repeat(9000) });
+    assert.ok(big.status === 413 || ["EPIPE", "ECONNRESET"].includes(big.error?.code));
+    assert.equal((await bridge({ type: "vlm_suggestion", seq: 1, label: "YES", conf: 0.9, model: "m" })).status, 404, "VLM fallback off");
+    const codes = await Promise.all(Array.from({ length: 14 }, () => bridge({ type: "status", recognizer: "ok" })));
+    assert.ok(codes.some((r) => r.status === 429), codes.map((r) => r.status).join(","));
+    const get = await request({ port, path: "/api/guest/signs", noAuth: true, headers: { "X-Bridge-Key": BRIDGE } });
+    assert.ok(get.status === 200 || get.status === 429);
+  });
+
+  test("SRV-8a: /guest, /staff and the app APIs answer with Cache-Control: no-store", async () => {
+    for (const p of ["/guest", "/staff"]) {
+      const r = await request({ port, path: p });
+      assert.equal(r.status, 200, p);
+      assert.match(r.headers["cache-control"] ?? "", /no-store/, p);
+    }
+    assert.equal((await staff({ type: "touch" })).headers["cache-control"], "no-store");
+  });
+
+  test(`SRV-12: a session with ${ZQ} never puts names, typed text, codes or tokens in the server output`, async () => {
+    const code = await newGuestWindow();
+    const { cookie: g } = await join(code);
+    await bridge({ type: "status", recognizer: "ok" });
+    assert.equal((await guest(g, { type: "guest_choice", choice: "type" })).status, 200);
+    assert.equal((await guest(g, { type: "guest_typed", text: `please ${ZQ}` })).status, 200);
+    assert.equal((await guest(g, { type: "guest_phrase", intentId: 4, name: ZQ_NAME })).status, 200);
+    assert.equal((await staff({ type: "say_text", text: `Hello ${ZQ}`, gloss: null, source: "typed" })).status, 200);
+    // A TTS request by fixed id is the only voice path the app uses; the name never goes there.
+    const tts = await request({ port, method: "POST", path: "/api/tts", headers: staffH(), body: json({ id: 4 }) });
+    assert.equal(tts.status, 400, "NAME has no fixed sentence");
+    assert.equal((await staff({ type: "end_guest" })).status, 200);
+    await new Promise((r) => setTimeout(r, 600));
+    for (const secret of [ZQ, ZQ_NAME, code, g.split("=")[1], AUTH_COOKIE.split("=")[1]]) {
+      assert.equal(srv.out.text.includes(secret), false, `server output contains ${secret.slice(0, 6)}...`);
+    }
+  });
+
+  test("SIGUSR2 prints a new one-time staff link; claiming it replaces the old cookie and keeps the guest", async () => {
+    const code = await newGuestWindow();
+    const { cookie: g } = await join(code);
+    const old = AUTH_COOKIE;
+    const before = staffLink(srv.out);
+    process.kill(srv.child.pid, "SIGUSR2");
+    assert.ok(await until(() => staffLink(srv.out) !== before), "new link printed");
+    const c = await claimStaff(port, staffLink(srv.out));
+    assert.equal(c.status, 200);
+    AUTH_COOKIE = c.cookie;
+    assert.equal((await request({ port, method: "POST", path: "/api/staff/action", noAuth: true, headers: { ...staffH(), Cookie: old }, body: json({ type: "touch" }) })).status, 401);
+    assert.equal((await staff({ type: "touch" })).status, 200);
+    assert.equal((await guest(g, { type: "heartbeat" })).status, 200, "the guest session survived the re-claim");
+    assert.equal((await staff({ type: "end_guest" })).status, 200);
+  });
+});
+
+describe("server.mjs refuses the removed plain-HTTP LAN mode (SRV-2a)", { concurrency: false }, () => {
+  test("`node server.mjs --lan` exits non-zero without listening", async () => {
+    const child = spawn(process.execPath, ["server.mjs", "--lan"], { cwd: WEB, env: serverEnv({ PORT: String(await freePort()) }), stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stderr.on("data", (c) => (out += c));
+    const code = await new Promise((resolve) => child.on("exit", resolve));
+    assert.notEqual(code, 0);
+    assert.match(out, /removed/);
+    const pkg = JSON.parse(readFileSync(path.join(WEB, "package.json"), "utf8"));
+    assert.equal(JSON.stringify(pkg.scripts).includes("--lan"), false);
   });
 });

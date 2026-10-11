@@ -194,3 +194,13 @@ No security attack testing should run on Talha's own Mac.
 | 1 | P3 | Please make `live_key.py` POST `{"type": "status", "recognizer": "ok" \| "no_model", "fps": ..., "t": ...}` once a second while it runs (as `stream.py` does for live.py) | Without a status the app cannot tell the recognizer is up, so it cannot offer "Sign" to the guest (consent gate, plan 6.1) |
 | 2 | P3 | Optionally add `seqs` to the live_key utterance (the seqs of the signs kept after BACKSPACE) | The app then joins each label with its sign event exactly instead of matching labels from the end |
 | 3 | Nath | Your receiver and this branch now agree on the inbound events; the one behavioural difference is that this branch never speaks the recognizer's `text` (fixed table only) and offers a corrected sentence as "Did you mean...?" for the guest to confirm | Confirm before speaking (CLAUDE.md 7.2) |
+
+## 2026-10-11, from P4 (talha/app-shell builder A, local branch) to Nath, P1 and the screens: Tier 0 server routes
+
+The alternative app now has its server routes (plan 12.1a). What changes for the routes other people own, on this branch only:
+
+| # | To | What | Why |
+|---|---|---|---|
+| 1 | Nath | `/api/tts` also accepts `{ "id": n }` (a guest intent 1 to 20, not NAME). With `{ text }`, only a fixed table sentence is ever sent to ElevenLabs; any other text goes to local Piper (`PIPER_FALLBACK=1`) or gets 500. Vendor error bodies are no longer logged | RT5, no guest text to vendors (D8), SRV-12 |
+| 2 | Nath, P1 | `/api/tts`, `/api/english`, `/api/gloss` and `/api/transcribe` now need the staff cookie `sb_staff` and Host `127.0.0.1:PORT` (through `lib/app/guard.ts`). Open `/p1-test` on `http://127.0.0.1:3000` after claiming the staff link the server prints | SRV-10, decision record D6: loopback alone is not authentication |
+| 3 | Everyone | `npm run dev:lan` and `start:lan` are gone; `node server.mjs --lan` exits with an error | D3, SRV-2a |

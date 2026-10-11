@@ -4,6 +4,13 @@
 // (ElevenLabs-only default from p4-app 27e6b51, merged into talha/app-shell.)
 // SECURITY (P4 red-team fixes B1/B3/B6/B9/C3/D2/D3/D5, 2026-10-10): see docs/requests.md "Red-team changes
 // to teammate routes". Changes are marked "SECURITY:" below; synthesis itself is unchanged.
+// APP (talha/app-shell builder A, 2026-10-11; docs/app-plan.md SPK-5, RT5, D8):
+// - `{ id }` (a guest intent id, 1..20 except NAME) is accepted next to `{ text }`; the app's staff page
+//   sends only `{ id }` from the server's speak plan, so names and typed text never reach this route;
+// - no guest text to a vendor: ElevenLabs is used only for the fixed table sentences; any other text
+//   goes to local Piper (PIPER_FALLBACK=1) or gets 500, and the staff page then uses an on-device voice;
+// - each real ElevenLabs request is counted for the privacy panel (lib/app/taps.ts), byte count only;
+// - the staff cookie is required (lib/app/guard.ts, SRV-10), and vendor error bodies are never logged.
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
@@ -12,6 +19,8 @@ import path from "node:path";
 import { INTENTS } from "../english/intents";
 import { cleanSentence } from "@/lib/app/access";
 import { guardLoopbackJsonPost } from "@/lib/app/guard";
+import { recordVendorTap } from "@/lib/app/taps";
+import { fixedSentenceForId } from "@/lib/app/vocab";
 
 export const runtime = "nodejs";
 
@@ -53,6 +62,12 @@ function piperPython(): string {
   return "python";
 }
 
+/** APP (SRV-12): a short error type for the log; never Piper's stderr (it can echo the text) or a vendor body. */
+function shortError(err: unknown): string {
+  const m = err instanceof Error ? err.message : "error";
+  return m.split(":")[0].slice(0, 120);
+}
+
 function piperEnv(): NodeJS.ProcessEnv {
   const env: Record<string, string> = { PYTHONIOENCODING: "utf-8" };
   for (const key of PIPER_ENV_KEYS) {
@@ -72,16 +87,20 @@ async function synthesizeElevenLabs(text: string, apiKey: string): Promise<Buffe
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ELEVENLABS_TIMEOUT_MS);
   try {
+    const payload = JSON.stringify({ text, model_id: "eleven_flash_v2_5" });
+    // APP: counted before the request goes out (privacy panel: bytes sent off the laptop).
+    recordVendorTap("/api/tts", Buffer.byteLength(payload));
     const res = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${voice}?output_format=wav_22050`,
       {
         method: "POST",
         headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({ text, model_id: "eleven_flash_v2_5" }),
+        body: payload,
         signal: controller.signal,
       },
     );
-    if (!res.ok) throw new Error(`ElevenLabs ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    // APP (SRV-12): the status only, never the vendor's response body.
+    if (!res.ok) throw new Error(`ElevenLabs ${res.status}`);
     return Buffer.from(await res.arrayBuffer());
   } finally {
     clearTimeout(timer);
@@ -162,7 +181,7 @@ function startWarmUp() {
   const texts = [...new Set(INTENTS.map((i) => i.text))].filter((t) => !piperCache.has(t));
   if (texts.length === 0) return;
   const batch = synthesizePiperBatch(texts);
-  batch.catch((err) => console.warn("[api/tts] Piper warm-up failed:", err));
+  batch.catch((err) => console.warn("[api/tts] Piper warm-up failed:", shortError(err)));
   for (const text of texts) {
     cacheAudio(
       piperCache,
@@ -185,15 +204,16 @@ async function synthesize(text: string): Promise<Buffer> {
   if (!fixed) uncachedInFlight++;
   try {
     const apiKey = process.env.ELEVENLABS_API_KEY;
-    if (apiKey) {
+    // APP (no guest text to vendors): only a fixed table sentence may go to ElevenLabs.
+    if (apiKey && fixed) {
       try {
         return await run(elevenLabsCache, () => synthesizeElevenLabs(text, apiKey));
       } catch (err) {
         if (!PIPER_ON) throw err;
-        console.warn("[api/tts] ElevenLabs failed, using Piper:", err instanceof Error ? err.message : "error");
+        console.warn("[api/tts] ElevenLabs failed, using Piper:", shortError(err));
       }
     }
-    if (!PIPER_ON) throw new Error("ELEVENLABS_API_KEY is not set (and PIPER_FALLBACK is off)");
+    if (!PIPER_ON) throw new Error(apiKey ? "not a fixed sentence (never sent to a vendor) and PIPER_FALLBACK is off" : "ELEVENLABS_API_KEY is not set (and PIPER_FALLBACK is off)");
     return await run(piperCache, () => synthesizePiper(text));
   } finally {
     if (!fixed) uncachedInFlight--;
@@ -206,7 +226,17 @@ export async function POST(req: Request) {
   const guarded = await guardLoopbackJsonPost(req, { route: "tts", maxBytes: MAX_BODY_BYTES, perMinute: PER_MINUTE });
   if (!guarded.ok) return guarded.res;
   const body: unknown = guarded.body;
-  const raw = (body as { text?: unknown } | null)?.text;
+  // APP (RT5): { id } names a fixed guest sentence; it must be the only key.
+  const obj = typeof body === "object" && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
+  if (obj && "id" in obj) {
+    const fixedText = Object.keys(obj).length === 1 ? fixedSentenceForId(obj.id) : null;
+    if (!fixedText) {
+      return Response.json({ error: "Expected { id: a guest intent number 1 to 20, not the NAME intent }" }, { status: 400 });
+    }
+    obj.text = fixedText;
+    delete obj.id;
+  }
+  const raw = obj?.text;
   // Piper reads one sentence per line, so newlines would split the audio (cleanSentence collapses them).
   // SECURITY (B6/D2): at most MAX_TEXT_CHARS plain-sentence characters (no markup, no control characters).
   const text = cleanSentence(raw, MAX_TEXT_CHARS);
@@ -223,7 +253,7 @@ export async function POST(req: Request) {
     return new Response(new Uint8Array(wav), { headers: { "Content-Type": "audio/wav" } });
   } catch (err) {
     if (err instanceof TtsBusy) return Response.json({ error: "TTS busy, retry" }, { status: 503 });
-    console.error("[api/tts] TTS failed:", err instanceof Error ? err.message : "error");
+    console.error("[api/tts] TTS failed:", shortError(err));
     return Response.json({ error: "TTS failed" }, { status: 500 });
   }
 }

@@ -4,10 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "node server.mjs",
-    "dev:lan": "node server.mjs --lan",
     "build": "next build",
     "start": "node server.mjs --production",
-    "start:lan": "node server.mjs --production --lan",
     "test:security": "node --test --test-concurrency=1 \"security-tests/*.test.mjs\"",
     "test:unit": "node --test \"lib/app/*.test.ts\""
   },
