@@ -107,3 +107,14 @@
     opacity: 0;
   }
 }
+
+/* Script mode marker: tiny, bottom left (we tell the jury the recognition is guided by the script). */
+.guided {
+  position: absolute;
+  left: 16px;
+  bottom: 12px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+  opacity: 0.7;
+}

@@ -1,0 +1,80 @@
+/* Guest camera: bottom right, out of the way of the bellhop's hands. */
+.slot {
+  position: absolute;
+  right: 24px;
+  bottom: 24px;
+  width: clamp(240px, 24vw, 420px);
+  aspect-ratio: 16 / 9;
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(10, 20, 40, 0.75);
+  border: 2px solid var(--line);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+  transition: border-color 200ms ease, box-shadow 200ms ease;
+}
+
+.feed {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.placeholder {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--ink-soft);
+  font-size: clamp(14px, 1.2vw, 18px);
+}
+
+/* The guest's turn: green frame, their signs are recorded. */
+.slot[data-state="recording"] {
+  border: 4px solid #2fd16b;
+  box-shadow: 0 0 0 4px rgba(47, 209, 107, 0.25), 0 8px 30px rgba(0, 0, 0, 0.35);
+}
+
+/* Signing: thicker green frame, pulsing. */
+.slot[data-state="signing"] {
+  border: 6px solid #2fd16b;
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 4px rgba(47, 209, 107, 0.3), 0 8px 30px rgba(0, 0, 0, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 14px rgba(47, 209, 107, 0.12), 0 8px 30px rgba(0, 0, 0, 0.35);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slot[data-state="signing"] {
+    animation: none;
+  }
+}
+
+.rec {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(10, 20, 40, 0.75);
+  color: #7af0a6;
+  font-size: clamp(12px, 1vw, 16px);
+  font-weight: 600;
+}
+
+.rec::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #2fd16b;
+}

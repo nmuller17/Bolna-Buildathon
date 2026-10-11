@@ -37,13 +37,13 @@ function browserRecognition(): (new () => Recognition) | null {
 }
 
 const UNMUTE_GRACE_MS = 900; // speech still ending (or echoing) just after the mute is lifted
-const MAX_MUTE_MS = 20000; // a mute is lifted on its own, even if "unmute" never arrives (page closed meanwhile)
 const WHISPER_FAILURES_BEFORE_SWITCH = 3; // in a row; a missing key (401/503) switches at once
 const RESTART_MS = [300, 1000, 3000]; // browser recognition restart backoff
 
 /**
- * `muted`: while true (and shortly after), what the microphone hears is dropped. /guest sets it while /staff speaks
- * the guest's sentence aloud, so the avatar never signs our own voice back.
+ * `muted`: while true (and UNMUTE_GRACE_MS after), what the microphone hears is dropped. The single-screen page
+ * sets it during the guest's whole turn and while the guest's sentence is spoken aloud, so nothing heard then
+ * (the guest, the room, our own voice) is ever signed. It holds as long as `muted` stays true.
  */
 export function useHandsFreeSpeech(onSentences: (sentences: SignedSentence[]) => void, muted = false) {
   const [state, setState] = useState<ListenState>("starting");
@@ -53,11 +53,13 @@ export function useHandsFreeSpeech(onSentences: (sentences: SignedSentence[]) =>
     deliverRef.current = onSentences;
   });
   const resumeRef = useRef<(() => void) | null>(null);
-  const mutedUntil = useRef(0);
+  const mutedNow = useRef(muted);
+  const graceUntil = useRef(0);
   useEffect(() => {
-    mutedUntil.current = performance.now() + (muted ? MAX_MUTE_MS : UNMUTE_GRACE_MS);
+    if (mutedNow.current && !muted) graceUntil.current = performance.now() + UNMUTE_GRACE_MS;
+    mutedNow.current = muted;
   }, [muted]);
-  const isMuted = () => performance.now() < mutedUntil.current;
+  const isMuted = () => mutedNow.current || performance.now() < graceUntil.current;
 
   useEffect(() => {
     let active = true;
