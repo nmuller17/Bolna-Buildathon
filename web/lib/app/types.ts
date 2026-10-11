@@ -249,10 +249,17 @@ export type Prediction = { label: SignLabel; conf: number };
 /* ------------------------------------------------------------------ */
 /* Recognizer bridge events (recognition/README.md "App bridge")      */
 /* ------------------------------------------------------------------ */
-// live.py --post sends each event as its own POST to /api/guest/signs with X-Bridge-Key.
+// live.py and live_key.py --post send each event as its own POST to /api/guest/signs with X-Bridge-Key.
 // Times are Unix seconds (float) from the laptop's clock, comparable with Date.now() / 1000.
 // The app checks `type`, ignores unknown keys, and validates every known key strictly.
 // Keys face, frames, pose, video are refused outright and counted (only the optional skeleton carries points).
+//
+// SHARED CONTRACT (adopted 2026-10-11 from p4-app c335161 and p3-recognition ad90509, so this app and
+// the p4-app screens consume the same recognizer events): the recognizers as shipped send no `t_sent`,
+// live_key.py sends `sign` with `seq` and `top` only, a sentence-shaped `utterance` {raw, labels, text,
+// snapped} with no seqs, and a `capture` event; live_window.py sends stream utterances without seqs.
+// Every field this app wished for (t_sent, sign timestamps, seqs, since, fps, run, skeleton) is
+// therefore OPTIONAL here; when a time is missing the app uses the time the event arrived.
 
 /**
  * CENTER_LEFT and CENTER_RIGHT are requested from P3 (direction from the guest's point of view, C2-16);
@@ -312,7 +319,7 @@ export type SkeletonSnapshot = {
  * Fields every bridge event may carry. `run` is requested from P3 (a random id per recognizer
  * process, C1-11); until it exists, a seq lower than the last one seen is treated as a restart.
  */
-type BridgeCommon = { t_sent: number; run?: string };
+type BridgeCommon = { t_sent?: number; run?: string };
 
 export type BridgeSign = BridgeCommon & {
   type: "sign";
@@ -320,30 +327,62 @@ export type BridgeSign = BridgeCommon & {
   seq: number;
   /** Top 3, best first (re-sorted on the server). */
   top: RawPrediction[];
-  t_sign_start: number;
-  t_sign_end: number;
-  t_closed: number;
-  t_predicted: number;
+  /** live.py only; live_key.py sends none of the four. */
+  t_sign_start?: number;
+  t_sign_end?: number;
+  t_closed?: number;
+  t_predicted?: number;
   skeleton?: SkeletonSnapshot;
 };
 
-export type BridgeUtterance = BridgeCommon & {
+/** live.py / live_window.py utterance: the top-1 of each sign with its score. */
+export type BridgeStreamUtterance = BridgeCommon & {
   type: "utterance";
   /** Top-1 of each sign, in order, 1..8. Used for any sign whose `sign` event is missing (C1-11). */
   signs: RawPrediction[];
-  seqs: number[];
+  /** live.py sends them; live_window.py does not (the app then joins with the sentence's sign events). */
+  seqs?: number[];
   /**
    * recognizer.needs_repeat (any sign NONE or below 0.6). A HINT only, shown on the staff log; the app
    * recomputes the gate itself and never repeats because of this flag alone (C1-4).
    */
-  needs_repeat: boolean;
-  t_end: number;
+  needs_repeat?: boolean;
+  t_end?: number;
+};
+
+/**
+ * live_key.py utterance (recognition/README.md "Demo path"): `raw` = the best non-NONE label of each
+ * sign; `labels` = the sentence snapped to the closest guest sentence of the same length by
+ * recognition/intents.py (`snapped`), else `raw`; `text` = that sentence's English, or null.
+ * The app validates `text` but never speaks or shows it: guest sentences come only from the fixed table.
+ */
+export type BridgeSentenceUtterance = BridgeCommon & {
+  type: "utterance";
+  raw?: string[];
+  labels: string[];
+  text?: string | null;
+  snapped?: boolean;
+  needs_repeat?: boolean;
+};
+
+export type BridgeUtterance = BridgeStreamUtterance | BridgeSentenceUtterance;
+
+/**
+ * live_key.py: a sign recording starts (`countdown`: REC begins after `countdown` seconds and lasts
+ * `duration`), then `processing` when it stops. No personal data, so accepted outside the consent gate.
+ */
+export type BridgeCapture = BridgeCommon & {
+  type: "capture";
+  phase: "countdown" | "processing";
+  countdown?: number;
+  duration?: number;
 };
 
 export type BridgeFraming = BridgeCommon & {
   type: "framing";
   status: FramingStatus;
-  since: number;
+  /** When the status started (live.py); the arrival time when missing. */
+  since?: number;
   /** Present when a sign was not classified because under 80% of its frames were framed OK. */
   rejected_seq?: number;
 };
@@ -352,10 +391,10 @@ export type RecognizerMode = "ok" | "mock" | "no_model";
 
 export type BridgeStatus = BridgeCommon & {
   type: "status";
-  fps: number;
+  fps?: number;
   /** "mock" = invented answers (never spoken); "no_model" = no sign events will come. */
   recognizer: RecognizerMode;
-  t: number;
+  t?: number;
 };
 
 /**
@@ -370,7 +409,7 @@ export type BridgeVlmSuggestion = BridgeCommon & {
   model: string;
 };
 
-export type BridgeEvent = BridgeSign | BridgeUtterance | BridgeFraming | BridgeStatus | BridgeVlmSuggestion;
+export type BridgeEvent = BridgeSign | BridgeUtterance | BridgeFraming | BridgeStatus | BridgeCapture | BridgeVlmSuggestion;
 
 /** Where an event came from. Simulated events are labelled on both screens. */
 export type SignsSource = "recognizer" | "simulated";
@@ -382,9 +421,10 @@ export type BridgeIngestResponse =
       /**
        * "ignored_pending" = a repeat or NONE-only utterance arrived while a proposal was waiting (C1-5);
        * "held" = an unmatched utterance is waiting up to LIMITS.unmatchedMergeMs for the next one (C1-17);
-       * "framing" = framing stored (accepted outside the consent gate, C1-10).
+       * "framing" = framing stored (accepted outside the consent gate, C1-10);
+       * "capture" = a live_key recording phase stored (accepted outside the consent gate).
        */
-      outcome: "stored" | "proposal" | "repeat" | "status" | "framing" | "stale" | "duplicate" | "ignored_pending" | "held";
+      outcome: "stored" | "proposal" | "repeat" | "status" | "framing" | "capture" | "stale" | "duplicate" | "ignored_pending" | "held";
       proposalId: string | null;
     }
   | ApiError;
@@ -633,9 +673,11 @@ export type StaffSignView = {
 
 /**
  * Where a candidate sentence came from. "phrase" = the guest picked it from the phrase list without
- * recognition (C2-3). "local_vlm" is reserved (stub, plan 6.8). "llm" is LATER (OPS-7).
+ * recognition (C2-3). "sentence" = the recognizer's own sentence correction (live_key.py `snapped`
+ * labels), offered as "Did you mean...?" and never spoken without the guest's confirmation.
+ * "local_vlm" is reserved (stub, plan 6.8). "llm" is LATER (OPS-7).
  */
-export type CandidateSource = "table" | "runner_up" | "nearest" | "phrase" | "local_vlm" | "llm";
+export type CandidateSource = "table" | "runner_up" | "nearest" | "phrase" | "sentence" | "local_vlm" | "llm";
 
 /** One sentence the guest can confirm. */
 export type Candidate = {

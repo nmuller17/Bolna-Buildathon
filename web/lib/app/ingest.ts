@@ -3,17 +3,21 @@
 // Called by POST /api/guest/signs (real recognizer, after the key check) and by POST
 // /api/dev/simulate (source "simulated"). Order of work for one event:
 //   1. validate (unknown keys ignored, known keys strict, face/frames/pose/video refused and counted);
-//   2. freshness: t_sent more than 5 s old or ahead, or (signs) older than the session -> "stale";
-//   3. framing and status are always accepted (no personal data) and stored (C1-10);
+//   2. freshness: t_sent more than 5 s old or ahead, or (signs) older than the session -> "stale"
+//      (shared contract 2026-10-11: no recognizer sends t_sent yet, so a missing t_sent means "now");
+//   3. framing, status and capture are always accepted (no personal data) and stored (C1-10);
 //   4. sign and utterance pass the consent gate (ACTIVE and the guest chose Sign), else 409;
 //   5. sign: restart-tolerant replay check (C1-11), store, live_sign to both screens;
-//   6. utterance: join with stored sign events (top-1 fallback), the app's own gate, proposal
-//      protection with the 10 s grace (C1-5), the 4 s hold-and-merge (C1-17), repeat or proposal.
+//   6. utterance (live.py stream shape or live_key.py sentence shape): join with stored sign events
+//      (by seqs, else with the run's sign events since the last utterance; top-1 fallback), the app's
+//      own gate, the recognizer's sentence correction as "Did you mean" (match.ts
+//      applySentenceCorrection), proposal protection with the 10 s grace (C1-5), the 4 s
+//      hold-and-merge (C1-17), repeat or proposal.
 import { recordLatency } from "./latency.ts";
-import { decide, lightFor, barFor, mergeHeld, type JoinedSign } from "./match.ts";
+import { applySentenceCorrection, decide, lightFor, barFor, mergeHeld, type JoinedSign } from "./match.ts";
 import { guestView, type Store } from "./store.ts";
 import { validateBridgeEvent, type ValidSign, type ValidUtterance } from "./validate.ts";
-import { FRAMING_GUIDANCE, FRAMING_STAFF_HINT, LIMITS, type RepeatReason, type SignsSource, type StaffSignView } from "./types.ts";
+import { FRAMING_GUIDANCE, FRAMING_STAFF_HINT, LIMITS, type Prediction, type RepeatReason, type SignLabel, type SignsSource, type StaffSignView } from "./types.ts";
 
 export type IngestResult = { status: number; body: Record<string, unknown> };
 
@@ -37,7 +41,9 @@ export function ingestBridge(store: Store, raw: unknown, source: SignsSource): I
   const ev = v.event;
   const now = store.now();
   const nowS = now / 1000;
-  if (ev.t_sent < nowS - LIMITS.bridgeMaxAgeMs / 1000 || ev.t_sent > nowS + LIMITS.bridgeMaxAgeMs / 1000) return okOut("stale");
+  // Shared contract: t_sent is optional; without it the event is taken as sent when it arrived.
+  const tSent = ev.t_sent ?? nowS;
+  if (tSent < nowS - LIMITS.bridgeMaxAgeMs / 1000 || tSent > nowS + LIMITS.bridgeMaxAgeMs / 1000) return okOut("stale");
 
   const r = store.recognizer;
   const markSeen = () => {
@@ -48,7 +54,7 @@ export function ingestBridge(store: Store, raw: unknown, source: SignsSource): I
   if (ev.type === "status") {
     markSeen();
     r.mode = ev.recognizer;
-    r.fps = ev.fps;
+    r.fps = ev.fps ?? null;
     store.bothPrivacy((p) => p.bridgeEvents++);
     store.updateSigningAvailable();
     return okOut("status");
@@ -60,7 +66,7 @@ export function ingestBridge(store: Store, raw: unknown, source: SignsSource): I
     const changed = r.framing !== ev.status;
     r.framing = ev.status;
     if (ev.status === "OK") r.framingNotOkSince = null;
-    else if (r.framingNotOkSince === null) r.framingNotOkSince = Math.min(now, Math.round(ev.since * 1000));
+    else if (r.framingNotOkSince === null) r.framingNotOkSince = ev.since === undefined ? now : Math.min(now, Math.round(ev.since * 1000));
     const s = store.session;
     if (ev.rejected_seq !== undefined && s) markRejected(store, source, ev.rejected_seq, ev.run);
     store.toStaff({
@@ -77,6 +83,15 @@ export function ingestBridge(store: Store, raw: unknown, source: SignsSource): I
     return okOut("framing");
   }
 
+  if (ev.type === "capture") {
+    // live_key.py recording phase: no personal data, accepted outside the consent gate and stored for
+    // the screens (a countdown on the guest screen is a later screen task).
+    markSeen();
+    store.bothPrivacy((p) => p.bridgeEvents++);
+    r.capture = { phase: ev.phase, at: now, countdown: ev.countdown ?? null, duration: ev.duration ?? null };
+    return okOut("capture");
+  }
+
   if (ev.type === "vlm_suggestion") {
     // Stub only: recorded on the staff log, never shown to the guest in this build (GST-7a, plan 6.8).
     markSeen();
@@ -89,7 +104,7 @@ export function ingestBridge(store: Store, raw: unknown, source: SignsSource): I
   if (!s || s.state !== "ACTIVE" || s.guestMode !== "sign") {
     return failOut(409, "conflict", "The guest has not chosen to sign; signs are not accepted.");
   }
-  if (ev.t_sent * 1000 < (s.activeSince ?? now)) return okOut("stale");
+  if (tSent * 1000 < (s.activeSince ?? now)) return okOut("stale");
   markSeen();
 
   if (ev.type === "sign") return ingestSign(store, ev, source);
@@ -100,7 +115,7 @@ function track(store: Store, source: SignsSource, run: string | undefined) {
   let t = store.runs[source];
   if (!t || (run !== undefined && t.run !== run) || (run === undefined && !t.run.startsWith("local-") && t.fromRecognizer)) {
     const restarted = t !== null;
-    t = { run: run ?? `local-${++store.localRuns}`, fromRecognizer: run !== undefined, lastSeq: 0, seen: new Set(), rejected: new Set() };
+    t = { run: run ?? `local-${++store.localRuns}`, fromRecognizer: run !== undefined, lastSeq: 0, seen: new Set(), rejected: new Set(), sentence: [] };
     store.runs[source] = t;
     if (restarted) noteRestart(store, t.run);
   }
@@ -141,7 +156,7 @@ function ingestSign(store: Store, ev: ValidSign, source: SignsSource): IngestRes
   } else if (ev.seq === t.lastSeq) {
     return dup(store);
   } else if (ev.seq < t.lastSeq) {
-    t = { run: `local-${++store.localRuns}`, fromRecognizer: false, lastSeq: 0, seen: new Set(), rejected: new Set() };
+    t = { run: `local-${++store.localRuns}`, fromRecognizer: false, lastSeq: 0, seen: new Set(), rejected: new Set(), sentence: [] };
     store.runs[source] = t;
     if (source === "recognizer") noteRestart(store, t.run);
     else store.systemLine("The simulator restarted its sign numbers");
@@ -149,12 +164,14 @@ function ingestSign(store: Store, ev: ValidSign, source: SignsSource): IngestRes
   t.lastSeq = Math.max(t.lastSeq, ev.seq);
   t.seen.add(ev.seq);
   if (t.seen.size > 512) t.seen.delete(t.seen.values().next().value as number);
+  t.sentence.push(ev.seq);
+  if (t.sentence.length > 32) t.sentence.shift();
 
   const joined: JoinedSign = { seq: ev.seq, top: ev.top, joined: true, framingRejected: t.rejected.has(ev.seq) };
   const l = lightFor(joined);
   const view: StaffSignView & { framingRejected: boolean } = {
     seq: ev.seq, top: ev.top, joined: true, light: l.light, red: l.red, bar: barFor(ev.top[0].label),
-    tSignStart: ev.t_sign_start, tSignEnd: ev.t_sign_end, tPredicted: ev.t_predicted, receivedAt: now,
+    tSignStart: ev.t_sign_start ?? null, tSignEnd: ev.t_sign_end ?? null, tPredicted: ev.t_predicted ?? null, receivedAt: now,
     skeleton: ev.skeleton ?? null, framingRejected: joined.framingRejected,
   };
   s.signEvents.set(signKey(source, t.run, ev.seq), view);
@@ -164,9 +181,12 @@ function ingestSign(store: Store, ev: ValidSign, source: SignsSource): IngestRes
   s.evidence.push(evidence);
   if (s.evidence.length > 100) s.evidence.shift();
 
-  // Latency from the recognizer's own timestamps (laptop clock, plan 6.5).
-  recordLatency(store.latency, "movement_to_prediction", (ev.t_predicted - ev.t_sign_end) * 1000);
-  recordLatency(store.latency, "prediction_to_app", now - ev.t_predicted * 1000);
+  // Latency from the recognizer's own timestamps (laptop clock, plan 6.5), only when it sent them
+  // (live.py does; live_key.py does not, and then no number is invented).
+  if (ev.t_predicted !== undefined && ev.t_sign_end !== undefined) {
+    recordLatency(store.latency, "movement_to_prediction", (ev.t_predicted - ev.t_sign_end) * 1000);
+  }
+  if (ev.t_predicted !== undefined) recordLatency(store.latency, "prediction_to_app", now - ev.t_predicted * 1000);
   store.bothPrivacy((p) => p.bridgeEvents++);
   const skeletons = [...s.signEvents.values()].filter((x) => x.skeleton !== null).length;
   store.thisGuest.skeletonsHeld = skeletons;
@@ -187,7 +207,11 @@ function ingestUtterance(store: Store, ev: ValidUtterance, source: SignsSource):
   const s = store.session!;
   const now = store.now();
   const t = track(store, source, ev.run);
-  const key = `${t.run}|${ev.seqs.join(",")}|${ev.t_end}`;
+  const lookup = (seq: number) => s.signEvents.get(signKey(source, t.run, seq));
+  // seqs from the utterance (live.py), else matched against this run's sign events since the last utterance.
+  const seqs: (number | null)[] = ev.seqs ?? joinSentence(ev.labels, t.sentence, lookup, ev.shape);
+  t.sentence = [];
+  const key = `${t.run}|${seqs.join(",")}|${ev.labels.join(",")}|${ev.corrected?.join(",") ?? ""}|${ev.t_end ?? (ev.seqs ? "" : now)}`;
   if (s.seenUtterances.has(key)) return dup(store);
   s.seenUtterances.add(key);
   if (s.seenUtterances.size > 256) s.seenUtterances.delete(s.seenUtterances.values().next().value as string);
@@ -196,10 +220,14 @@ function ingestUtterance(store: Store, ev: ValidUtterance, source: SignsSource):
   store.touch(s);
 
   // Join each sign with its stored sign event; a missing one uses the utterance's top-1 only (BRG-8).
-  let joined: JoinedSign[] = ev.signs.map((p, i) => {
-    const stored = s.signEvents.get(signKey(source, t.run, ev.seqs[i]));
-    if (stored) return { seq: ev.seqs[i], top: stored.top, joined: true, framingRejected: stored.framingRejected };
-    return { seq: ev.seqs[i], top: [p], joined: false, framingRejected: t.rejected.has(ev.seqs[i]) };
+  // The sentence shape (live_key.py) carries no score, so an unjoined sign there has none (0, red):
+  // the app never invents confidence.
+  let joined: JoinedSign[] = ev.labels.map((label, i) => {
+    const seq = seqs[i];
+    const stored = seq !== null ? lookup(seq) : undefined;
+    if (stored && seq !== null) return { seq, top: stored.top, joined: true, framingRejected: stored.framingRejected };
+    const own: Prediction = { label, conf: ev.confs?.[i] ?? 0 };
+    return { seq, top: [own], joined: false, framingRejected: seq !== null && t.rejected.has(seq) };
   });
   const viewsFor = (signs: JoinedSign[]): StaffSignView[] =>
     signs.map((j) => {
@@ -238,13 +266,15 @@ function ingestUtterance(store: Store, ev: ValidUtterance, source: SignsSource):
     s.held = null;
   }
 
-  const outcome = decide(joined);
+  // The recognizer's own sentence correction (live_key.py `snapped`) is applied only to this utterance's
+  // signs, never across a hold-and-merge (positions would not line up).
+  const outcome = applySentenceCorrection(decide(joined), joined, joined.length === ev.labels.length ? ev.corrected : null);
   const views = viewsFor(joined);
 
   if (s.pending && (outcome.kind === "repeat" || outcome.kind === "hold")) return ignore(views);
 
   if (outcome.kind === "hold") {
-    s.held = { signs: joined, at: now, expiresAt: now + LIMITS.unmatchedMergeMs, tEnd: ev.t_end, source, saidRepeat: ev.needs_repeat };
+    s.held = { signs: joined, at: now, expiresAt: now + LIMITS.unmatchedMergeMs, tEnd: ev.t_end ?? nowS(store), source, saidRepeat: ev.needs_repeat };
     recognition("held", { views });
     return okOut("held");
   }
@@ -260,9 +290,40 @@ function ingestUtterance(store: Store, ev: ValidUtterance, source: SignsSource):
     return okOut("repeat");
   }
 
-  const proposalId = store.propose(outcome.kind, outcome.candidates, views, ev.t_end, source);
+  const proposalId = store.propose(outcome.kind, outcome.candidates, views, ev.t_end ?? nowS(store), source);
   recognition(outcome.kind, { views, proposalId });
   return okOut("proposal", proposalId);
+}
+
+const nowS = (store: Store) => store.now() / 1000;
+
+/**
+ * Seqs for an utterance that carries none (live_key.py, live_window.py): match its labels, from the
+ * end, against this run's sign events since the last utterance, skipping events that do not match
+ * (a sign undone with BACKSPACE sends no event of its own). The sentence shape compares the best
+ * non-NONE label of each sign event (live_key's `raw` leaves NONE out); the stream shape its top-1.
+ * A label with no matching event gets null and is evaluated unjoined.
+ */
+export function joinSentence(
+  labels: readonly SignLabel[],
+  sentence: readonly number[],
+  lookup: (seq: number) => { top: readonly Prediction[] } | undefined,
+  shape: "stream" | "sentence",
+): (number | null)[] {
+  const out: (number | null)[] = labels.map(() => null);
+  const labelOf = (top: readonly Prediction[]) => (shape === "sentence" ? top.find((p) => p.label !== "NONE")?.label : top[0]?.label);
+  let j = sentence.length - 1;
+  for (let i = labels.length - 1; i >= 0; i--) {
+    for (let k = j; k >= 0; k--) {
+      const v = lookup(sentence[k]);
+      if (v && labelOf(v.top) === labels[i]) {
+        out[i] = sentence[k];
+        j = k - 1;
+        break;
+      }
+    }
+  }
+  return out;
 }
 
 /** GET /api/guest/signs: whether signs are accepted right now (BRG-4). */

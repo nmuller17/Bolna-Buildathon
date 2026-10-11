@@ -157,3 +157,28 @@ export function mergeHeld(held: readonly JoinedSign[], next: readonly JoinedSign
   const merged = [...held, ...next];
   return merged.length <= LIMITS.maxSigns ? merged : null;
 }
+
+/**
+ * Shared contract (live_key.py, adopted 2026-10-11): the recognizer may send its own sentence
+ * correction, the labels snapped to the closest guest sentence of the same length. The app's gate on
+ * the RAW signs still runs first and keeps the last word on safety:
+ * - a framing-rejected or NONE sign still asks for a repeat, and a lone HELP still asks "Did you mean HELP?";
+ * - a proposal the raw signs already earned is kept;
+ * - otherwise (held, low confidence, no candidate, "Did you mean" or "Pick one"), the corrected
+ *   sentence is offered first as "Did you mean...?" (source "sentence"), ahead of up to two of the
+ *   gate's own candidates. The guest still confirms before anything is spoken (CLAUDE.md 7.2).
+ * Its score is the product of the raw evidence for each corrected label (that label's score in the
+ * sign's top list, 0 when it is not there), so a weak correction ranks honestly on the staff screen.
+ */
+export function applySentenceCorrection(outcome: GateOutcome, signs: readonly JoinedSign[], corrected: readonly SignLabel[] | null): GateOutcome {
+  if (!corrected || corrected.length === 0) return outcome;
+  if (outcome.kind === "repeat" && (outcome.reason === "framing" || outcome.reason === "none_sign")) return outcome;
+  if (outcome.kind === "proposal" || outcome.kind === "did_you_mean_help") return outcome;
+  const hit = matchIntent(corrected);
+  if (!hit) return outcome;
+  const score = corrected.reduce((p, label, i) => p * (signs[i]?.top.find((t) => t.label === label)?.conf ?? 0), 1);
+  const own = outcome.kind === "did_you_mean" || outcome.kind === "pick" ? outcome.candidates.filter((c) => c.intentId !== hit.id) : [];
+  const first: GateCandidate = { intentId: hit.id, source: "sentence", score };
+  const candidates = [first, ...own].slice(0, 3);
+  return { kind: candidates.length === 1 ? "did_you_mean" : "pick", candidates, weak: outcome.weak };
+}
