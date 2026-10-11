@@ -8,16 +8,21 @@ export type GuestSign = Extract<GuestEvent, { type: "sign" }>;
 export type GuestUtterance = Extract<GuestEvent, { type: "utterance" }>;
 type Received = GuestEvent & { replay: boolean };
 
+/** Optional extra callbacks, live events only. onSign gets the sign and when it arrived on the page (Unix s). */
+export type GuestEventHandlers = { onSign?: (sign: GuestSign, receivedAt: number) => void; onWiped?: () => void };
+
 /** `onUtterance` is called for live sentences only, never for the state replayed when the page (re)connects. */
-export function useGuestEvents(onUtterance?: (utterance: GuestUtterance) => void) {
+export function useGuestEvents(onUtterance?: (utterance: GuestUtterance) => void, handlers?: GuestEventHandlers) {
   const [signs, setSigns] = useState<GuestSign[]>([]);
   const [utterance, setUtterance] = useState<GuestUtterance | null>(null);
   const [framing, setFraming] = useState<string | null>(null);
   const [recognizer, setRecognizer] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const callback = useRef(onUtterance);
+  const extra = useRef(handlers);
   useEffect(() => {
     callback.current = onUtterance;
+    extra.current = handlers;
   });
 
   useEffect(() => {
@@ -25,8 +30,10 @@ export function useGuestEvents(onUtterance?: (utterance: GuestUtterance) => void
     let sentenceDone = true; // the next sign starts a new sentence
     source.onopen = () => {
       setConnected(true);
-      // The server replays its state right after: start from scratch so nothing is doubled.
+      // The server replays its state right after: start from scratch so nothing is doubled (or kept after a wipe).
       setSigns([]);
+      setUtterance(null);
+      setFraming(null);
       sentenceDone = true;
     };
     source.onerror = () => setConnected(false); // EventSource reconnects by itself
@@ -41,6 +48,7 @@ export function useGuestEvents(onUtterance?: (utterance: GuestUtterance) => void
         const sign = event;
         setSigns((current) => (sentenceDone ? [sign] : [...current, sign]));
         sentenceDone = false;
+        if (!event.replay) extra.current?.onSign?.(sign, Date.now() / 1000);
       } else if (event.type === "utterance") {
         setUtterance(event);
         setSigns([]);
@@ -48,6 +56,13 @@ export function useGuestEvents(onUtterance?: (utterance: GuestUtterance) => void
         if (!event.replay) callback.current?.(event);
       } else if (event.type === "framing") setFraming(event.status);
       else if (event.type === "recognizer") setRecognizer(event.state);
+      else if (event.type === "wiped") {
+        setSigns([]);
+        setUtterance(null);
+        setFraming(null);
+        sentenceDone = true;
+        extra.current?.onWiped?.();
+      }
     };
     return () => source.close();
   }, []);

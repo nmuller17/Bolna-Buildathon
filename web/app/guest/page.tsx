@@ -81,7 +81,7 @@ export default function GuestPage() {
     [sign],
   );
   const speech = useHandsFreeSpeech(signHeard, staffSpeaking);
-  const guest = useGuestEvents();
+  const guest = useGuestEvents(undefined, { onWiped: () => setCaption({ text: "", gloss: [] }) }); // staff wiped the session
 
   const sendRef = useRef<ReturnType<typeof useSignbridgeChannel> | null>(null);
   sendRef.current = useSignbridgeChannel((message) => {

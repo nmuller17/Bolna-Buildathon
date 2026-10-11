@@ -9,6 +9,7 @@ import { speakText, warmUpVoice } from "@/components/speakSigns";
 import { toSignedSentences, transcribe } from "@/components/speechToSigns";
 import { useGuestEvents, type GuestUtterance } from "@/components/useGuestEvents";
 import { usePushToTalk, type Recording } from "@/components/usePushToTalk";
+import { TrustPanels, useSignLatency } from "@/components/TrustPanels";
 import { useSignbridgeChannel, type ChannelMessage, type ConversationTurn, type StaffState } from "@/lib/channel";
 import styles from "./staff.module.css";
 
@@ -98,7 +99,14 @@ export default function StaffPage() {
     },
     [say],
   );
-  const guest = useGuestEvents(onGuestUtterance);
+  const latency = useSignLatency();
+  // A session wipe (privacy panel) clears this page's copy of the conversation too.
+  const onWiped = useCallback(() => {
+    waiting.current = null;
+    setLast(null);
+    setHistory([]);
+  }, []);
+  const guest = useGuestEvents(onGuestUtterance, { onSign: latency.record, onWiped });
 
   // Warms /api/tts up (compiled route, ElevenLabs connection), so the first guest sentence speaks without delay.
   useEffect(() => {
@@ -292,6 +300,8 @@ export default function StaffPage() {
             Send
           </button>
         </form>
+
+        <TrustPanels latency={latency} />
       </section>
 
       <aside className={styles.side}>
