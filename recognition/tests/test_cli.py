@@ -53,11 +53,14 @@ def test_poster_sends_json_with_the_bridge_key():
     p = live.Poster(app.url, KEY)
     events = [{"type": "sign", "seq": 1, "top": [{"label": "YES", "conf": 0.9}]},
               {"type": "utterance", "signs": [{"label": "YES", "conf": 0.31}], "needs_repeat": True, "t_end": 1.0}]
+    t0 = time.time()
     for ev in events:
         p.send(ev)
     p.close()
     app.close()
+    sent = [b.pop("t_sent") for _, b in app.got]
     assert [b for _, b in app.got] == events                                       # repeat requests are sent too
+    assert all(t0 - 0.01 <= t <= time.time() + 0.01 for t in sent)
     for headers, _ in app.got:
         assert headers["content-type"] == "application/json" and headers["x-bridge-key"] == KEY
 
@@ -86,16 +89,16 @@ def test_poster_never_follows_redirects(capsys):
 def test_poster_drops_the_oldest_and_never_blocks(monkeypatch):
     gate, posted = threading.Event(), []
 
-    def slow_post(self, ev):
+    def slow_post(self, ev, timeout=None):
         gate.wait(5)
         posted.append(ev["n"])
     monkeypatch.setattr(live.Poster, "_post", slow_post)
     p = live.Poster("http://127.0.0.1:9/x", None, maxsize=3)
     t0 = time.monotonic()
-    p.send({"n": 0})
+    p.send({"type": "sign", "n": 0})
     time.sleep(0.1)                                    # the worker holds event 0
     for n in range(1, 10):
-        p.send({"n": n})
+        p.send({"type": "sign", "n": n})
     assert time.monotonic() - t0 < 1.0
     gate.set()
     p.close()
@@ -106,18 +109,18 @@ def test_poster_survives_a_dead_app(capsys):
     p = live.Poster("http://127.0.0.1:9/api", KEY, timeout=0.5)
     t0 = time.monotonic()
     for i in range(5):
-        p.send({"type": "status", "i": i})
+        p.send({"type": "sign", "seq": i})
     assert time.monotonic() - t0 < 0.2
     p.close(5)
     err = capsys.readouterr().err
-    assert p.failed == 5 and "post failed" in err and KEY not in err
+    assert p.failed == 5 and "first event with URLError" in err and "post failed" in err and KEY not in err
 
 
 def test_poster_shutdown_with_a_full_queue_discards_pending_events(monkeypatch):
     entered, release = threading.Event(), threading.Event()
     posted = []
 
-    def blocked_post(self, ev):
+    def blocked_post(self, ev, timeout=None):
         entered.set()
         release.wait(5)
         posted.append(ev["n"])
@@ -125,16 +128,16 @@ def test_poster_shutdown_with_a_full_queue_discards_pending_events(monkeypatch):
     monkeypatch.setattr(live.Poster, "_post", blocked_post)
     p = live.Poster("http://127.0.0.1:9/x", maxsize=2)
     try:
-        p.send({"n": 0})
+        p.send({"type": "sign", "n": 0})
         assert entered.wait(1)
-        p.send({"n": 1})
-        p.send({"n": 2})
+        p.send({"type": "sign", "n": 1})
+        p.send({"type": "status", "n": 2})
         start = time.monotonic()
         p.close(timeout=0.02)
         assert time.monotonic() - start < 0.5
-        assert p.q.empty() and p.dropped == 2
-        p.send({"n": 3})
-        assert p.q.empty() and p.dropped == 3
+        assert p.pending() == 0 and p.dropped == 2
+        p.send({"type": "sign", "n": 3})
+        assert p.pending() == 0 and p.dropped == 3
     finally:
         release.set()
         p.thread.join(1)
@@ -245,8 +248,9 @@ def test_live_posts_every_event_including_repeat_requests(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert calls[0] == ("size", (1280, 720), 0.9, "none")
     assert np.allclose(np.diff(calls[1:]), 1 / 30)                       # capture times from the reader
-    assert [b["type"] for _, b in got] == ["status", "sign", "utterance"]
-    assert got[2][1]["needs_repeat"] is True and all(h["x-bridge-key"] == KEY for h, _ in got)
+    types = [b["type"] for _, b in got]
+    assert sorted(types) == ["sign", "status", "utterance"] and types.index("sign") < types.index("utterance")
+    assert got[types.index("utterance")][1]["needs_repeat"] is True and all(h["x-bridge-key"] == KEY for h, _ in got)
     assert "repeat request" in out and "latency p50/p95" in out and KEY not in out
 
 
@@ -292,3 +296,76 @@ def test_classify_video_end_to_end(tmp_path, capsys):
     sign = events[kinds.index("sign")]
     assert sign["t_sign_start"] <= sign["t_sign_end"] <= sign["t_closed"] <= sign["t_predicted"]
     assert "latency p50/p95: MediaPipe" in out
+
+
+def test_poster_sends_signs_first_and_coalesces_framing_and_status(monkeypatch):
+    gate, posted = threading.Event(), []
+
+    def slow_post(self, ev, timeout=None):
+        gate.wait(5)
+        posted.append((ev["type"], ev.get("n"), timeout))
+    monkeypatch.setattr(live.Poster, "_post", slow_post)
+    p = live.Poster("http://127.0.0.1:9/x", None, timeout=1.0, light_timeout=0.3)
+    p.send({"type": "status", "n": 0})
+    time.sleep(0.1)                                    # the worker holds status 0
+    for n in range(1, 6):
+        p.send({"type": "status", "n": n})
+        p.send({"type": "framing", "status": "OK", "n": n})
+    p.send({"type": "sign", "n": 10})
+    p.send({"type": "framing", "status": "HANDS_OUT", "rejected_seq": 2, "n": 11})
+    p.send({"type": "utterance", "n": 12})
+    assert p.pending() == 5 and p.coalesced == 8
+    gate.set()
+    p.close()
+    assert posted[:4] == [("status", 0, 0.3), ("sign", 10, 1.0), ("framing", 11, 1.0), ("utterance", 12, 1.0)]
+    assert sorted(posted[4:]) == [("framing", 5, 0.3), ("status", 5, 0.3)]          # only the newest of each
+
+
+def test_poster_drops_stale_events(monkeypatch):
+    now = [100.0]
+    entered, gate, posted = threading.Event(), threading.Event(), []
+
+    def slow_post(self, ev, timeout=None):
+        entered.set()
+        gate.wait(5)
+        posted.append(ev["n"])
+    monkeypatch.setattr(live.Poster, "_post", slow_post)
+    p = live.Poster("http://127.0.0.1:9/x", None, stale_sec=5.0, clock=lambda: now[0])
+    p.send({"type": "sign", "n": 0})
+    assert entered.wait(1)
+    p.send({"type": "sign", "n": 1})
+    p.send({"type": "status", "n": 2})
+    now[0] += 5.5                                      # the app took 5.5 s to answer event 0
+    p.send({"type": "utterance", "n": 3})
+    gate.set()
+    p.close()
+    assert posted == [0, 3] and p.stale == 2
+
+
+def test_poster_reports_the_first_answer(capsys):
+    app = App(status=401)
+    p = live.Poster(app.url, KEY)
+    for i in range(3):
+        p.send({"type": "sign", "seq": i})
+    p.close()
+    app.close()
+    err = capsys.readouterr().err
+    assert p.first_status == "HTTP 401" and err.count("first event with HTTP 401") == 1
+    assert "check BRIDGE_KEY" in err and KEY not in err
+    ok = App()
+    p = live.Poster(ok.url, KEY)
+    p.send({"type": "status"})
+    p.close()
+    ok.close()
+    assert p.first_status == "HTTP 200" and "first event with HTTP 200" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("key", [None, "", "k" * 31])
+def test_post_needs_a_bridge_key_of_32_characters(monkeypatch, key):
+    if key is None:
+        monkeypatch.delenv("BRIDGE_KEY", raising=False)
+    else:
+        monkeypatch.setenv("BRIDGE_KEY", key)
+    with pytest.raises(SystemExit) as e:
+        live.main(["--post", "http://127.0.0.1:9/api/guest/signs", "--mock", "--no-preview"])
+    assert "BRIDGE_KEY" in str(e.value) and (key is None or key == "" or key not in str(e.value))
