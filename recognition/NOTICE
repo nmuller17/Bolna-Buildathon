@@ -1,0 +1,64 @@
+SignBridge AI - recognition module: third-party notices
+
+The repository is licensed under the MIT License (LICENSE at the repository root). The recognition
+module includes or depends on the third-party work below. Keep this file with any copy of
+recognition/ffislr.py or of a checkpoint of kind "ffislr" (recognition/models/model.pt).
+
+------------------------------------------------------------------------------------------------
+1. GISLR 1st-place solution (network design, augmentation and preprocessing)
+------------------------------------------------------------------------------------------------
+
+recognition/ffislr.py is a PyTorch port, with modifications, of the Google - Isolated Sign Language
+Recognition (Kaggle, 2023) 1st-place solution by Hoyeol Sohn (hoyso48):
+https://github.com/hoyso48/Google---Isolated-Sign-Language-Recognition-1st-place-solution
+(licence verified 2026-10-11 at .../blob/main/LICENSE: MIT, "Copyright (c) 2023 hoyso48").
+
+Modifications by the SignBridge contributors (2026): ported from TensorFlow to PyTorch; every face
+input removed (lip and eye points blanked, face-mesh nose replaced by the pose nose, pose points 1-10
+replaced by the pose nose); six pose points added; a single seed, no AWP; trained from scratch on the
+team's own recordings. The demo checkpoint contains NO weights from the original solution (the
+published weights were not used), and was not trained on GISLR or any other third-party data.
+
+MIT License
+
+Copyright (c) 2023 hoyso48
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+The constants OFFSET_SW, R, SW and MID in recognition/ffislr.py (four small numbers that map our
+shoulder-normalised coordinates into the original input's scale) were measured on 300 clips of the
+Kaggle GISLR rerun set (dataset sohier/461054610546105, CC0: Public Domain; the underlying
+collection is by the Deaf Professional Arts Network and the Georgia Institute of Technology). We
+credit them although CC0 does not require it. No clip of that set is used in training.
+
+------------------------------------------------------------------------------------------------
+2. MediaPipe (landmark extraction)
+------------------------------------------------------------------------------------------------
+
+Landmarks are extracted with MediaPipe (Google), Apache License 2.0:
+https://github.com/google-ai-edge/mediapipe/blob/master/LICENSE
+The holistic_landmarker.task model file is downloaded at first run and is not part of this
+repository. Only pose and hand landmarks reach the classifier; the face is discarded.
+
+------------------------------------------------------------------------------------------------
+3. Training data of the demo checkpoint
+------------------------------------------------------------------------------------------------
+
+The demo checkpoint is trained only on the team's own recordings (data/train: cosme, maya, nath,
+roni; data/train_extra: talha, training only). The recordings are not part of this repository.
