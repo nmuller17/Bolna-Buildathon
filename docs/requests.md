@@ -78,3 +78,28 @@ Fingerspelling C-H-E-C-K-O-U-T (8 letters) in 3 s was too long to sign consisten
 - Guest intents: `LEAVE TIME` = "What time is checkout?", `LATE LEAVE PLEASE` = "Could I have a late checkout?" (`/api/english` should map LEAVE to checkout in the hotel context).
 - Staff glosses: `LEAVE TIME 11`, `LATE LEAVE FINE UNTIL 1` (`/api/gloss` should use `LEAVE` for "checkout", not `FS:CHECKOUT`).
 - docs/vocabulary.md, CLAUDE.md 8.2 and capture/train_session.py are updated on p2-avatar.
+
+## 2026-10-10, from P4 (integration merge of p2-avatar and P1 voice into p4-app)
+
+### P4 merge fixes to P1 routes (please review, Maya)
+
+Merging `origin/p1-gloss-vocab` (which contains `origin/codex/p1-voice-gloss`) into `p4-app` broke one thing and left two routes without the red-team guard. The fixes are minimal and every change is marked `P4 MERGE FIX:` in the code. The intent mapping in `web/lib/voice/intents.ts` and the Whisper call are unchanged.
+
+| File | Change | Why |
+|---|---|---|
+| `web/app/api/gloss/route.ts` | The sign index is read from `<repo>/signs/index.json` instead of `web/public/signs/index.json` | The `web/public/signs` symlink no longer exists on `p4-app` (red-team B2); without this fix `/api/gloss` silently lost its list of known signs |
+| `web/app/api/gloss/route.ts` | `request.json()` replaced by `guardLoopbackJsonPost()` (loopback via `server.mjs`, Host allowlist, same-origin, JSON only, 4 KB capped read, 30 a minute); text longer than 300 characters gets 400 | RT1 says a route with no guard is a bug (B1, B3, B4) |
+| `web/app/api/transcribe/route.ts` | New `guardLoopbackRawPost()` first: loopback, Host allowlist, same-origin, `multipart/form-data` only (415), Content-Length required (411) and at most 5 MB (413), 20 a minute | `request.formData()` has no size cap of its own, so a chunked body without Content-Length could be unbounded (B1, B4) |
+| `web/app/api/transcribe/route.ts` | A Whisper error now returns `502` with the status number only; the vendor's error body is no longer sent to the browser | D6 / RT11: vendor bodies can echo the request |
+
+### P4 merge fixes for LEAVE (Nath, P3)
+
+| File | Change | Why |
+|---|---|---|
+| `web/app/api/english/intents.ts` | `FS-CHECKOUT` replaced by `LEAVE` in `LABELS` and in the two checkout intents; new `LABEL_ALIASES = { "FS-CHECKOUT": "LEAVE" }` | `docs/vocabulary.md` now says LEAVE; `/api/english` would otherwise answer 400 to every LEAVE sign |
+| `web/app/api/english/route.ts` | `normalize()` maps a label through `LABEL_ALIASES` first | `recognition/labels.py` on `p3-recognition` still emits `FS-CHECKOUT` until the model is retrained; both labels now give the checkout sentences. Remove the alias once labels.py says LEAVE |
+| P3 (request) | Please rename `FS-CHECKOUT` to `LEAVE` in `recognition/labels.py` when the model is retrained | Single source of truth |
+
+### LAN path list now includes the avatar model
+
+`web/lib/app/access.ts` `lanPathAllowed` now also lets the guest device `GET /avatar/<name>.glb`, because the bellhop avatar loads `/avatar/bellhop.glb` (P2). Without it the guest screen in LAN mode would get 403 for the model.

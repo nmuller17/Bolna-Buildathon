@@ -50,6 +50,7 @@ export function lanPathAllowed(method: string, rawUrl: string, dev: boolean): bo
     if (pathname === "/api/events") return true;
     if (pathname.startsWith("/_next/static/")) return true;
     if (/^\/signs\/[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)?\.json$/.test(pathname)) return true; // avatar data (signer stripped)
+    if (/^\/avatar\/[A-Za-z0-9_-]+\.glb$/.test(pathname)) return true; // avatar 3D model (web/public/avatar, P2 bellhop)
     if (dev && pathname.startsWith("/_next/")) return true; // dev HMR and chunks only
     return false;
   }

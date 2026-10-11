@@ -27,7 +27,7 @@ export const SIGN_LABELS = [
   "TIME",
   "TOWEL",
   "MORE",
-  "FS-CHECKOUT",
+  "LEAVE",
   "LATE",
   "PLEASE",
   "PARKING",
@@ -39,6 +39,13 @@ export const SIGN_LABELS = [
 ] as const;
 
 export type SignLabel = (typeof SIGN_LABELS)[number];
+
+/**
+ * Old classifier labels still emitted by an older recognizer build, mapped to the current label.
+ * LEAVE replaced FS-CHECKOUT on 2026-10-10 (docs/vocabulary.md); recognition/labels.py on
+ * p3-recognition still says FS-CHECKOUT until the model is retrained.
+ */
+export const SIGN_LABEL_ALIASES: Readonly<Record<string, SignLabel>> = { "FS-CHECKOUT": "LEAVE" };
 
 /** Top-1 confidence must be at least this value (0.6 passes, 0.5999 fails). CLAUDE.md 7.2 step 4. */
 export const CONF_THRESHOLD = 0.6;

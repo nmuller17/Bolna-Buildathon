@@ -76,3 +76,32 @@ export async function guardLoopbackJsonPost(
     return fail(400, "Invalid JSON");
   }
 }
+
+/**
+ * For loopback-only routes whose body is not JSON (multipart audio for /api/transcribe). Same order
+ * as guardLoopbackJsonPost, but the body is left unread for the caller. Because the caller parses it
+ * with request.formData(), which has no size cap of its own, a Content-Length header is REQUIRED
+ * (411 without it): Node's HTTP parser then never delivers more bytes than declared, and both
+ * web/server.mjs and this guard refuse a declared size above maxBytes.
+ */
+export function guardLoopbackRawPost(
+  req: Request,
+  opts: { route: string; maxBytes: number; perMinute: number; contentType: RegExp },
+): { ok: true } | GuardFail {
+  if (!fromLoopback(req)) {
+    return fail(403, "only the front-desk laptop may call this (start the app with `npm run dev`, which runs web/server.mjs)");
+  }
+  const host = req.headers.get("host");
+  const allowed = (process.env.SB_ALLOWED_HOSTS ?? "").split(",").filter(Boolean);
+  if (!hostAllowed(host, allowed)) return fail(403, "host not allowed");
+  const why = crossSiteReason(req.headers.get("origin"), req.headers.get("sec-fetch-site"), host);
+  if (why) return fail(403, why);
+  if (!opts.contentType.test(req.headers.get("content-type") ?? "")) return fail(415, "unsupported Content-Type");
+  const raw = req.headers.get("content-length");
+  if (raw === null) return fail(411, "Content-Length required");
+  const declared = Number(raw);
+  if (!Number.isFinite(declared) || declared < 0) return fail(400, "bad Content-Length");
+  if (declared > opts.maxBytes) return fail(413, "request body too large");
+  if (!limiterFor(opts.route, opts.perMinute).take()) return fail(429, "too many requests, retry in a minute");
+  return { ok: true };
+}

@@ -1,5 +1,5 @@
 // P4: { signs: Prediction[] } -> { text }. Known sign sequences come from intents.ts, anything else goes to Claude.
-import { INTENTS, LABELS, lookupIntent, type Prediction } from "./intents";
+import { INTENTS, LABEL_ALIASES, LABELS, lookupIntent, type Prediction } from "./intents";
 // SECURITY (P4 red-team fixes B1/B3/B4/B5/D1/D6, 2026-10-10): see docs/requests.md "Red-team changes to
 // teammate routes". Changes are marked "SECURITY:" below; the logic of the route is otherwise unchanged.
 import { cleanSentence } from "@/lib/app/access";
@@ -48,7 +48,8 @@ function isPredictionList(value: unknown): value is Prediction[] {
 function normalize(signs: Prediction[]): string[] {
   const labels: string[] = [];
   for (const { label } of signs) {
-    const l = label.trim().toUpperCase();
+    const upper = label.trim().toUpperCase();
+    const l = LABEL_ALIASES[upper] ?? upper; // P4 MERGE FIX: FS-CHECKOUT -> LEAVE while the recognizer catches up
     if (!l || l === "NONE" || l === labels[labels.length - 1]) continue;
     labels.push(l);
   }
