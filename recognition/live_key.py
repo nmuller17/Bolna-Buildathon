@@ -23,11 +23,14 @@ Single-screen demo (--no-preview --control-port 8765): no OpenCV window, the /gu
 it through http://127.0.0.1:8765 (loopback only, CORS open, empty body):
   GET  /preview.mjpg  live mirrored camera feed for an <img>, always on (only this process opens the camera)
   GET  /health        "ok"
-  POST /turn          the guest's turn, hands-free: sign windows one after another (countdown +
-                      REC each, like the training takes) until a window with no hands, or MAX_TURN_SIGNS;
-                      then the sentence is snapped and sent as "utterance" (or {"type": "turn",
-                      "phase": "end", "empty": true} when the guest signed nothing).
-                      Events: {"type": "turn", "phase": "start"}, capture/sign events, utterance, turn end.
+  POST /turn          the guest's turn, hands-free and continuous: the guest signs the whole sentence
+                      in one go and rests the hands (down or still) for REST_SEC (2.5 s) to finish.
+                      recognition.sentence aligns the 20 guest sentences on sliding 1 s windows of the
+                      recording (no cutting into signs) and the best one is sent as "utterance".
+                      Events: {"type": "turn", "phase": "start"}; {"type": "capture", "phase":
+                      "listening"} (waiting for the hands) -> "signing" (hands moving) -> "processing";
+                      utterance; {"type": "turn", "phase": "end", "empty"}. Nothing signed within
+                      START_TIMEOUT (8 s) -> empty turn.
   POST /sign, /end, /undo   manual control (one sign, end of sentence, drop last sign)
 """
 import argparse
@@ -44,7 +47,10 @@ import numpy as np
 import capture.capture as capture_ui
 from capture.capture import GREEN, RED, WHITE, Recorder, show
 from recognition import features
+from capture.clean import clean
+from capture.landmarks import detect, normalize
 from recognition.intents import GUEST_INTENTS, decode, without_none
+from recognition.sentence import decode_continuous, window_probs
 from recognition.labels import CLASSES
 from recognition.live import Poster
 from recognition.recognizer import load_predictor, validate
@@ -157,6 +163,65 @@ def sign_once(rec, predictor, title, target, a, countdown=None):
         return without_none(np.full(len(CLASSES), 1.0 / len(CLASSES))), got[0][-1], False
     p = predictor.probs(features.to_seq(validate(frames)))
     return without_none(p), got[0][-1], True
+
+
+START_TIMEOUT = 8.0   # no signing this long after the turn starts = the guest has nothing to say
+REST_SEC = 2.5        # hands down or still this long after signing = end of the sentence
+TURN_MAX_SEC = 15.0
+STILL = 0.08          # wrist travel (shoulder widths) over STILL_SEC below this = still hands
+STILL_SEC = 0.5
+PREROLL_SEC = 0.3
+
+
+def wrists(frame):
+    """Normalized frame -> list of (x, y) wrist positions of the hands present."""
+    if frame is None:
+        return []
+    return [tuple(frame[h][0][:2]) for h in ("lh", "rh") if frame[h] is not None]
+
+
+def continuous_turn(rec, predictor, emit):
+    """The guest signs a whole sentence in one go; it ends when the hands rest for REST_SEC.
+    Returns a decode_continuous result, or None when the guest did not sign."""
+    emit({"type": "capture", "phase": "listening"})
+    t0 = time.monotonic()
+    raws, stamps, history = [], [], []
+    started_at = last_active = None
+    while True:
+        img = rec.read()
+        now = time.monotonic()
+        t_ms = rec.now_ms()
+        raw = detect(rec.landmarker, cv2.cvtColor(img, cv2.COLOR_BGR2RGB), t_ms)
+        raws.append(raw)
+        stamps.append(t_ms)
+        w = wrists(normalize(raw))
+        history = [(t, ws) for t, ws in history if now - t <= STILL_SEC] + [(now, w)]
+        old = history[0][1]
+        if not w:
+            moving = False                      # hands down, out of the picture
+        elif len(history) < 2 or len(old) != len(w):
+            moving = True                       # a hand just came in (or left)
+        else:
+            travel = max(abs(x - ox) + abs(y - oy) for (x, y), (ox, oy) in zip(sorted(w), sorted(old)))
+            moving = travel > STILL
+        if moving:
+            if started_at is None:
+                started_at = now
+                emit({"type": "capture", "phase": "signing"})
+            last_active = now
+        if started_at is None and now - t0 > START_TIMEOUT:
+            return None
+        if started_at is not None and (now - last_active > REST_SEC or now - started_at > TURN_MAX_SEC):
+            break
+    emit({"type": "capture", "phase": "processing"})
+    # stamps are rec.now_ms() = (monotonic - rec.t0) * 1000: keep the signing part plus a short pre-roll
+    lo = (started_at - PREROLL_SEC - rec.t0) * 1000
+    hi = (last_active + 0.2 - rec.t0) * 1000
+    idx = [i for i, t in enumerate(stamps) if lo <= t <= hi]
+    frames = clean([normalize(raws[i]) for i in idx], [stamps[i] for i in idx]) if idx else []
+    if len(frames) < 10:
+        return None
+    return decode_continuous(window_probs(frames, predictor), n_frames=len(frames))
 
 
 def main(argv=None):
@@ -282,27 +347,17 @@ def main(argv=None):
                 print(f"utterance: heard {' '.join(r['raw'])} -> {' '.join(r['labels'])}  {r['text'] or ''}")
                 sentence = []
             elif key == "turn":
-                sentence = []
                 emit({"type": "turn", "phase": "start"})
-                print("guest turn")
-                for k in range(MAX_TURN_SIGNS):
-                    p, _, hands = sign_once(rec, predictor, "your turn", None, a,
-                                            countdown=a.countdown if k == 0 else a.next_countdown)
-                    if p is None or not hands:
-                        break
-                    sentence.append(p)
-                    seq += 1
-                    top = top3(p)
-                    emit({"type": "sign", "seq": seq, "top": top})
-                    print(f"  sign {seq}: {fmt(top)}")
-                if sentence:
-                    r = finish(sentence)
-                    print(f"utterance: heard {' '.join(r['raw'])} -> {' '.join(r['labels'])}  {r['text'] or ''}")
-                    last = f"-> {r['text'] or ' '.join(r['labels'])}"
+                print("guest turn (continuous)")
+                res = continuous_turn(rec, predictor, emit)
+                if res:
+                    print(f"utterance: windows {' '.join(res['raw'])} -> {' '.join(res['labels'])}  {res['text'] or ''}")
+                    emit({"type": "utterance", "raw": res["raw"], "labels": res["labels"], "text": res["text"],
+                          "snapped": res["snapped"]})
+                    last = f"-> {res['text'] or ' '.join(res['labels'])}"
                 else:
                     print("turn: no sign")
-                emit({"type": "turn", "phase": "end", "empty": not sentence})
-                sentence = []
+                emit({"type": "turn", "phase": "end", "empty": not res})
             elif key == "space":
                 p, _, _ = sign_once(rec, predictor, f"sentence: {heard}", None, a)
                 if p is None:
