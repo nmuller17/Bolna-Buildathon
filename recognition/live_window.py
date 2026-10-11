@@ -21,7 +21,6 @@ the picture again; one sign at a time. Same events as recognition.live (README "
 Quit with q or Esc in the preview window, or Ctrl+C.
 """
 import argparse
-import os
 import sys
 import time
 
@@ -31,7 +30,7 @@ from capture.capture import open_camera, show
 from capture.clean import clean
 from capture.landmarks import create_landmarker, detect, normalize
 from recognition.labels import NONE
-from recognition.live import Poster
+from recognition.live import bridge_poster
 from recognition.recognizer import REPEAT_BELOW, load_predictor, decide, validate
 
 WIDTH, HEIGHT = 1280, 720
@@ -59,6 +58,7 @@ def main(argv=None):
     ap.add_argument("--utterance-gap", type=float, default=UTTERANCE_SEC)
     ap.add_argument("--video", help="read a video file instead of the camera (offline check, no window)")
     a = ap.parse_args(argv)
+    poster = bridge_poster(a.post) if a.post else None   # loopback URL, BRIDGE_KEY length
 
     predictor = load_predictor(a.checkpoint)
     landmarker = create_landmarker()
@@ -69,7 +69,6 @@ def main(argv=None):
         cap = open_camera(a.camera)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
-    poster = Poster(a.post, os.environ.get("BRIDGE_KEY")) if a.post else None
     t0, n_read = time.monotonic(), 0
 
     def emit(ev):

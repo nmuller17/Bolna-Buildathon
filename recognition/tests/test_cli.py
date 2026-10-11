@@ -360,12 +360,70 @@ def test_poster_reports_the_first_answer(capsys):
     assert p.first_status == "HTTP 200" and "first event with HTTP 200" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("key", [None, "", "k" * 31])
-def test_post_needs_a_bridge_key_of_32_characters(monkeypatch, key):
-    if key is None:
-        monkeypatch.delenv("BRIDGE_KEY", raising=False)
-    else:
-        monkeypatch.setenv("BRIDGE_KEY", key)
+@pytest.mark.parametrize("key", ["k", "k" * 31])
+def test_a_short_bridge_key_is_refused_before_the_camera(monkeypatch, key):
+    monkeypatch.setenv("BRIDGE_KEY", key)
+
+    def no_camera():
+        raise AssertionError("camera opened")
+    monkeypatch.setattr(live, "import_cv2", no_camera)
     with pytest.raises(SystemExit) as e:
         live.main(["--post", "http://127.0.0.1:9/api/guest/signs", "--mock", "--no-preview"])
-    assert "BRIDGE_KEY" in str(e.value) and (key is None or key == "" or key not in str(e.value))
+    assert "BRIDGE_KEY" in str(e.value) and str(live.BRIDGE_KEY_MIN) in str(e.value) and key not in str(e.value)
+
+
+def test_bridge_key_rule():
+    assert live.bridge_key_problem(None) is None and live.bridge_key_problem("") is None   # app without a key
+    assert live.bridge_key_problem("k" * 31) is not None
+    assert live.bridge_key_problem("k" * live.BRIDGE_KEY_MIN) is None
+
+
+def test_unset_bridge_key_warns_and_posts_without_the_header(monkeypatch, capsys):
+    monkeypatch.delenv("BRIDGE_KEY", raising=False)
+    app = App()
+    p = live.bridge_poster(app.url)
+    p.send({"type": "sign", "seq": 1, "top": [{"label": "YES", "conf": 0.9}]})
+    p.close()
+    app.close()
+    assert "BRIDGE_KEY is not set" in capsys.readouterr().err
+    assert len(app.got) == 1 and "x-bridge-key" not in app.got[0][0]
+
+
+def test_capture_events_keep_their_order_and_are_not_coalesced(monkeypatch):
+    gate, posted = threading.Event(), []
+
+    def slow_post(self, ev, timeout=None):
+        gate.wait(5)
+        posted.append((ev["type"], ev.get("phase")))
+    monkeypatch.setattr(live.Poster, "_post", slow_post)
+    p = live.Poster("http://127.0.0.1:9/x", None)
+    p.send({"type": "status"})
+    time.sleep(0.1)                                    # the worker holds the status event
+    for ev in ({"type": "capture", "phase": "countdown"}, {"type": "capture", "phase": "processing"},
+               {"type": "sign"}, {"type": "capture", "phase": "countdown"}):
+        p.send(ev)
+    assert p.coalesced == 0
+    gate.set()
+    p.close()
+    assert posted == [("status", None), ("capture", "countdown"), ("capture", "processing"), ("sign", None),
+                      ("capture", "countdown")]
+
+
+@pytest.mark.parametrize("module", ["recognition.live_key", "recognition.live_window"])
+def test_demo_paths_refuse_a_remote_post_before_loading_anything(module, monkeypatch):
+    pytest.importorskip("cv2")
+    pytest.importorskip("mediapipe")
+    import importlib
+    mod = importlib.import_module(module)
+    monkeypatch.setenv("BRIDGE_KEY", KEY)
+
+    def boom(*a, **k):
+        raise AssertionError("model or camera opened")
+    monkeypatch.setattr(mod, "load_predictor", boom)
+    with pytest.raises(SystemExit) as e:
+        mod.main(["--post", "http://10.0.0.5:3000/api/guest/signs"])
+    assert "laptop" in str(e.value)
+    monkeypatch.setenv("BRIDGE_KEY", "short")
+    with pytest.raises(SystemExit) as e:
+        mod.main(["--post", "http://127.0.0.1:3000/api/guest/signs"])
+    assert "BRIDGE_KEY" in str(e.value)

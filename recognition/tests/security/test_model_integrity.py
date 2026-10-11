@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 @pytest.fixture
 def strict(monkeypatch):
-    """Production settings: no development opt-in, pin unset (as committed today)."""
+    """No development opt-in and no pin (a fresh checkout before pin_model, or a cleared pin)."""
     monkeypatch.delenv("RECOGNITION_ALLOW_UNPINNED", raising=False)
     monkeypatch.setattr(model_pin, "EXPECTED_SHA256", None)
 

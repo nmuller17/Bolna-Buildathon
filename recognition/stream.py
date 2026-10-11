@@ -17,7 +17,7 @@ capture.py cleans a training take, and Recognizer.predict gives a "sign" event a
 gives an "utterance" event whose needs_repeat is recognizer.needs_repeat (the app's 0.6 / NONE
 rule); a sign rejected for framing stands in it as {"label": "NONE", "conf": 0.0}, so the
 utterance always asks for a repeat. An utterance that reaches MAX_UTTERANCE_SIGNS signs is
-ended at once (the app accepts at most 8 per POST); the next signs start a new one. NO_PERSON
+ended at once (the app's LIMITS.maxSigns is 8); the next signs start a new one. NO_PERSON
 within FAR_MEMORY_SEC of a COME_CLOSER frame is reported as COME_CLOSER (a person too far
 away for MediaPipe is still standing there). A framing status held for FRAMING_HOLD_SEC gives a
 "framing" event when it changes. status_event() gives a "status" event at most once per
