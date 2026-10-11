@@ -105,25 +105,35 @@ def open_camera(index):
 
 class Recorder:
     def __init__(self, camera):
-        self.cap = open_camera(camera)
+        self.camera = camera
+        self.open()
+        self.landmarker = create_landmarker()
+        self.t0 = time.monotonic()
+
+    def open(self):
+        self.cap = open_camera(self.camera)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         self.cap.set(cv2.CAP_PROP_FPS, 30)
-        self.landmarker = create_landmarker()
-        self.t0 = time.monotonic()
 
     def now_ms(self):
         return (time.monotonic() - self.t0) * 1000
 
     def read(self):
-        """Next webcam frame. Retries for 2 s: macOS cameras can drop frames while warming up."""
-        end = time.monotonic() + 2
-        while time.monotonic() < end:
-            ok, img = self.cap.read()
-            if ok:
-                return img
-            time.sleep(0.05)
-        sys.exit("Webcam stopped sending frames (check the camera permission for VS Code / your terminal).")
+        """Next webcam frame. Retries for 2 s (macOS cameras drop frames while warming up),
+        then reopens the camera once, e.g. after another app grabbed it."""
+        for attempt in range(2):
+            end = time.monotonic() + 2
+            while time.monotonic() < end:
+                ok, img = self.cap.read()
+                if ok:
+                    return img
+                time.sleep(0.05)
+            if attempt == 0:
+                print("Webcam stopped sending frames, reopening it...")
+                self.cap.release()
+                self.open()
+        sys.exit("Webcam stopped sending frames (close other apps using the camera, check the camera permission).")
 
     def wait_start(self, lines):
         """Live preview until SPACE (start), S (skip) or Q (quit)."""
