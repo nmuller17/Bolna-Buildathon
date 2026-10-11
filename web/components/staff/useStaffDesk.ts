@@ -221,8 +221,14 @@ function reduce(ui: StaffUi, a: Act): StaffUi {
       };
     case "capture":
       return { ...ui, capture: { phase: msg.phase, countdown: msg.countdown, duration: msg.duration, at: Date.now() } };
-    case "framing":
-      return msg.rejectedSeq !== null ? { ...ui, log: [...ui.log, sys(`Sign #${msg.rejectedSeq}: camera missed it (framing).`)] } : ui;
+    case "framing": {
+      // The header's Framing cell updates on the event itself, not on the next status push (up to 2 s later).
+      const status = ui.status
+        ? { ...ui.status, recognizer: { ...ui.status.recognizer, framing: msg.status, framingNotOkSince: msg.notOkSince } }
+        : ui.status;
+      const log = msg.rejectedSeq !== null ? [...ui.log, sys(`Sign #${msg.rejectedSeq}: camera missed it (framing).`)] : ui.log;
+      return { ...ui, status, log };
+    }
     case "recognition": {
       const simulated = msg.source === "simulated";
       let evidence = ui.evidence;
@@ -376,7 +382,7 @@ export function useStaffDesk() {
     async (entry: Extract<LogEntry, { kind: "guest" }>, force = false) => {
       const plan = entry.speak;
       if (plan.mode === "tts") {
-        const v = await voiceFixed(plan.fixedText, ttsRef.current);
+        const v = await voiceFixed(plan.fixedText, ttsRef.current, plan.intentId);
         dispatch({ t: "spoken", seq: entry.seq, at: v.startedAt, how: v.how });
         if (!force && v.startedAt) void staffAction({ type: "speak_done", ref: entry.proposalId, how: v.how, startedAt: v.startedAt });
         return;

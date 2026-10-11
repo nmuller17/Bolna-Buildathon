@@ -30,7 +30,7 @@ export function unlockAudio(): boolean {
 export type Voiced = { how: "tts" | "local" | "none"; startedAt: number | null };
 
 /** Fetches the fixed sentence's WAV from /api/tts and plays it. Resolves when playback has started. */
-async function playTts(text: string, timeoutMs: number): Promise<number> {
+async function playTts(body: { id: number } | { text: string }, timeoutMs: number): Promise<number> {
   if (!ctx) throw new Error("audio locked");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -39,7 +39,7 @@ async function playTts(text: string, timeoutMs: number): Promise<number> {
       method: "POST",
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(String(res.status));
@@ -86,14 +86,15 @@ export function speakLocal(text: string): Promise<number | null> {
 }
 
 /** Fixed sentence: /api/tts first (Piper or the vendor voice), then the on-device voice, else silence. */
-export async function voiceFixed(text: string, useTts = true): Promise<Voiced> {
+export async function voiceFixed(text: string, useTts = true, intentId: number | null = null): Promise<Voiced> {
   if (!useTts) {
     // /api/tts has no voice configured (no ElevenLabs key, Piper off): go straight to the on-device voice.
     const started = await speakLocal(text);
     return started ? { how: "local", startedAt: started } : { how: "none", startedAt: null };
   }
   try {
-    return { how: "tts", startedAt: await playTts(text, 4_000) };
+    // The route prefers { id } (RT5): the server looks the fixed sentence up itself.
+    return { how: "tts", startedAt: await playTts(intentId !== null ? { id: intentId } : { text }, 4_000) };
   } catch {
     const started = await speakLocal(text);
     return started ? { how: "local", startedAt: started } : { how: "none", startedAt: null };
