@@ -30,3 +30,4 @@ Thumbs.db
 
 # Training data archives sent to P3
 train_*.zip
+*_train.zip
