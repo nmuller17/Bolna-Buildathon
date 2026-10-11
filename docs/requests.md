@@ -26,3 +26,17 @@ Proposal: add these lines to CLAUDE.md 6.2.
 | 7 | P2/P3 | Put a real recording in `fixtures/utterance_frames.json` (currently `[]`) | Needed to check that Python and TS normalization match |
 | 8 | Whoever trains | `recognition/models/model.pt` is gitignored: share the trained file directly. The server refuses old-format checkpoints and loads weights only | The demo laptop needs the real model; a tampered file cannot run code |
 | 9 | All | Pin versions in `requirements.txt` before the demo | Unpinned deps can change under us (mediapipe 1.x already broke `mp.solutions`) |
+
+## 2026-10-10, from P2/P4 to P4 (+ team): avatar player API (CLAUDE.md 6.6), backward-compatible additions
+- `playGloss(gloss, { onToken })`: optional 2nd parameter. `onToken(index)` is called with the gloss index of the token being signed, each time it changes (karaoke captions, `web/components/AvatarCaptions.tsx`). `playGloss(gloss)` alone still works as in 6.6.
+- `mountAvatar(container)` (in `web/lib/avatar/player.ts`) renders the avatar into a div and returns `{ webgl, unmount }`. Without WebGL, `playGloss` still runs its timing and `onToken`, so captions keep working.
+- A newer `playGloss` call interrupts the current one (which resolves).
+- Windows: git checks out the `web/public/signs` symlink as a text file when `core.symlinks` is off, so `/signs/*` returns 404. Local fix, no repo change: `Remove-Item web/public/signs; cmd /c mklink /J web\public\signs <repo>\signs; git update-index --skip-worktree web/public/signs`. Needed on the demo laptop if it runs Windows.
+Why: the guest screen needs to know which sign is playing, and must not crash on a machine without WebGL.
+
+## 2026-10-10, from P2 to P3 (+ P1, P4): FS-CHECKOUT replaced by LEAVE
+Fingerspelling C-H-E-C-K-O-U-T (8 letters) in 3 s was too long to sign consistently and to recognize.
+- Classifier class `FS-CHECKOUT` -> `LEAVE` (ASL sign "leave", 2 s). Still 22 classes. Please update `recognition/labels.py`.
+- Guest intents: `LEAVE TIME` = "What time is checkout?", `LATE LEAVE PLEASE` = "Could I have a late checkout?" (`/api/english` should map LEAVE to checkout in the hotel context).
+- Staff glosses: `LEAVE TIME 11`, `LATE LEAVE FINE UNTIL 1` (`/api/gloss` should use `LEAVE` for "checkout", not `FS:CHECKOUT`).
+- docs/vocabulary.md, CLAUDE.md 8.2 and capture/train_session.py are updated on p2-avatar.
