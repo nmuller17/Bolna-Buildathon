@@ -202,3 +202,30 @@ test("BN-1: nothing is planned for speech and no checklist item moves before the
   const last = store.session!.log.filter((e) => e.kind === "guest").pop() as { speak: unknown };
   assert.deepEqual(last.speak, { mode: "none", why: "guest_chose_text" });
 });
+
+test("BN-5 / UX review 7: idle warning two minutes before the wipe (at most halfway); touch clears it on the guest", () => {
+  for (const [idleWipeMs, warnLeftMs] of [
+    [600_000, 120_000],
+    [120_000, 60_000],
+  ] as const) {
+    const { store, tick } = setup({ idleWipeMs });
+    const sent: { type: string; kind?: string; secondsLeft?: number }[] = [];
+    const orig = store.toGuest.bind(store);
+    store.toGuest = (m) => {
+      sent.push(m as never);
+      return orig(m);
+    };
+    store.touch(store.session!);
+    tick(idleWipeMs - warnLeftMs - 1_000);
+    store.tick();
+    assert.equal(sent.filter((m) => m.type === "idle_warning").length, 0, `no warning yet (${idleWipeMs})`);
+    tick(1_000);
+    store.tick();
+    const w = sent.find((m) => m.type === "idle_warning");
+    assert.equal(w?.secondsLeft, warnLeftMs / 1000);
+    assert.equal(store.guestSnapshot(store.session!).warnings.idleSecondsLeft, warnLeftMs / 1000, "a reconnecting guest still gets the warning");
+    store.touch(store.session!);
+    assert.equal(store.guestSnapshot(store.session!).warnings.idleSecondsLeft, null);
+    assert.ok(sent.some((m) => m.type === "warning_cleared" && m.kind === "idle"));
+  }
+});

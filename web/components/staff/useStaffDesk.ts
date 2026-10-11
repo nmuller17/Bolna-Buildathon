@@ -365,6 +365,13 @@ export function useStaffDesk() {
   uiRef.current = ui;
   const streamRef = useRef<{ close: () => void } | null>(null);
   const ttsRef = useRef(true);
+  /** The one-time #k= capability, taken out of the address bar as soon as the page loads (review gap). */
+  const capRef = useRef<string | null>(null);
+  useEffect(() => {
+    const m = /(?:^#|&)k=([A-Za-z0-9_-]{16,256})/.exec(location.hash);
+    if (m) capRef.current = m[1];
+    if (location.hash) history.replaceState(null, "", location.pathname);
+  }, []);
 
   const staffAction = useCallback(async (action: StaffAction): Promise<StaffActionResponse | null> => {
     const { status, data } = await postJson<StaffActionResponse>("/api/staff/action", action);
@@ -445,10 +452,10 @@ export function useStaffDesk() {
     const audioOk = unlockAudio();
     dispatch({ t: "set", patch: { started: true, conn: "connecting", voice: "warming", claimError: audioOk ? null : "This browser could not start audio. Use Chrome." } });
 
-    const m = /(?:^#|&)k=([A-Za-z0-9_-]{16,256})/.exec(location.hash);
-    if (location.hash) history.replaceState(null, "", location.pathname);
-    if (m) {
-      const { status } = await postJson("/api/staff/claim", { k: m[1] });
+    const k = capRef.current;
+    capRef.current = null;
+    if (k) {
+      const { status } = await postJson("/api/staff/claim", { k });
       if (status === 410) dispatch({ t: "set", patch: { claimError: "This sign-in link was already used. If this screen is not signed in, ask for a new link (kill -USR2 <server pid>)." } });
       else if (status !== 200) dispatch({ t: "set", patch: { claimError: `Sign-in failed (${status}). Use the one-time link printed by the server.` } });
     }
