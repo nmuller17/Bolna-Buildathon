@@ -19,9 +19,16 @@ Events (JSON, with --post): {"type": "sign", "seq", "top"} after each sign;
 (REC begins after `countdown` seconds and lasts `duration`), then "processing" when it stops.
 Keys: SPACE sign, ENTER end the sentence, BACKSPACE drop the last sign, S skip (tests), Q quit.
 
-Single-screen demo (--no-preview --control-port 8765): no OpenCV window; the /guest page drives
-the free mode with POST http://127.0.0.1:8765/sign, /end, /undo (loopback only, CORS open,
-empty body) and shows the countdown from the "capture" events. GET /health answers ok.
+Single-screen demo (--no-preview --control-port 8765): no OpenCV window, the /guest page drives
+it through http://127.0.0.1:8765 (loopback only, CORS open, empty body):
+  GET  /preview.mjpg  live mirrored camera feed for an <img>, always on (only this process opens the camera)
+  GET  /health        "ok"
+  POST /turn          the guest's turn, hands-free: sign windows one after another (countdown +
+                      REC each, like the training takes) until a window with no hands, or MAX_TURN_SIGNS;
+                      then the sentence is snapped and sent as "utterance" (or {"type": "turn",
+                      "phase": "end", "empty": true} when the guest signed nothing).
+                      Events: {"type": "turn", "phase": "start"}, capture/sign events, utterance, turn end.
+  POST /sign, /end, /undo   manual control (one sign, end of sentence, drop last sign)
 """
 import argparse
 import os
@@ -55,12 +62,14 @@ def fmt(top):
     return " | ".join(f"{t['label']} {t['conf']:.2f}" for t in top)
 
 
-COMMANDS = queue.Queue()   # "space" / "enter" / "back" from the control server
+COMMANDS = queue.Queue()   # "space" / "enter" / "back" / "turn" from the control server
+PREVIEW = {"jpg": None, "lock": threading.Lock()}   # latest mirrored camera frame as JPEG
+MAX_TURN_SIGNS = 4         # longest guest sentence has 3 signs
 
 
 def serve_control(port):
     """Loopback HTTP server: POST /sign, /end, /undo queue a command for the main loop."""
-    paths = {"/sign": "space", "/end": "enter", "/undo": "back"}
+    paths = {"/sign": "space", "/end": "enter", "/undo": "back", "/turn": "turn"}
 
     class Handler(BaseHTTPRequestHandler):
         def _reply(self, code, body=b"ok"):
@@ -76,7 +85,28 @@ def serve_control(port):
             self._reply(204, b"")
 
         def do_GET(self):
+            if self.path.startswith("/preview.mjpg"):
+                return self._mjpeg()
             self._reply(200 if self.path == "/health" else 404)
+
+        def _mjpeg(self):
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.end_headers()
+            last = None
+            try:
+                while True:
+                    with PREVIEW["lock"]:
+                        jpg = PREVIEW["jpg"]
+                    if jpg is not None and jpg is not last:
+                        self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                                         + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
+                        last = jpg
+                    time.sleep(1 / 25)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
         def do_POST(self):
             cmd = paths.get(self.path)
@@ -90,7 +120,7 @@ def serve_control(port):
 
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    print(f"control: POST http://127.0.0.1:{port}/sign | /end | /undo")
+    print(f"control: http://127.0.0.1:{port}  GET /preview.mjpg /health  POST /turn /sign /end /undo")
 
 
 def wait_key(rec, lines):
@@ -112,20 +142,21 @@ def wait_key(rec, lines):
             return chr(key)
 
 
-def sign_once(rec, predictor, title, target, a):
-    """Record one sign. Returns its probability vector (NONE removed), or None if Q was pressed."""
+def sign_once(rec, predictor, title, target, a, countdown=None):
+    """Record one sign. Returns (probabilities with NONE removed, last image, hands seen);
+    probabilities None if Q was pressed."""
     duration = 3.0 if target in LONG_SIGNS else a.duration
-    a.emit({"type": "capture", "phase": "countdown", "countdown": a.countdown, "duration": duration})
-    got = rec.take(target or "SIGN", title, a.countdown, duration)
+    countdown = a.countdown if countdown is None else countdown
+    a.emit({"type": "capture", "phase": "countdown", "countdown": countdown, "duration": duration})
+    got = rec.take(target or "SIGN", title, countdown, duration)
     a.emit({"type": "capture", "phase": "processing"})
     if got is None:
-        return None, None
+        return None, None, False
     _, frames = rec.process(*got)
     if not frames:
-        p = np.full(len(CLASSES), 1.0 / len(CLASSES))
-    else:
-        p = predictor.probs(features.to_seq(validate(frames)))
-    return without_none(p), got[0][-1]
+        return without_none(np.full(len(CLASSES), 1.0 / len(CLASSES))), got[0][-1], False
+    p = predictor.probs(features.to_seq(validate(frames)))
+    return without_none(p), got[0][-1], True
 
 
 def main(argv=None):
@@ -138,7 +169,8 @@ def main(argv=None):
     ap.add_argument("--duration", type=float, default=2.0)
     ap.add_argument("--post", default=None, metavar="URL", help="POST every event as JSON to this URL")
     ap.add_argument("--no-preview", action="store_true", help="no OpenCV window (single-screen demo)")
-    ap.add_argument("--control-port", type=int, help="serve POST /sign, /end, /undo on 127.0.0.1:PORT")
+    ap.add_argument("--control-port", type=int, help="serve the control API and the camera preview on 127.0.0.1:PORT")
+    ap.add_argument("--next-countdown", type=float, default=1.0, help="countdown before the 2nd, 3rd... sign of a turn")
     a = ap.parse_args(argv)
     if a.no_preview:            # every drawing call of the capture UI becomes a no-op
         def quiet(*_args, **_kwargs):
@@ -153,6 +185,18 @@ def main(argv=None):
     poster = Poster(a.post, os.environ.get("BRIDGE_KEY")) if a.post else None
     rec = Recorder(a.camera)
     seq = 0
+    if a.control_port:          # feed the MJPEG preview from every frame the recorder reads
+        camera_read = rec.read
+
+        def read_and_share():
+            img = camera_read()
+            small = cv2.resize(cv2.flip(img, 1), (640, 360))
+            ok, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            if ok:
+                with PREVIEW["lock"]:
+                    PREVIEW["jpg"] = buf.tobytes()
+            return img
+        rec.read = read_and_share
 
     def emit(ev):
         if poster:
@@ -174,7 +218,7 @@ def main(argv=None):
                     break
                 if key != "space":
                     continue
-                p, img = sign_once(rec, predictor, title, target, a)
+                p, img, _ = sign_once(rec, predictor, title, target, a)
                 if p is None:
                     break
                 top = top3(p)
@@ -201,7 +245,7 @@ def main(argv=None):
                         break
                     if key == "s":
                         break
-                    p, _ = sign_once(rec, predictor, title, target, a)
+                    p, _, _ = sign_once(rec, predictor, title, target, a)
                     if p is None:
                         quit_ = True
                         break
@@ -237,8 +281,30 @@ def main(argv=None):
                 last = f"-> {r['text'] or ' '.join(r['labels'])}"
                 print(f"utterance: heard {' '.join(r['raw'])} -> {' '.join(r['labels'])}  {r['text'] or ''}")
                 sentence = []
+            elif key == "turn":
+                sentence = []
+                emit({"type": "turn", "phase": "start"})
+                print("guest turn")
+                for k in range(MAX_TURN_SIGNS):
+                    p, _, hands = sign_once(rec, predictor, "your turn", None, a,
+                                            countdown=a.countdown if k == 0 else a.next_countdown)
+                    if p is None or not hands:
+                        break
+                    sentence.append(p)
+                    seq += 1
+                    top = top3(p)
+                    emit({"type": "sign", "seq": seq, "top": top})
+                    print(f"  sign {seq}: {fmt(top)}")
+                if sentence:
+                    r = finish(sentence)
+                    print(f"utterance: heard {' '.join(r['raw'])} -> {' '.join(r['labels'])}  {r['text'] or ''}")
+                    last = f"-> {r['text'] or ' '.join(r['labels'])}"
+                else:
+                    print("turn: no sign")
+                emit({"type": "turn", "phase": "end", "empty": not sentence})
+                sentence = []
             elif key == "space":
-                p, _ = sign_once(rec, predictor, f"sentence: {heard}", None, a)
+                p, _, _ = sign_once(rec, predictor, f"sentence: {heard}", None, a)
                 if p is None:
                     break
                 sentence.append(p)
