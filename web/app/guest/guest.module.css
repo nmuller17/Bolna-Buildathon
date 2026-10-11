@@ -1,0 +1,109 @@
+/* Guest screen: nothing but the avatar and the captions. */
+.page {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--navy-950);
+  cursor: none;
+  overflow: hidden;
+}
+
+.stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.stage[hidden] {
+  display: none;
+}
+
+/* Receptionist status: a small pill at the top, out of the way of the avatar's hands. */
+.status {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  border-radius: 999px;
+  background: rgba(10, 20, 40, 0.72);
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-size: clamp(16px, 1.6vw, 24px);
+  letter-spacing: 0.01em;
+  backdrop-filter: blur(6px);
+  animation: fadeIn 200ms ease-out;
+}
+
+.page[data-needs-click] {
+  cursor: pointer;
+}
+
+/* Shown once if Chrome needs a click before it lets the page use audio. */
+.start {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 18px 32px;
+  border-radius: 999px;
+  background: rgba(10, 20, 40, 0.8);
+  border: 1px solid var(--gold);
+  color: var(--gold-strong);
+  font-size: clamp(18px, 1.8vw, 26px);
+  backdrop-filter: blur(6px);
+}
+
+/* For the operator only: small, in a corner. */
+.blocked {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  color: var(--alert);
+  font-size: 13px;
+  opacity: 0.8;
+}
+
+.dots {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.dots i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--gold);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.dots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.dots i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes pulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.8);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+}
