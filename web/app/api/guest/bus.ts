@@ -4,7 +4,7 @@ import type { Prediction } from "../english/intents";
 
 /** What the pages receive (one SSE message each). `replay` is set on the snapshot sent when a page (re)connects. */
 export type GuestEvent =
-  | { type: "sign"; seq: number; top: Prediction[]; at: number }
+  | { type: "sign"; seq: number; top: Prediction[]; at: number; t_sign_end?: number; t_predicted?: number } // t_*: recognizer clock, Unix s (live.py)
   | {
       type: "utterance";
       id: number;
@@ -17,7 +17,8 @@ export type GuestEvent =
       at: number;
     }
   | { type: "framing"; status: string; at: number }
-  | { type: "recognizer"; state: string; at: number };
+  | { type: "recognizer"; state: string; at: number }
+  | { type: "wiped"; at: number }; // staff wiped the session (POST /api/trust): pages clear their guest views
 
 type Listener = (event: GuestEvent) => void;
 
@@ -46,7 +47,7 @@ export function publish(event: GuestEvent) {
     bus.sentence = [];
     bus.lastUtterance = event;
   } else if (event.type === "framing") bus.framing = event;
-  else bus.recognizer = event;
+  else if (event.type === "recognizer") bus.recognizer = event;
   for (const listener of bus.listeners) listener(event);
 }
 
@@ -54,6 +55,23 @@ export function publish(event: GuestEvent) {
 export function snapshot(): GuestEvent[] {
   const bus = guestBus();
   return [bus.recognizer, bus.framing, bus.lastUtterance, ...bus.sentence].filter((e): e is GuestEvent => e !== null);
+}
+
+/** Guest data the bus holds right now: signs in progress, last sentence, framing hint. */
+export function heldItems() {
+  const bus = guestBus();
+  return bus.sentence.length + (bus.lastUtterance ? 1 : 0) + (bus.framing ? 1 : 0);
+}
+
+/** Erases the guest data from the bus (the recognizer state is kept) and tells the pages. Returns the count. */
+export function wipe(at = Date.now() / 1000) {
+  const bus = guestBus();
+  const erased = heldItems();
+  bus.sentence = [];
+  bus.lastUtterance = null;
+  bus.framing = null;
+  publish({ type: "wiped", at });
+  return erased;
 }
 
 export function subscribe(listener: Listener) {
