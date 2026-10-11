@@ -4,4 +4,4 @@ Set at the H13 freeze with `python -m recognition.pin_model recognition/models/m
 and commit this file. Deliberately a constant in git: never read from the models folder,
 no environment override.
 """
-EXPECTED_SHA256 = '1e6ef589ce64b58f5617eef7f4abbfaa546a29f11d625ad4772ec0c9ced05e57'
+EXPECTED_SHA256 = '82b8ed54573dc7e41f0de6c60896f632b17155e0018b0fca50c8edc0e8d525b3'

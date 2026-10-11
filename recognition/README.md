@@ -1,10 +1,59 @@
 # recognition (P3): sign classifier
 
-**Validation status (2026-10-10):** the local `model.pt` is trained on synthetic data only. Accuracy figures in the existing reports are synthetic or awaiting benchmark audit, including signer-overlap checks. Do not use them in slides or claim real guest accuracy. The tests below establish pipeline behavior, not sign-language accuracy.
+**Validation status (2026-10-11):** the demo `model.pt` is now the face-free GISLR 1st-place network (kind `ffislr`, "system D" below), trained from scratch on the five team signers. Its numbers come from a leave-one-signer-out study on four hearing team members, not from guests or Deaf signers, and it has not been checked on the live camera path yet. Do not claim real guest accuracy.
 
 This module turns one segmented sign, given as a list of MediaPipe landmark frames (from the Python MediaPipe library on the laptop, or from the browser), into the three most likely labels out of the 22 classifier classes in `docs/vocabulary.md` section 3. It never sees video: MediaPipe runs first and only landmark coordinates reach the classifier, which keeps the guest's face and surroundings out of it and keeps the model small enough to run on a laptop CPU.
 
-The pipeline is the same for training and serving. Each frame is re-normalized with the CLAUDE.md 6.2 rule (shoulder midpoint as origin, shoulder distance as unit), which is harmless if capture already did it and corrects any upstream difference. Each hand is given to `lh` or `rh` by whichever pose wrist it is closer to, so it does not matter how the landmarker labels handedness. The frames are then turned into a fixed 141-number row per frame (hand position and shape, upper body and nose; face landmarks are not used; layout documented at the top of `features.py`), resampled to 32 time steps, and passed to a small bidirectional GRU. A temperature fitted on a held-out signer may soften overconfident answers (T of 1 or more) but is never allowed to sharpen them, because sharpening on one easy validation signer made the model confidently wrong on a harder one.
+The pipeline is the same for training and serving. Each frame is re-normalized with the CLAUDE.md 6.2 rule (shoulder midpoint as origin, shoulder distance as unit), which is harmless if capture already did it and corrects any upstream difference. Each hand is given to `lh` or `rh` by whichever pose wrist it is closer to, so it does not matter how the landmarker labels handedness. The frames are then turned into a fixed 141-number row per frame (hand position and shape, upper body and nose; face landmarks are not used; layout documented at the top of `features.py`), resampled to 32 time steps, and passed to a small bidirectional GRU. (That describes the `gru` and `baseline` kinds; the demo model has its own face-free input, described under "Demo model" below.) A temperature fitted on a held-out signer may soften overconfident answers (T of 1 or more) but is never allowed to sharpen them, because sharpening on one easy validation signer made the model confidently wrong on a harder one.
+
+## Demo model: face-free GISLR 1st-place network (kind `ffislr`, 2026-10-11)
+
+`recognition/models/model.pt` is the network of the Kaggle GISLR 1st-place solution (hoyso48, MIT; see
+`recognition/NOTICE`), ported to PyTorch in `recognition/ffislr.py`, with every face input removed, and
+trained **from scratch on our own recordings only**. No third-party weights and no third-party data are in it.
+In the transfer study (`TRANSFER_RESULTS.md` in Talha's handoff folder, not in the repo) this is "system D". It replaced the
+teammates' logistic-regression baseline, which is kept as `recognition/models/model_baseline_team5.pt`.
+
+Why this one. Talha asked for sources whose licence allows commercial use. The 1st-place code is MIT (checked on
+GitHub, 2026-10-11). D uses only that code, so its licence chain is clean. The transferred variant C0, which starts
+from the 1st-place published weights, was slightly better, but those weights' Kaggle page says "Unknown" licence, so
+it was not used. The 6th-place weights (Théo Viel, MIT) were not tested: porting their network and re-running the
+four folds would have taken more than the two hours available.
+
+Leave-one-signer-out results (cosme, maya, nath, roni each held out in turn; Talha was training data only and never
+a validation or test signer; 1,056 test takes; same 0.6 rule for both):
+
+| | Baseline (previous `model.pt`) | `ffislr` (system D) |
+|---|---|---|
+| Wrong sign spoken at 0.6 | 3.6% (38 takes), 1.1% to 6.1% per signer | 1.1% (12 takes), 0% to 1.9% per signer |
+| Accuracy | 91.7% | 93.7% |
+| Answer given (confident enough to speak) | 93.0% | 83.5% (only 62% for nath) |
+| A "no sign" take spoken as a sign | 35.4% | 18.8% (48 takes, about 2 points each) |
+| Time per sign on CPU (busy machine) | about 1.3 ms | about 45 ms |
+| File size | 0.1 MB | 7.1 MB |
+
+What this means: the new model speaks a wrong word about three times less often, which is what matters most at a
+front desk, but it stays silent more often, so guests will be asked to repeat more. Four test signers cannot prove
+the difference (the 95% interval over signers includes zero), and every test signer is a hearing teammate.
+
+How the demo file was trained (`python -m recognition.train_ffislr`): roni was held out (the `train.split` rule,
+seed 0, over the four non-Talha signers) to choose the number of epochs and the temperature; the network was then
+retrained from the same seed on all five signers (1,320 takes) for that many epochs. The run record is
+`data/ffislr_final/run.json` and the checkpoint's `meta`. Result: held-out roni chose 35 epochs (validation accuracy 97.7%) and temperature 1.0;
+the committed `model.pt` has SHA-256 `82b8ed54573dc7e41f0de6c60896f632b17155e0018b0fca50c8edc0e8d525b3` (pinned in
+`model_pin.py`), 1.75 million parameters, 7.1 MB.
+
+Privacy: the face is removed before the input is prepared, at three points: `drop_face` before normalisation,
+`minimise` (pose points 1 to 10 become the pose nose), and `preprocess` itself, which blanks every face-mesh row
+whatever the caller passes. The loader also refuses an `ffislr` checkpoint whose first layer has any weight on a
+lip or eye input. `tests/test_ffislr.py` checks that a random face, a zero face and no face give bit-identical
+outputs, even for a network that does have face weights.
+
+Fallback to the baseline: `python -m recognition.pin_model recognition/models/model_baseline_team5.pt`, then start
+the server with `RECOGNITION_MODEL=recognition/models/model_baseline_team5.pt` (or copy it over `model.pt`). The
+pin is a single hash, so switching is a deliberate re-pin; all three kinds (`ffislr`, `gru`, `baseline`) load.
+Before trusting the switch, run the scripted demo signs live with two or three people and re-measure the latency
+on the demo laptop.
 
 ## Data layout expected from capture.py
 
@@ -181,7 +230,7 @@ The server never logs request bodies or landmarks, never writes incoming frames 
 - `capture.py` and capture mode multiply x and z by width/height before normalizing, so the shoulder normalization is no longer skewed by the camera's aspect ratio; a different camera or resolution still changes the field of view and MediaPipe's accuracy, so capture and live should use the same camera at 1280x720. Training files made without the aspect scaling (for example by an older capture.py) would not match and must be re-captured.
 - Browser selfie views are usually mirrored, and MediaPipe hand labels depend on whether the image was flipped. Hands are reassigned by the pose wrists, and training uses random left/right mirroring so the model tolerates a mirrored body and left-handed signers, but the browser should still feed MediaPipe the unmirrored camera image (mirror only the on-screen preview).
 - A closed-set classifier will often speak a confident wrong word for a sign it was never trained on. Record varied `NONE` takes, and consider adding public out-of-vocabulary signs as `NONE` (`--oov-none`, below).
-- `recognition/models/model.pt` is gitignored; whoever trains the demo model must share it with the person running the server.
+- `*.pt` files are gitignored; the demo `model.pt` and `model_baseline_team5.pt` are committed on purpose (force-added, both under 10 MB). A newly trained model must be pinned and shared with whoever runs the server.
 
 ## Public data
 
