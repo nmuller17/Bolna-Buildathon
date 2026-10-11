@@ -599,6 +599,13 @@ All events travel as Server-Sent Events from `GET /api/events`. Each message has
 | `vlm_proposal` (reserved) | — | — | `vlm_suggestion` with `VLM_FALLBACK=1` | Stub only |
 | `session_end` | yes (reason, `pendingLost`) | yes | End guest, idle, cap, guest left, pair failed, repair (guest only), restart | Clients clear everything; the guest end screen says why |
 | `status` | — | yes, every 2 s and on change | Server | Recognizer (with framing and restarts), guest connection, counters, privacy, latency, profile, flags |
+| `live_caption` (features F3) | yes (text, words with `unsure`, backend, `rev`, `final`, `retracted`) | yes (plus `decodeMs`, `speechEndToFinalMs`) | Local STT via `/api/staff/stt`, or staff `live_caption` (browser / OpenAI, opt-in) | Never drives the avatar, the checklist or a fact; card numbers hidden first (`hygiene.ts`) |
+| `caption_backend` (F3) | yes | — (staff sees `status.captions`) | Staff choice; local process up or down; sent after the guest snapshot | The badge: exactly one `CAPTION_BACKEND_LABEL` |
+| `fact`, `fact_cleared` (F1) | yes | `facts` (this guest + hotel values) | Staff `set_fact`, `clear_fact`, `resend_facts`, a quick reply that pins its fact | Not in the guest snapshot (AS-1); staff "Send the facts again" after a reconnect |
+| `desk_alert`, `desk_alert_cleared` (F9) | yes (id, code) | `desk_alerts` (sent, seen) | Staff `send_alert`, `cancel_alert`; guest `ack_alert` | Four generic codes, no free text, no emergency code |
+| `guest_number` (F7) | — | yes | Guest number pad | Never spoken without a staff tap |
+| `interpreter_request.context` (F11) | — | yes | Guest consent card | Language, topic words, last fixed request; never a name, typed text or a number |
+| `session_end.receipt` (F17) | yes | — | Wipe | Ways used, caption backends, voice, vendors (empty offline), erased at |
 
 Guest streams also receive an SSE comment ping (`: p`) every 2 seconds, which is not an event.
 
@@ -615,6 +622,8 @@ Guest streams also receive an SSE comment ping (`: p`) every 2 seconds, which is
 | `GET /api/events?role=staff` | Staff | Staff cookie | — | 4 streams | 200; 401; 403 | P4 |
 | `POST /api/staff/action` | Staff | Staff cookie, same origin | 4 KB JSON | 120/min | 200; 400 (wrong check code carries `triesLeft`); 401; 403; 409 (wrong state, captions before confirmation); 413; 415; 429 | P4 |
 | `GET /api/staff/benchmark` | Staff | Staff cookie | — | — | 200; 401 | P4 |
+| `POST /api/staff/stt` (features F3) | Staff | Staff cookie, same origin; headers `x-stt-utterance`, `x-stt-final`, `x-stt-speech-end` | 960 KB raw PCM (`application/octet-stream`, Content-Length required) | 240/min | 200 (`published` or `skipped`); 400; 401; 403; 409 (no guest, local captions off); 411; 413; 415; 429; 502 (local process failed); 503 (not set up, busy) | P4 |
+| `GET /staff/course` (features F14) | Staff | Host `127.0.0.1:PORT` and the staff cookie, checked in `server.mjs` | — | — | 200; 403 | P4 |
 | `POST /api/guest/signs` | Staff only | Loopback plus `X-Bridge-Key` (at least 32 characters, constant time) | 8 KB JSON | 10/s | 200 (`outcome` includes `stale`, `framing`, `ignored_pending`, `held`); 400; 401; 403 (not loopback, or arrived on the guest listener); 404 (`vlm_suggestion` when off); 409 (no active session, or guest not signing; never for `framing` or `status`); 413; 415; 429; 503 (`BRIDGE_KEY` unset or short) | P4 |
 | `GET /api/guest/signs` | Staff only | Loopback plus `X-Bridge-Key` | — | 10/s | 200 `{accepting}`; 401; 403; 503 | P4 |
 | `POST /api/dev/simulate` | Staff only | Staff cookie, `SB_SIMULATE=1` | 8 KB JSON | 10/s | as `/api/guest/signs`; 404 when off | P4 |
