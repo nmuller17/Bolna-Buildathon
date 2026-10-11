@@ -85,9 +85,30 @@ export function mapStaffTextToGloss(text: string, known?: Set<string>): { gloss:
     .map((part) => part.trim())
     .filter(Boolean);
 
-  const matches = (parts.length ? parts : [text]).map((part) => mapStaffTextToIntent(part, known));
+  const matches = (parts.length ? parts : [text]).flatMap((part) => splitOnCommas(part, known));
   const gloss = matches.flatMap((match) => match.gloss);
   return { gloss, matches };
+}
+
+// Whisper often writes "Welcome, do you have a reservation?" for two sentences. A comma starts a
+// new intent only when the piece after it is an intent of its own and a different one; otherwise
+// it stays with the piece before ("Late checkout is fine, until 1 PM", "One moment, please",
+// "Sorry, can you repeat?").
+function splitOnCommas(sentence: string, known?: Set<string>): Classification[] {
+  const pieces = sentence.split(",").map((piece) => piece.trim()).filter(Boolean);
+  const groups: string[] = [];
+  for (const piece of pieces) {
+    const last = groups[groups.length - 1];
+    if (last === undefined) {
+      groups.push(piece);
+      continue;
+    }
+    const before = mapStaffTextToIntent(last, known).intentId;
+    const after = mapStaffTextToIntent(piece, known).intentId;
+    if (after !== "unknown" && after !== before) groups.push(piece);
+    else groups[groups.length - 1] = `${last}, ${piece}`;
+  }
+  return (groups.length ? groups : [sentence]).map((group) => mapStaffTextToIntent(group, known));
 }
 
 // Words with no sign of their own in a short ASL gloss.

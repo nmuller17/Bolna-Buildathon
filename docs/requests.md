@@ -138,3 +138,49 @@ Merging `origin/p1-gloss-vocab` (which contains `origin/codex/p1-voice-gloss`) i
 | 9 | Nath | The staff page plays `/api/tts` WAVs through one `AudioContext` unlocked on "Start desk" (Chrome required), and `warmUpVoice()` finishes before `live.py` starts. No change to your files | Safari autoplay and CPU contention (plan C1-16) |
 | 10 | Owner of `.env.example` | Also add `SB_PROFILE`, `MODE0_GUEST_INPUT`, `VRI_CONTACT_KIND`, `VRI_CONTACT` (replacing `VRI_PHONE`) | Plan 14 item 11 |
 | 11 | All | Never type `BRIDGE_KEY` inline (use `read -s` or a `0600` file); never project the terminal that prints the `#k=` staff URL | Plan OPS-12 |
+## 2026-10-10, from P4 (Nath) to all: BroadcastChannel addition (CLAUDE.md 6.7), backward compatible
+- New message `{ type: "staff_status", state: "idle" | "listening" | "processing" }`, sent by `/staff` around push-to-talk so `/guest` can show that the receptionist is speaking. The three 6.7 messages are unchanged.
+- Types and a `useSignbridgeChannel(onMessage)` hook are in `web/lib/channel.ts`, with the turn type shared by both directions: `{ from: "staff" | "guest", text, gloss?, signs?, at }`.
+
+## 2026-10-10, from P4 (Nath) to P1: push-to-talk recorder lives in web/components for now
+`web/lib/voice/recorder.ts` and `client.ts` were still empty, so `/staff` uses `web/components/usePushToTalk.ts` (MediaRecorder webm for `/api/transcribe`, plus the browser's Web Speech recognition in parallel as the Whisper fallback) and calls `/api/transcribe` and `/api/gloss` itself. P1 can move both into `web/lib/voice/` and P4 will switch the imports.
+
+## 2026-10-10, from P4 (Nath) to all: the demo runs hands-free on one screen, /guest (CLAUDE.md 2 and 7.1)
+- `/guest` now listens to the receptionist all the time: voice activity detection cuts each utterance (`web/components/voiceListener.ts`), then `/api/transcribe`, then `/api/gloss` per sentence, then the avatar signs with karaoke captions (`useHandsFreeSpeech`). No talk button, nothing of the pipeline on screen. If Whisper has no key or fails, Chrome's continuous Web Speech recognition takes over.
+- `/staff` stays as an optional operator console (push-to-talk and a text field), sending `staff_utterance` to `/guest` over the BroadcastChannel as before.
+- Proposal: update CLAUDE.md 2 and 7.1 to match (one screen for staff to guest, mic on the guest laptop).
+
+## 2026-10-10, from P4 (Nath) to P1: /api/gloss drops the second intent after a comma
+Whisper often writes "Welcome, do you have a reservation?" instead of "Welcome! Do you have a reservation?". `/api/gloss` then returns `HELLO WELCOME` only, so the question is never signed. With "!" it returns both intents. Could it return every intent of a sentence (the BROWS marker can go first), or split on the commas between intents? A Whisper `prompt` with demo sentences written with full stops would also help. `/guest` already sends one `/api/gloss` request per sentence (split on . ! ?).
+
+## 2026-10-10, from P3 to P4: streaming recognition bridge
+
+The backend closure adds immediate `sign` events, followed by `utterance` events, plus
+`framing` and `status` events. The payload examples and timestamps are in
+`recognition/README.md`, section "App bridge". `live.py --post` sends each event to
+`/api/guest/signs` with `X-Bridge-Key`; it sends no images or landmarks.
+
+The draft `p4-app` plan and `web/lib/app/types.ts` still accept only a `signs` batch.
+Update the receiver and its validators for these four event types during the app build.
+Display each sign immediately, use the completed utterance for the confirmation step,
+and never speak an utterance marked `needs_repeat`, a mock result, or a stale event
+from an ended guest session. Keep the bridge loopback-only and require the configured
+key. Sequence numbers restart with the recognizer process; they are not session IDs.
+Bind incoming events to the active guest session and reject stale/replayed events.
+The transport is best effort and drops queued events under backpressure, so account
+for missing sequence numbers. The protected `/predict` Frame[] contract is unchanged.
+
+Validation and release remain separate: the current local checkpoint is synthetic,
+benchmark accuracy is unaudited, and real held-out signer recordings are still needed.
+No security attack testing should run on Talha's own Mac.
+
+## 2026-10-10, from P4 (Nath) to P3 (+ team): guest -> staff bridge is built (recognizer events to the app)
+- `POST /api/guest/signs` takes the recognizer's events: `sign`, `utterance` (live_key's `{ raw, labels, text, snapped }` and live.py's `{ signs, seqs, needs_repeat }`), `framing`, `status`. Loopback only, `X-Bridge-Key` checked when `BRIDGE_KEY` is set (timing-safe). Malformed events get a 400.
+- `GET /api/guest/stream` (Server-Sent Events) pushes them to `/guest` and `/staff`. On (re)connect a page first gets the current state, marked `replay`, which is never spoken again.
+- `text: null` goes through `/api/english` (intents table with `LEAVE`, then Claude, then the labels as words). An utterance with `needs_repeat`, a `NONE` label, or from a `mock` recognizer is never spoken: `/guest` asks "could you sign that again?".
+- `/guest` shows each sign as a tag (label + confidence), then "You said: ...", with the tip line. `/staff` shows the sentence big, the corrected labels, the raw ones in grey when they differ, and speaks it (`/api/tts`, browser voice as fallback; first click on `/staff` unlocks sound).
+- Not done (demo scope): binding events to a guest session and rejecting replays. Signs are provisional (an undo sends no event); the utterance's labels are what counts.
+- Run: `npm run dev` in `web/` (for a hard loopback guarantee: `npx next dev -H 127.0.0.1`, plus a `BRIDGE_KEY` in `web/.env.local` and the same in the recognizer's shell), then `python -m recognition.live_key --camera 1 --post http://127.0.0.1:3000/api/guest/signs`. Open the pages as `http://localhost:3000/guest` and `/staff`: Next dev blocks its own scripts for pages opened as `127.0.0.1` (allowedDevOrigins).
+
+## 2026-10-10, from P4 (Nath) to all: BroadcastChannel addition `voice_output` (CLAUDE.md 6.7), backward compatible
+`{ type: "voice_output", playing: boolean }`: `/staff` sends it around speaking the guest's sentence, and `/guest` mutes its hands-free microphone meanwhile, so the avatar never signs our own voice back. `/guest` also posts `staff_utterance` for what it heard, so `/staff` shows what the avatar signed.

@@ -8,16 +8,18 @@ type Props = {
   activeIndex: number | null;
   /** Fills the screen with bigger text, used when the avatar cannot render. */
   large?: boolean;
+  /** Faded: the last sentence, kept on screen while the avatar rests. */
+  dim?: boolean;
 };
 
 const MARKERS: Record<string, string> = { "BROWS-UP": "brows up ↑", "BROWS-DOWN": "brows down ↓" };
 
 const label = (token: string) => (token.startsWith("FS:") ? `fs-${token.slice(3)}` : token);
 
-export default function AvatarCaptions({ text, gloss, activeIndex, large = false }: Props) {
+export default function AvatarCaptions({ text, gloss, activeIndex, large = false, dim = false }: Props) {
   const marker = MARKERS[gloss[0]];
   return (
-    <div style={large ? { ...styles.box, ...styles.boxLarge } : styles.box}>
+    <div style={{ ...styles.box, ...(large ? styles.boxLarge : null), opacity: dim ? 0.4 : 1 }}>
       <p style={large ? { ...styles.text, ...styles.textLarge } : styles.text}>{text || " "}</p>
       <div style={styles.tokens}>
         {marker && <span style={styles.marker}>{marker}</span>}
@@ -37,10 +39,11 @@ const styles: Record<string, CSSProperties> = {
   box: {
     padding: "18px 32px 26px",
     textAlign: "center",
-    background: "#050a14",
-    borderTop: "1px solid rgba(56, 189, 248, 0.25)",
+    background: "var(--navy-950, #050a14)",
+    borderTop: "1px solid var(--line, rgba(56, 189, 248, 0.25))",
     color: "#fff",
-    fontFamily: "system-ui, -apple-system, 'Segoe UI', sans-serif",
+    fontFamily: "var(--font, system-ui, -apple-system, 'Segoe UI', sans-serif)",
+    transition: "opacity 600ms ease",
   },
   boxLarge: {
     flex: 1,
@@ -72,11 +75,11 @@ const styles: Record<string, CSSProperties> = {
     transition: "all 120ms ease-out",
   },
   active: {
-    color: "#1a0f00",
-    background: "#ffb02e",
-    borderColor: "#ffb02e",
+    color: "var(--gold-ink, #1a0f00)",
+    background: "var(--gold, #ffb02e)",
+    borderColor: "var(--gold, #ffb02e)",
     transform: "scale(1.08)",
-    boxShadow: "0 0 24px rgba(255, 176, 46, 0.55)",
+    boxShadow: "0 0 24px rgba(217, 180, 95, 0.5)",
   },
   marker: {
     padding: "4px 12px",

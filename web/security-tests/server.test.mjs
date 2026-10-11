@@ -161,7 +161,9 @@ describe("server.mjs, default (loopback) mode", { concurrency: false }, () => {
   let port, srv;
   before(async () => {
     port = await freePort();
-    srv = await startServer(["server.mjs"], serverEnv({ PORT: String(port) }), { port, path: "/guest" });
+    // Piper is off by default since the p4-app merge (27e6b51, ElevenLabs only); the Piper hardening
+    // tests below run with the opt-in PIPER_FALLBACK=1, which is where the hardening matters.
+    srv = await startServer(["server.mjs"], serverEnv({ PORT: String(port), PIPER_FALLBACK: "1" }), { port, path: "/guest" });
   });
   after(async () => srv && (await stopServer(srv.child)));
 
@@ -407,6 +409,24 @@ describe("server.mjs --lan, attacked from this Mac's LAN address", { concurrency
     const r = await request({ port, method: "POST", path: "/api/english", headers: JSON_H, body: signs("WHERE", "ELEVATOR") });
     assert.equal(r.status, 200, r.body);
     assert.deepEqual(JSON.parse(r.body), { text: "Where is the elevator?" });
+  });
+});
+
+describe("server.mjs, default voice: ElevenLabs only, Piper off (p4-app 27e6b51)", { concurrency: false }, () => {
+  let port, srv;
+  before(async () => {
+    port = await freePort();
+    srv = await startServer(["server.mjs"], serverEnv({ PORT: String(port) }), { port, path: "/guest" });
+  });
+  after(async () => srv && (await stopServer(srv.child)));
+
+  test("merge: with no ElevenLabs key and no PIPER_FALLBACK, /api/tts answers 500 and never starts Piper", async () => {
+    const before = spyLog().length;
+    const r = await request({ port, method: "POST", path: "/api/tts", headers: JSON_H, body: json({ text: "Yes, I have a reservation." }) });
+    assert.equal(r.status, 500, r.body);
+    assert.deepEqual(JSON.parse(r.body), { error: "TTS failed" });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(spyLog().length, before, "Piper ran although PIPER_FALLBACK is off");
   });
 });
 

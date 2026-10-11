@@ -69,22 +69,26 @@ function speakWithBrowser(text: string): Promise<void> {
   });
 }
 
-/** Turns recognized signs into a spoken English sentence. Resolves with the sentence when speech ends. */
-export async function speakSigns(signs: Prediction[]): Promise<string> {
-  const res = await postJson("/api/english", { signs });
-  if (!res.ok) throw new Error(`/api/english failed: ${res.status}`);
-  const { text } = (await res.json()) as { text: string };
-  if (!text) return "";
-
+/** Speaks an English sentence: /api/tts audio, or the browser's voice if it is late or cannot play. Resolves when done. */
+export async function speakText(text: string): Promise<void> {
+  if (!text) return;
   try {
     await playWav(await fetchWav(text));
   } catch {
     await speakWithBrowser(text);
   }
+}
+
+/** Turns recognized signs into a spoken English sentence. Resolves with the sentence when speech ends. */
+export async function speakSigns(signs: Prediction[]): Promise<string> {
+  const res = await postJson("/api/english", { signs });
+  if (!res.ok) throw new Error(`/api/english failed: ${res.status}`);
+  const { text } = (await res.json()) as { text: string };
+  await speakText(text);
   return text;
 }
 
-/** Makes the server pre-generate the known guest sentences with Piper, the offline fallback (~7 s in the background). Call once on page load. */
+/** Warms /api/tts up (route compiled, ElevenLabs connection open) so the first real sentence speaks without delay. Call once on page load. */
 export async function warmUpVoice(): Promise<void> {
   try {
     await postJson("/api/tts", { text: "Yes." }); // any request starts the warm-up
