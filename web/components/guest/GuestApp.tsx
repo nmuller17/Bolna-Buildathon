@@ -72,6 +72,9 @@ function useNow(ms = 1000) {
   return now;
 }
 
+const INTERPRETER_SENT = "Interpreter request sent to the desk.";
+const INTERPRETER_ACKED = "The desk is arranging an interpreter.";
+
 /* ------------------------------------------------------------------ */
 
 export default function GuestApp() {
@@ -137,6 +140,11 @@ function GuestBody({ u }: { u: Ui }) {
       <Header u={u} />
       {ui.warning && <TimeWarning warning={ui.warning} />}
       {ui.notice && <Notice text={ui.notice.text} at={ui.notice.at} />}
+      {ui.interpreter !== "none" && ui.settings.guestMode !== "interpreter" && ui.settings.guestMode !== "choosing" && (
+        // Asked from the More menu while typing or signing: the guest still sees that the request went
+        // out and when the desk answered (the Interpreter panel shows the same states).
+        <p className={s.notice}>{ui.interpreter === "acked" ? INTERPRETER_ACKED : INTERPRETER_SENT}</p>
+      )}
       {ui.settings.guestMode === "choosing" ? (
         displayOnly ? <DisplayOnlyChoices /> : <FirstScreen session={u.session} />
       ) : (
@@ -198,6 +206,10 @@ function LiveRegions({ ui }: { ui: GuestUi }) {
     if (ui.notice) setPolite(ui.notice.text);
   }, [ui.notice]);
   useEffect(() => {
+    if (ui.interpreter === "sent") setPolite(INTERPRETER_SENT);
+    if (ui.interpreter === "acked") setPolite(INTERPRETER_ACKED);
+  }, [ui.interpreter]);
+  useEffect(() => {
     if (ui.help.state === "sent") setAssertive("Staff has been alerted.");
     if (ui.help.state === "acked") setAssertive("Staff is coming.");
     if (ui.help.state === "failed") setAssertive("This screen could not reach the desk. Wave or knock at the desk.");
@@ -206,7 +218,11 @@ function LiveRegions({ ui }: { ui: GuestUi }) {
     if (ui.warning) setAssertive("This session will end soon unless the desk keeps it open.");
   }, [ui.warning]);
   useEffect(() => {
-    if (ui.end) setAssertive(`This conversation has ended. ${END_REASON_GUEST[ui.end.reason]}`);
+    if (!ui.end) return;
+    // The wipe also clears the polite region: it may still hold the guest's last typed or signed
+    // sentence ("Sent to the front desk: ..."), which must not outlive the conversation (BN-4, SES-9).
+    setPolite("");
+    setAssertive(`This conversation has ended. ${END_REASON_GUEST[ui.end.reason]}`);
   }, [ui.end]);
 
   return (
@@ -436,9 +452,11 @@ function Conversation({ u }: { u: Ui }) {
   const displayOnly = ui.hello?.displayOnly ?? false;
   // Key-triggered signing: the Record button is used every few seconds, so it also comes first.
   const keySigning = ui.hello?.signTrigger === "key" && ui.settings.guestMode === "sign" && ui.signingAvailable;
+  // A repeat request or camera guidance also needs the guest now; on a phone it would sit below the fold.
+  const needsGuest = ui.repeat !== null || (ui.settings.guestMode === "sign" && ui.framing !== null && ui.framing !== "OK");
   return (
     // While a sentence waits for the guest, a phone shows it first, within thumb reach (plan 4.5).
-    <div className={s.conversation} data-pending={((ui.pending !== null || keySigning) && !displayOnly) || undefined}>
+    <div className={s.conversation} data-pending={((ui.pending !== null || keySigning || needsGuest) && !displayOnly) || undefined}>
       <DeskSaid session={u.session} />
       <section className={s.you} aria-labelledby="you-title">
         {displayOnly ? <DisplayOnlyYou ui={ui} /> : <YouPanel session={u.session} />}
@@ -1175,7 +1193,7 @@ function InterpreterPanel({ session }: { session: Session }) {
         <p className={s.lead} role="status">
           {ui.interpreter === "none" && "The desk has not been asked yet."}
           {ui.interpreter === "sent" && "Request sent."}
-          {ui.interpreter === "acked" && "The desk is arranging an interpreter."}
+          {ui.interpreter === "acked" && INTERPRETER_ACKED}
         </p>
         {ui.interpreter === "none" && (
           <button type="button" className={s.primary} onClick={() => void requestInterpreter()}>
