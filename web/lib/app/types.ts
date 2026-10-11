@@ -1005,6 +1005,8 @@ export type PrivacyCounters = {
   skeletonsHeld: number;
   /** Fixed table sentences sent to /api/tts (Piper renders each into a temporary file, see diskNote). */
   ttsFixedSentences: number;
+  /** features-plan (builder S): what the hygiene step hid before a vendor call, log or guest caption (kinds and counts, never values). */
+  redactions?: Partial<Record<RedactionKind, number>>;
 };
 
 /**
@@ -1175,12 +1177,16 @@ export type StaffStatus = {
 /** One line of the in-memory conversation log on the staff screen. */
 export type LogEntry =
   | { kind: "staff"; seq: number; at: number; id: string; text: string; gloss: string[]; captionSource: CaptionSource; glossSource: GlossSource; intent: StaffIntentKey | null; shownOnDeviceAt: number | null; guestReply: GuestReplyKind | null }
-  | { kind: "guest"; seq: number; at: number; proposalId: string; text: string; signs: StaffSignView[]; intentId: GuestIntentId | null; source: CandidateSource; speak: SpeakPlan; spokenAt: number | null; confirmedBy: "guest" | "staff_for_guest"; simulated: boolean }
+  | { kind: "guest"; seq: number; at: number; proposalId: string; text: string; signs: StaffSignView[]; intentId: GuestIntentId | null; source: CandidateSource; speak: SpeakPlan; spokenAt: number | null; confirmedBy: "guest" | "staff_for_guest"; simulated: boolean; via?: PhraseVia }
   | { kind: "guest_typed"; seq: number; at: number; text: string; readAloudAt: number | null }
   | { kind: "guest_reply"; seq: number; at: number; reply: GuestReplyKind; captionId: string | null }
   | { kind: "guest_setting"; seq: number; at: number; text: string }
   | { kind: "repeat"; seq: number; at: number; reason: RepeatReason; recognizerSaidRepeat: boolean }
-  | { kind: "system"; seq: number; at: number; text: string };
+  | { kind: "system"; seq: number; at: number; text: string }
+  /** features-plan F3 (builder S): a FINAL live caption of the receptionist's speech (machine captions). */
+  | { kind: "live_caption"; seq: number; at: number; utteranceId: string; text: string; backend: CaptionBackend; retracted: boolean }
+  /** features-plan F7 (builder S): a number typed on the guest number pad; never spoken without a staff tap. */
+  | { kind: "guest_number"; seq: number; at: number; about: NumberAbout; value: string };
 
 export type StaffSnapshot = {
   type: "snapshot";
@@ -1191,6 +1197,10 @@ export type StaffSnapshot = {
   evidence: StaffSignView[];
   warnings: SafetyWarning[];
   pending: GuestProposal | null;
+  /** features-plan (builder S, additive): this guest's facts, open desk alerts and the interpreter card. */
+  facts?: Omit<StaffFacts, "type">;
+  deskAlerts?: StaffDeskAlertState["alerts"];
+  interpreterCard?: InterpreterContextCard | null;
 };
 
 export type StaffSessionState = { type: "session_state"; state: SessionState; pairing: PairingInfo | null; device: GuestDeviceInfo | null; confirmTriesLeft: number | null };
@@ -1353,6 +1363,8 @@ export type GuestAction = { n: string } & (
   | { type: "guest_number"; about: NumberAbout; value: string }
   /** features-plan F9: the guest saw a desk alert and tapped "OK". */
   | { type: "ack_alert"; id: string }
+  /** Builder S (additive, optional): the guest tapped "Show my card" (counted for F16/F17 only; nothing else is sent). */
+  | { type: "card_shown" }
   /** Never refused with 429 or 409; accepted before confirmation and while paused. */
   | { type: "emergency" }
   | { type: "prefs"; speakAloud?: boolean; showAvatar?: boolean }
@@ -1406,7 +1418,8 @@ export type StaffAction =
   /** Choose the live-caption backend. Cloud backends are refused in the engagement profile (D8). */
   | { type: "caption_backend"; backend: CaptionBackend }
   /** Browser speech (Web Speech API) runs in the staff page; its text comes in here. Local STT does not use this. */
-  | { type: "live_caption"; utteranceId: string; text: string; final: boolean; backend: BrowserCaptionBackend }
+  /** Builder S: "cloud_openai" = the staff page sent one utterance to P1's /api/transcribe and posts its text here. */
+  | { type: "live_caption"; utteranceId: string; text: string; final: boolean; backend: BrowserCaptionBackend | "cloud_openai" }
   /** Staff withdraw a live caption that was wrong ("Remove from guest screen"). */
   | { type: "retract_caption"; utteranceId: string }
   /** Facts typed by staff (never from speech recognition), shown as tiles and on the take-home card. */
@@ -1621,15 +1634,20 @@ export type CaptionStatus = {
   browserAllowed: boolean;
   /** Median and last local decode time in ms over the last 20 requests, or null (measured, never invented). */
   localDecodeMs: { median: number | null; last: number | null };
+  /** Builder S addition: end of speech (staff page) to the final caption at the server, median and last (measured). */
+  speechEndToFinalMs?: { median: number | null; last: number | null };
 };
 
-/** Body of POST /api/staff/stt is raw PCM; these headers carry the rest (validated, short). */
+/**
+ * Body of POST /api/staff/stt is raw PCM; these headers carry the rest (validated, short).
+ * Builder S: named x-stt-* because web/server.mjs deletes every client-sent x-sb-* header (B1).
+ */
 export type SttRequestHeaders = {
-  "x-sb-utterance": string;
+  "x-stt-utterance": string;
   /** "0" interim, "1" final. */
-  "x-sb-final": "0" | "1";
+  "x-stt-final": "0" | "1";
   /** ms since epoch when the staff page detected the end of speech (final only), for the latency panel. */
-  "x-sb-speech-end"?: string;
+  "x-stt-speech-end"?: string;
 };
 
 /** What web/stt/local_stt.py answers on POST /transcribe (loopback, X-STT-Key). */
@@ -1876,6 +1894,10 @@ export type LineSourceLabel =
   | "Staff speech, machine captions"
   | "Avatar (machine)"
   | "Signs recognised, confirmed by guest"
+  /** Builder S addition: display-only Mode 0, the guest pointed and staff confirmed for them. */
+  | "Signs recognised, confirmed by staff"
+  /** Builder S addition: a repair button under a caption ("Please repeat", "Slower, please"). */
+  | "Repair request tapped by guest"
   | "Typed by guest"
   | "Tapped on board"
   /** Builder G addition (additive): the guest picked a fixed sentence from the phrase list, or after typing (F8). */

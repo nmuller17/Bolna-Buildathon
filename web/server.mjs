@@ -17,7 +17,8 @@
 //   1. deletes every client-sent x-sb-* header;
 //   2. answers 403 unless the Host header is localhost/127.0.0.1/[::1]:PORT, which blocks DNS rebinding;
 //   3. decides loopback from the TCP socket (never from X-Forwarded-For);
-//   4. answers 413 when Content-Length exceeds 8 KB (5 MB for /api/transcribe);
+//   4. answers 413 when Content-Length exceeds 8 KB (5 MB for /api/transcribe, 960 KB for /api/staff/stt);
+//   4a. answers 403 for /staff/course unless Host is 127.0.0.1:PORT and the staff cookie is valid;
 //   5. passes x-sb-loopback and x-sb-proof (a per-start random secret) to the route guard.
 // It never logs URLs, headers or bodies.
 //
@@ -31,8 +32,8 @@ import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createServer } from "node:http";
 import next from "next";
-import { allowedHostsFor, BODY_CAP_AUDIO, BODY_CAP_DEFAULT, hostAllowed, isLoopbackAddress, securityHeaders } from "./lib/app/access.ts";
-import { issueCapability } from "./lib/app/staffcap.ts";
+import { allowedHostsFor, BODY_CAP_AUDIO, BODY_CAP_DEFAULT, BODY_CAP_STT, hostAllowed, isLoopbackAddress, securityHeaders } from "./lib/app/access.ts";
+import { isStaffToken, issueCapability, readCookie, STAFF_COOKIE } from "./lib/app/staffcap.ts";
 import { recordVendorTap } from "./lib/app/taps.ts";
 
 if (process.argv.includes("--lan")) {
@@ -81,7 +82,13 @@ function check(req) {
   if (!hostAllowed(req.headers.host, allowedHosts)) return [403, "host not allowed"];
   if (!isLoopbackAddress(req.socket.remoteAddress)) return [403, "not available from this device"];
   const pathname = (req.url || "/").split("?")[0];
-  const cap = pathname === "/api/transcribe" ? BODY_CAP_AUDIO : BODY_CAP_DEFAULT;
+  // features-plan F14: the staff micro-course is a staff page: Host 127.0.0.1:PORT and the staff cookie.
+  if (pathname === "/staff/course" || pathname.startsWith("/staff/course/")) {
+    if ((req.headers.host || "").trim().toLowerCase() !== `127.0.0.1:${port}`) return [403, "staff pages answer only on the staff address"];
+    if (!isStaffToken(readCookie(req.headers.cookie, STAFF_COOKIE))) return [403, "open the staff link first"];
+  }
+  // features-plan F3: raw PCM for local captions has its own cap (FEATURE_LIMITS.sttBodyMaxBytes).
+  const cap = pathname === "/api/transcribe" ? BODY_CAP_AUDIO : pathname === "/api/staff/stt" ? BODY_CAP_STT : BODY_CAP_DEFAULT;
   const declared = Number(req.headers["content-length"] ?? "0");
   if (!Number.isFinite(declared) || declared > cap) return [413, "request body too large"];
   return null;

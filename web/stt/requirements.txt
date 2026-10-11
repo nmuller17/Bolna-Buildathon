@@ -1,0 +1,9 @@
+# Local speech-to-text for live captions (web/stt/local_stt.py). Install into its OWN venv, never the
+# recognizer venv:  uv venv --python 3.13 /Users/trehman/.venvs/signbridge-stt
+#                   VIRTUAL_ENV=/Users/trehman/.venvs/signbridge-stt uv pip install -r web/stt/requirements.txt
+# The model (Systran/faster-whisper-small.en) must already be in ~/.cache/huggingface: the process
+# runs with HF_HUB_OFFLINE=1 and local_files_only=True, so it never downloads anything.
+faster-whisper==1.2.1
+ctranslate2==4.8.2
+av==19.0.1
+numpy==2.5.4

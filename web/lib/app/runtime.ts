@@ -11,7 +11,18 @@ import type { RouteDeps } from "./routes.ts";
 import { claimCapability, isStaffToken } from "./staffcap.ts";
 import { defaultConfig, Store, type StoreConfig } from "./store.ts";
 import { drainVendorTaps } from "./taps.ts";
-import { LIMITS, SESSION_PROFILES, type SessionProfile, type SignControlCmd, type VriInfo } from "./types.ts";
+import {
+  FACT_KEYS,
+  FEATURE_LIMITS,
+  LIMITS,
+  SESSION_PROFILES,
+  type FactKey,
+  type LocalSttResponse,
+  type SessionProfile,
+  type SignControlCmd,
+  type VriInfo,
+} from "./types.ts";
+import { sanitizeFactValue, validateLocalSttResponse } from "./validate.ts";
 
 const STORE_KEY = Symbol.for("signbridge.store.v2");
 const SWEEPER_KEY = Symbol.for("signbridge.sweeper.v2");
@@ -48,8 +59,35 @@ export function vriFromEnv(env: Env): VriInfo {
   return { label, url, contact: kind && value ? { kind, value } : null };
 }
 
+/**
+ * Hotel-wide fact values (features-plan F1) from the parsed SB_PROPERTY_FACTS file: a JSON object of
+ * fact key to value. Unknown keys and values that fail the fact check are dropped, never guessed.
+ */
+export function propertyFactsFrom(raw: unknown): Partial<Record<FactKey, string>> {
+  const out: Partial<Record<FactKey, string>> = {};
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return out;
+  for (const k of FACT_KEYS) {
+    const v = (raw as Record<string, unknown>)[k];
+    if (v === undefined) continue;
+    const r = sanitizeFactValue(k, v);
+    if (r.ok) out[k] = r.value;
+  }
+  return out;
+}
+
+function readPropertyFacts(file: string | undefined): Partial<Record<FactKey, string>> {
+  if (!file) return {};
+  try {
+    const text = readFileSync(path.resolve(file), "utf8");
+    if (text.length > 8 * 1024) return {};
+    return propertyFactsFrom(JSON.parse(text));
+  } catch {
+    return {};
+  }
+}
+
 /** The store configuration from the environment (plan 14 item 11). Pure, so it can be tested. */
-export function configFromEnv(env: Env, knownSigns: ReadonlySet<string>): StoreConfig {
+export function configFromEnv(env: Env, knownSigns: ReadonlySet<string>, propertyFacts: Partial<Record<FactKey, string>> = {}): StoreConfig {
   const profile: SessionProfile = env.SB_PROFILE === "stage" ? "stage" : "engagement";
   const p = SESSION_PROFILES[profile];
   // IDLE_WIPE_MS and SESSION_CAP_MS override the profile (for rehearsal and tests); 1 s to 4 h.
@@ -74,6 +112,9 @@ export function configFromEnv(env: Env, knownSigns: ReadonlySet<string>): StoreC
     emergencyNote: clean(env.EMERGENCY_NOTE, 200) ?? "This app does not call 911.",
     knownSigns,
     signControlPort: posInt(env.LIVE_KEY_CONTROL_PORT, 1_024, 65_535),
+    // Local captions need both the port and a key of at least 32 characters (demo.sh makes one per start).
+    localSttPort: (env.LOCAL_STT_KEY ?? "").length >= 32 ? posInt(env.LOCAL_STT_PORT, 1_024, 65_535) : null,
+    propertyFacts,
   });
 }
 
@@ -91,13 +132,15 @@ export function getStore(): Store {
   const g = globalThis as unknown as Record<symbol, unknown>;
   let store = g[STORE_KEY] as Store | undefined;
   if (!store) {
-    store = new Store(configFromEnv(process.env, loadKnownSigns()));
+    store = new Store(configFromEnv(process.env, loadKnownSigns(), readPropertyFacts(process.env.SB_PROPERTY_FACTS)));
     g[STORE_KEY] = store;
   }
   if (!g[SWEEPER_KEY]) {
     const s = store;
     let probing = false;
     let lastProbe = 0;
+    let sttProbing = false;
+    let lastSttProbe = 0;
     const timer = setInterval(() => {
       try {
         s.noteVendorTaps(drainVendorTaps());
@@ -110,6 +153,16 @@ export function getStore(): Store {
             .then((up) => s.noteControlHealth(up))
             .finally(() => {
               probing = false;
+            });
+        }
+        const sttPort = s.config.localSttPort;
+        if (sttPort !== null && !sttProbing && Date.now() - lastSttProbe >= STT_PROBE_MS) {
+          sttProbing = true;
+          lastSttProbe = Date.now();
+          sttHealth(sttPort)
+            .then((up) => s.noteLocalStt(up))
+            .finally(() => {
+              sttProbing = false;
             });
         }
       } catch {
@@ -136,6 +189,52 @@ async function controlRequest(port: number, method: "GET" | "POST", p: string): 
     return res.status === 200;
   } catch {
     return false;
+  }
+}
+
+/* ---------------- Local speech-to-text (features-plan F3) ---------------- */
+
+const STT_PROBE_MS = 1_000;
+const STT_RESPONSE_MAX = 64 * 1024;
+
+/** LOCAL_STT_KEY is read at call time from the environment demo.sh set; it is never logged or sent elsewhere. */
+const sttKey = () => process.env.LOCAL_STT_KEY ?? "";
+
+/** GET /health on 127.0.0.1:port: true only when the model is loaded ({ok, ready: true}). */
+async function sttHealth(port: number): Promise<boolean> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/health`, { headers: { "X-STT-Key": sttKey() }, redirect: "manual", signal: AbortSignal.timeout(1_000) });
+    const text = await res.text();
+    if (res.status !== 200 || text.length > 1024) return false;
+    const j = JSON.parse(text) as { ok?: unknown; ready?: unknown };
+    return j.ok === true && j.ready === true;
+  } catch {
+    return false;
+  }
+}
+
+export type SttForwardResult = { ok: true; value: LocalSttResponse } | { ok: false; why: "busy" | "failed" };
+
+/**
+ * One utterance to web/stt/local_stt.py on 127.0.0.1 only: raw PCM, the key in a header, no redirects,
+ * an 8 s timeout and a 64 KB answer cap; the answer is validated before the store sees it.
+ */
+async function sttForward(port: number, pcm: Uint8Array): Promise<SttForwardResult> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/transcribe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream", "X-STT-Key": sttKey() },
+      body: pcm as unknown as BodyInit,
+      redirect: "manual",
+      signal: AbortSignal.timeout(FEATURE_LIMITS.sttTimeoutMs),
+    });
+    const text = await res.text();
+    if (res.status === 503) return { ok: false, why: "busy" };
+    if (res.status !== 200 || text.length > STT_RESPONSE_MAX) return { ok: false, why: "failed" };
+    const v = validateLocalSttResponse(JSON.parse(text));
+    return v ? { ok: true, value: v } : { ok: false, why: "failed" };
+  } catch {
+    return { ok: false, why: "failed" };
   }
 }
 
@@ -178,5 +277,6 @@ export function routeDeps(): RouteDeps {
       const port = store.config.signControlPort;
       return port === null ? Promise.resolve(false) : controlRequest(port, "POST", CONTROL_PATH[cmd]);
     },
+    stt: store.config.localSttPort === null ? undefined : (pcm) => sttForward(store.config.localSttPort as number, pcm),
   };
 }

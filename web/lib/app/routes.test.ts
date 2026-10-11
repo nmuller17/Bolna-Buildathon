@@ -517,9 +517,9 @@ test("DSH-5: privacy counters move only with real deliveries and real vendor tap
   const gc = collect(await events(guestReq("/api/events?role=guest", undefined, g, { origin: null }), w.deps));
   await gc.text();
   const after = w.store.thisGuest.messagesToGuest;
-  assert.equal(after, 2, "hello and snapshot");
+  assert.equal(after, 3, "hello, snapshot and the caption badge (features-plan F3)");
   await staffAction(staffReq(w, { type: "say_quick", intent: "room_number" }), w.deps);
-  assert.equal(w.store.thisGuest.messagesToGuest, 3);
+  assert.equal(w.store.thisGuest.messagesToGuest, 4);
   w.store.noteVendorTaps([{ route: "/api/tts", bytes: 120 }]);
   assert.equal(w.store.thisGuest.vendorCalls[0].count, 1);
   assert.equal(w.store.thisGuest.guestBytesOffLaptop, 120);
