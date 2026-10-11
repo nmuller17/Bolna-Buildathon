@@ -36,6 +36,7 @@ export default function SignBridgePage() {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
   const [scriptMode, setScriptMode] = useState(false);
+  const [started, setStarted] = useState(false); // the Start button was pressed (audio unlocked)
   const queue = useRef<SignedSentence[]>([]);
   const draining = useRef(false);
   const mounted = useRef(false);
@@ -186,7 +187,20 @@ export default function SignBridgePage() {
         staffTalking={speech.state === "hearing" || speech.state === "processing"}
         offline={turns.offline}
       />
-      {speech.state === "needs-click" && <div className={styles.start}>Click anywhere to start</div>}
+      {!started && (
+        <button
+          type="button"
+          className={styles.startButton}
+          onClick={() => {
+            setStarted(true);
+            speech.resume(); // Chrome: microphone and sound only after a user gesture
+            void warmUpVoice();
+          }}
+        >
+          Start
+        </button>
+      )}
+      {started && speech.state === "needs-click" && <div className={styles.start}>Click anywhere to start</div>}
       {speech.state === "blocked" && <div className={styles.blocked}>Microphone unavailable</div>}
       <AvatarCaptions
         text={caption.text}
@@ -196,6 +210,10 @@ export default function SignBridgePage() {
         dim={!playing && caption.text !== ""}
       />
       <GuestCameraSlot state={camera} />
+      <div className={styles.micState} aria-hidden>
+        mic: {speech.state}
+        {speech.mode ? ` (${speech.mode})` : ""}
+      </div>
       {scriptMode && (
         <div className={styles.guided} aria-hidden>
           guided · step {Math.min(turns.scriptStep + 1, DEMO_SCRIPT.length)}/{DEMO_SCRIPT.length}
