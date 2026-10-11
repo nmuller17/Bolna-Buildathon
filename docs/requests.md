@@ -120,3 +120,21 @@ Merging `origin/p1-gloss-vocab` (which contains `origin/codex/p1-voice-gloss`) i
 | 8 | Talha | Accept or decline adding exactly `GET /avatar/bellhop.glb` to the D6 guest path list (a fixed 8 MB file, same for every guest). If declined, the guest uses the `hologram` style | D6 path list is exhaustive |
 | 9 | Owner of `.env.example` | Add `BRIDGE_KEY`, `LAN_IP`, `LAN_NET`, `DESK_NAME`, `GUEST_PORT`, `TLS_KEY_FILE`, `TLS_CERT_FILE`, `TLS_PUBLIC_KEY_FILE`, `TLS_PUBLIC_CERT_FILE`, `GUEST_IPS`, `IDLE_WIPE_MS`, `SESSION_CAP_MS`, `PAIR_CODE_TTL_MS`, `SB_SIMULATE`, `VLM_FALLBACK`, `ENGLISH_FALLBACK`, `BENCHMARK_CLEARED_FILE`, `VRI_LABEL`, `VRI_URL`, `VRI_PHONE`, `EMERGENCY_NOTE`, `KIOSK`; remove `GUEST_LAN`. No `NEXT_PUBLIC_` variables | New configuration |
 | 10 | All | CLAUDE.md 7.2 step 5: scripted guest sentences come from the fixed table with order-insensitive matching, confirmed by the guest; the Claude path of `/api/english` is a later fallback, never used during the engagement window (no vendor keys, D8) | Reliability, privacy, prompt injection |
+
+## 2026-10-10 (22:00), from P4: app plan revision 2 (critique passes; tiers)
+
+`docs/app-plan.md` revision 2 and `web/lib/app/types.ts` were revised after two critique passes (stage readiness, and the Deaf guest's point of view). Section 16 of the plan logs every finding. Only Tier 0 (the loopback stage MVP) is built tonight; TLS, pairing and the header move are Tier 1 (gate G1, isolated loaner).
+
+| # | To | What | Why |
+|---|---|---|---|
+| 1 | Talha | **Decide now** which Mode 0 the stage uses: guest input on the second display (`SB_PROFILE=stage MODE0_GUEST_INPUT=1`, recommended) or display-only exactly as D3. A phone or second laptop is Mode C and cannot run on this Mac | Plan 0a and 15 q1 |
+| 2 | P3 (Talha) | Add a random per-process `run` id to every bridge event | Replay detection on (`run`, `seq`); until then the app treats a lower `seq` as a restart (plan 6.1) |
+| 3 | P3 | Re-send the current framing status every few seconds, not only on change | The app needs the current status right after the guest taps Sign (plan 6.1) |
+| 4 | P3 | Split `CENTER` into `CENTER_LEFT` and `CENTER_RIGHT`, from the guest's point of view | There is no camera preview, so "move to the middle" has no direction (plan 6.4); the app already accepts both |
+| 5 | P3, Nath | `needs_repeat` is now a hint only: the app recomputes the gate, so "Did you mean...?" works for a sign at 0.45 whose own label still matches | Plan 6.3 |
+| 6 | P2 (Cosme) | `preloadSigns(bundle)` is needed before gate G1; until then Mode C shows captions and cards. Should `BROWS-UP` / `BROWS-DOWN` be drawn as tokens on the guest screen at all? | Plan 14 items 7 and 8 |
+| 7 | Owner of `compromised_device.md` 2.4 (AS-23) | Change "The Emergency button" to "The Get staff now button", so the button and the notice share one name. `GUEST_NOTICE` in `types.ts` already uses it; the GST-1 check compares the document text with exactly this substitution | Plan C2-14 |
+| 8 | AS owner | AS-5 rotation gets a 30 s grace and moves to Tier 2; AS-8 applies on every team-owned device and not on a guest's own phone (Mode W S3b); AS-21 "silent stop_signing or prefs" becomes a neutral staff log line plus a confirmation on the guest's own screen; consider a 5-minute engagement idle limit (WCAG 2.2.1) | Plan 9.2, 9.4, 6.6 |
+| 9 | Nath | The staff page plays `/api/tts` WAVs through one `AudioContext` unlocked on "Start desk" (Chrome required), and `warmUpVoice()` finishes before `live.py` starts. No change to your files | Safari autoplay and CPU contention (plan C1-16) |
+| 10 | Owner of `.env.example` | Also add `SB_PROFILE`, `MODE0_GUEST_INPUT`, `VRI_CONTACT_KIND`, `VRI_CONTACT` (replacing `VRI_PHONE`) | Plan 14 item 11 |
+| 11 | All | Never type `BRIDGE_KEY` inline (use `read -s` or a `0600` file); never project the terminal that prints the `#k=` staff URL | Plan OPS-12 |
