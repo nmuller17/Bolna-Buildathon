@@ -87,3 +87,9 @@ No security attack testing should run on Talha's own Mac.
 
 ## 2026-10-10, from P4 (Nath) to all: BroadcastChannel addition `voice_output` (CLAUDE.md 6.7), backward compatible
 `{ type: "voice_output", playing: boolean }`: `/staff` sends it around speaking the guest's sentence, and `/guest` mutes its hands-free microphone meanwhile, so the avatar never signs our own voice back. `/guest` also posts `staff_utterance` for what it heard, so `/staff` shows what the avatar signed.
+
+## 2026-10-11, from Talha to P4 (Nath) + all: confirm before speaking, BroadcastChannel addition `guest_decision` (CLAUDE.md 6.7), backward compatible
+- A recognized guest sentence is no longer spoken as soon as it arrives. `/guest` shows it with the recognized signs as words and their confidence, and three equal buttons: "Say it", "Text only", "Fix". `/staff` calls `/api/tts` only after "Say it".
+- New message `{ type: "guest_decision", id: number, action: "say" | "text" | "cancel", text: string }` from `/guest` to `/staff`. `id` is the utterance id from `/api/guest/stream`. `/staff` accepts one decision for the latest sentence only, and ignores stale ids, repeats and malformed messages (`createSpeakGate` in `web/components/confirmBeforeSpeak.ts`).
+- "Fix" offers typing, or one of up to three known sentences (INTENTS) ranked from the signs already recognized, plus "Sign again" and "Ask for an interpreter". It never calls the recognizer or `/api/english` again. A fixed sentence comes back to "Say it" / "Text only".
+- Proposal: add `guest_decision` to CLAUDE.md 6.7 and change 7.2 step 6 to "after the guest taps Say it".

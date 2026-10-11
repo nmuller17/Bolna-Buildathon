@@ -1,8 +1,10 @@
 // P4: BroadcastChannel("signbridge") helpers, messages from CLAUDE.md 6.7.
 // /staff (laptop) and /guest (monitor facing the guest) are two windows on the same machine.
 // Backward-compatible addition (docs/requests.md): staff_status, so the guest screen can show that the receptionist talks.
+// Backward-compatible addition: guest_decision, the guest's Say it / Text only / Fix choice (components/confirmBeforeSpeak.ts).
 import { useCallback, useEffect, useRef } from "react";
 import type { Prediction } from "@/app/api/english/intents";
+import type { GuestDecision } from "@/components/confirmBeforeSpeak";
 
 export type { Prediction };
 
@@ -15,7 +17,8 @@ export type ChannelMessage =
   | { type: "guest_utterance"; signs: Prediction[]; text: string } // guest signed, staff screen shows the text
   | { type: "repeat_request" } // low confidence, guest screen asks to repeat
   | { type: "staff_status"; state: StaffState } // addition: receptionist talking / being processed
-  | { type: "voice_output"; playing: boolean }; // addition: /staff is speaking the guest aloud, /guest mutes its mic
+  | { type: "voice_output"; playing: boolean } // addition: /staff is speaking the guest aloud, /guest mutes its mic
+  | GuestDecision; // addition: the guest chose Say it / Text only (or cancelled) for a recognized sentence
 
 /** One turn of the conversation, whichever side it comes from. */
 export type ConversationTurn = {
@@ -26,7 +29,7 @@ export type ConversationTurn = {
   at: number; // Date.now()
 };
 
-const TYPES = new Set(["staff_utterance", "guest_utterance", "repeat_request", "staff_status", "voice_output"]);
+const TYPES = new Set(["staff_utterance", "guest_utterance", "repeat_request", "staff_status", "voice_output", "guest_decision"]);
 
 function isMessage(data: unknown): data is ChannelMessage {
   return typeof data === "object" && data !== null && TYPES.has((data as { type?: unknown }).type as string);

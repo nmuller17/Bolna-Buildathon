@@ -4,13 +4,17 @@
 // pipeline: the microphone listens all the time, each sentence is transcribed and turned into signs in the background
 // (useHandsFreeSpeech), then played in order. The optional /staff console can also send sentences on the channel.
 // Guest -> staff: the guest signs to the recognizer's camera window (recognition/live_key.py, next to this one); each
-// recognized sign shows as a tag, then the sentence (GuestSignPanel). /staff speaks it, and this mic is muted meanwhile.
+// recognized sign shows as a tag, then the sentence (GuestSignPanel). Nothing is said aloud until the guest taps
+// "Say it" (GuestConfirm); /staff then speaks it, and this mic is muted meanwhile.
 import { useCallback, useEffect, useRef, useState } from "react";
 import AvatarCaptions from "@/components/AvatarCaptions";
 import GuestCameraSlot from "@/components/GuestCameraSlot";
+import GuestConfirm, { type ConfirmItem } from "@/components/GuestConfirm";
 import GuestSignPanel from "@/components/GuestSignPanel";
+import { LABELS, INTENTS } from "@/app/api/english/intents";
+import { needsConfirm, signChips, topAlternatives, type GuestAction } from "@/components/confirmBeforeSpeak";
 import type { SignedSentence } from "@/components/speechToSigns";
-import { useGuestEvents } from "@/components/useGuestEvents";
+import { useGuestEvents, type GuestSign, type GuestUtterance } from "@/components/useGuestEvents";
 import { useHandsFreeSpeech } from "@/components/useHandsFreeSpeech";
 import { mountAvatar, playGloss } from "@/lib/avatar/player";
 import { useSignbridgeChannel, type StaffState } from "@/lib/channel";
@@ -81,7 +85,22 @@ export default function GuestPage() {
     [sign],
   );
   const speech = useHandsFreeSpeech(signHeard, staffSpeaking);
-  const guest = useGuestEvents();
+
+  // Confirm before speaking: each live sentence waits here for Say it / Text only / Fix. A repeat request,
+  // a mock result or an empty text clears the card (GuestSignPanel shows its own line for those).
+  const [confirm, setConfirm] = useState<ConfirmItem | null>(null);
+  const onGuestUtterance = useCallback((u: GuestUtterance, signs: GuestSign[]) => {
+    if (!needsConfirm(u)) return setConfirm(null);
+    setConfirm({
+      id: u.id,
+      text: u.text,
+      recognized: u.text,
+      chips: signChips(u.labels, signs, LABELS),
+      alternatives: topAlternatives(u, signs, INTENTS),
+      done: null,
+    });
+  }, []);
+  const guest = useGuestEvents(onGuestUtterance);
 
   const sendRef = useRef<ReturnType<typeof useSignbridgeChannel> | null>(null);
   sendRef.current = useSignbridgeChannel((message) => {
@@ -90,6 +109,17 @@ export default function GuestPage() {
     else if (message.type === "voice_output") setStaffSpeaking(message.playing);
     // TODO (guest -> staff): on repeat_request, ask the guest to sign again ("Could you repeat?", CLAUDE.md 7.2).
   });
+
+  /** The guest's choice goes to /staff, which speaks only for "say" (createSpeakGate). */
+  const confirmRef = useRef<ConfirmItem | null>(null);
+  confirmRef.current = confirm;
+  const decide = useCallback((action: GuestAction, text: string) => {
+    const c = confirmRef.current;
+    if (!c || c.done) return; // one choice per sentence
+    sendRef.current?.({ type: "guest_decision", id: c.id, action, text });
+    setConfirm({ ...c, text: text || c.text, done: action });
+  }, []);
+  const edit = useCallback((text: string) => setConfirm((c) => (c && !c.done ? { ...c, text } : c)), []);
 
   // Chrome starts audio only after a click or a key press on the page.
   useEffect(() => {
@@ -123,7 +153,12 @@ export default function GuestPage() {
       {speech.state === "needs-click" && <div className={styles.start}>Click anywhere to start listening</div>}
       {speech.state === "blocked" && <div className={styles.blocked}>Microphone unavailable</div>}
 
-      <GuestSignPanel signs={guest.signs} utterance={guest.utterance} framing={guest.framing} />
+      <GuestSignPanel
+        signs={guest.signs}
+        utterance={guest.utterance}
+        framing={guest.framing}
+        confirm={confirm && <GuestConfirm key={confirm.id} item={confirm} onDecide={decide} onEdit={edit} />}
+      />
       <AvatarCaptions
         text={caption.text}
         gloss={caption.gloss}
