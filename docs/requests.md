@@ -76,3 +76,14 @@ for missing sequence numbers. The protected `/predict` Frame[] contract is uncha
 Validation and release remain separate: the current local checkpoint is synthetic,
 benchmark accuracy is unaudited, and real held-out signer recordings are still needed.
 No security attack testing should run on Talha's own Mac.
+
+## 2026-10-10, from P4 (Nath) to P3 (+ team): guest -> staff bridge is built (recognizer events to the app)
+- `POST /api/guest/signs` takes the recognizer's events: `sign`, `utterance` (live_key's `{ raw, labels, text, snapped }` and live.py's `{ signs, seqs, needs_repeat }`), `framing`, `status`. Loopback only, `X-Bridge-Key` checked when `BRIDGE_KEY` is set (timing-safe). Malformed events get a 400.
+- `GET /api/guest/stream` (Server-Sent Events) pushes them to `/guest` and `/staff`. On (re)connect a page first gets the current state, marked `replay`, which is never spoken again.
+- `text: null` goes through `/api/english` (intents table with `LEAVE`, then Claude, then the labels as words). An utterance with `needs_repeat`, a `NONE` label, or from a `mock` recognizer is never spoken: `/guest` asks "could you sign that again?".
+- `/guest` shows each sign as a tag (label + confidence), then "You said: ...", with the tip line. `/staff` shows the sentence big, the corrected labels, the raw ones in grey when they differ, and speaks it (`/api/tts`, browser voice as fallback; first click on `/staff` unlocks sound).
+- Not done (demo scope): binding events to a guest session and rejecting replays. Signs are provisional (an undo sends no event); the utterance's labels are what counts.
+- Run: `npm run dev` in `web/` (for a hard loopback guarantee: `npx next dev -H 127.0.0.1`, plus a `BRIDGE_KEY` in `web/.env.local` and the same in the recognizer's shell), then `python -m recognition.live_key --camera 1 --post http://127.0.0.1:3000/api/guest/signs`. Open the pages as `http://localhost:3000/guest` and `/staff`: Next dev blocks its own scripts for pages opened as `127.0.0.1` (allowedDevOrigins).
+
+## 2026-10-10, from P4 (Nath) to all: BroadcastChannel addition `voice_output` (CLAUDE.md 6.7), backward compatible
+`{ type: "voice_output", playing: boolean }`: `/staff` sends it around speaking the guest's sentence, and `/guest` mutes its hands-free microphone meanwhile, so the avatar never signs our own voice back. `/guest` also posts `staff_utterance` for what it heard, so `/staff` shows what the avatar signed.

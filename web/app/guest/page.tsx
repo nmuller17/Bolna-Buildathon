@@ -1,12 +1,16 @@
 "use client";
-// The demo screen (P4): the receptionist just talks, the bellhop signs it in ASL with karaoke captions.
-// No buttons, no visible pipeline: the microphone listens all the time, each sentence is transcribed and turned into
-// signs in the background (useHandsFreeSpeech), then played in order. Press F11 for fullscreen.
-// The optional /staff console can still send sentences on the BroadcastChannel; they join the same queue.
+// The guest screen (P4), both directions.
+// Staff -> guest: the receptionist just talks, the bellhop signs it in ASL with karaoke captions. No buttons, no visible
+// pipeline: the microphone listens all the time, each sentence is transcribed and turned into signs in the background
+// (useHandsFreeSpeech), then played in order. The optional /staff console can also send sentences on the channel.
+// Guest -> staff: the guest signs to the recognizer's camera window (recognition/live_key.py, next to this one); each
+// recognized sign shows as a tag, then the sentence (GuestSignPanel). /staff speaks it, and this mic is muted meanwhile.
 import { useCallback, useEffect, useRef, useState } from "react";
 import AvatarCaptions from "@/components/AvatarCaptions";
 import GuestCameraSlot from "@/components/GuestCameraSlot";
+import GuestSignPanel from "@/components/GuestSignPanel";
 import type { SignedSentence } from "@/components/speechToSigns";
+import { useGuestEvents } from "@/components/useGuestEvents";
 import { useHandsFreeSpeech } from "@/components/useHandsFreeSpeech";
 import { mountAvatar, playGloss } from "@/lib/avatar/player";
 import { useSignbridgeChannel, type StaffState } from "@/lib/channel";
@@ -19,6 +23,7 @@ export default function GuestPage() {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
   const [consoleState, setConsoleState] = useState<StaffState>("idle");
+  const [staffSpeaking, setStaffSpeaking] = useState(false);
   const queue = useRef<SignedSentence[]>([]);
   const draining = useRef(false);
   const mounted = useRef(false);
@@ -57,11 +62,22 @@ export default function GuestPage() {
     [drain],
   );
 
-  const speech = useHandsFreeSpeech(sign);
+  // What the microphone heard is signed here, and shown on /staff too (staff_utterance on the channel).
+  const signHeard = useCallback(
+    (sentences: SignedSentence[]) => {
+      for (const s of sentences) sendRef.current?.({ type: "staff_utterance", text: s.text, gloss: s.gloss });
+      sign(sentences);
+    },
+    [sign],
+  );
+  const speech = useHandsFreeSpeech(signHeard, staffSpeaking);
+  const guest = useGuestEvents();
 
-  useSignbridgeChannel((message) => {
+  const sendRef = useRef<ReturnType<typeof useSignbridgeChannel> | null>(null);
+  sendRef.current = useSignbridgeChannel((message) => {
     if (message.type === "staff_utterance") sign([{ text: message.text, gloss: message.gloss }]);
     else if (message.type === "staff_status") setConsoleState(message.state);
+    else if (message.type === "voice_output") setStaffSpeaking(message.playing);
     // TODO (guest -> staff): on repeat_request, ask the guest to sign again ("Could you repeat?", CLAUDE.md 7.2).
   });
 
@@ -97,6 +113,7 @@ export default function GuestPage() {
       {speech.state === "needs-click" && <div className={styles.start}>Click anywhere to start listening</div>}
       {speech.state === "blocked" && <div className={styles.blocked}>Microphone unavailable</div>}
 
+      <GuestSignPanel signs={guest.signs} utterance={guest.utterance} framing={guest.framing} />
       <AvatarCaptions
         text={caption.text}
         gloss={caption.gloss}

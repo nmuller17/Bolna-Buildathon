@@ -16,8 +16,9 @@ export type ListenState =
 
 export type ListenMode = "whisper" | "browser" | null;
 
-// Whisper's usual inventions on short noises.
-const HALLUCINATIONS = /^(thank you|thanks for watching|thank you for watching|you|bye|okay|\.+)[.!]*$/i;
+// Whisper's usual inventions on noise (beeps, music, a door): always dropped, or only when short.
+const NEVER_SAID = /^(you|bye|thanks for watching|thank you for watching|\.+)[.!]*$/i;
+const SHORT_NOISE = /^(thank you|thanks|okay|ok)[.!]*$/i;
 
 type Recognition = {
   lang: string;
@@ -35,7 +36,13 @@ function browserRecognition(): (new () => Recognition) | null {
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
 }
 
-export function useHandsFreeSpeech(onSentences: (sentences: SignedSentence[]) => void) {
+const UNMUTE_GRACE_MS = 900; // speech still ending (or echoing) just after the mute is lifted
+
+/**
+ * `muted`: while true (and shortly after), what the microphone hears is dropped. /guest sets it while /staff speaks
+ * the guest's sentence aloud, so the avatar never signs our own voice back.
+ */
+export function useHandsFreeSpeech(onSentences: (sentences: SignedSentence[]) => void, muted = false) {
   const [state, setState] = useState<ListenState>("starting");
   const [mode, setMode] = useState<ListenMode>(null);
   const deliverRef = useRef(onSentences);
@@ -43,6 +50,11 @@ export function useHandsFreeSpeech(onSentences: (sentences: SignedSentence[]) =>
     deliverRef.current = onSentences;
   });
   const resumeRef = useRef<(() => void) | null>(null);
+  const mutedUntil = useRef(0);
+  useEffect(() => {
+    mutedUntil.current = muted ? Infinity : performance.now() + UNMUTE_GRACE_MS;
+  }, [muted]);
+  const isMuted = () => performance.now() < mutedUntil.current;
 
   useEffect(() => {
     let active = true;
@@ -86,6 +98,7 @@ export function useHandsFreeSpeech(onSentences: (sentences: SignedSentence[]) =>
           for (let i = event.resultIndex; i < event.results.length; i++) {
             const result = event.results[i];
             const text = result[0].transcript.trim();
+            if (isMuted()) continue;
             if (!result.isFinal) setState("hearing");
             else if (text) enqueue(toSignedSentences(text));
             else idle();
@@ -117,13 +130,20 @@ export function useHandsFreeSpeech(onSentences: (sentences: SignedSentence[]) =>
 
     const startWhisper = async () => {
       setMode("whisper");
+      let startedMuted = false;
       const l = new VoiceListener({
-        onSpeechStart: () => active && setState("hearing"),
+        onSpeechStart: () => {
+          startedMuted = isMuted();
+          if (active && !startedMuted) setState("hearing");
+        },
         onDiscard: idle,
         onUtterance: (wav, seconds) =>
-          enqueue(
+          startedMuted || isMuted()
+            ? idle()
+            : enqueue(
             transcribe(wav, "speech.wav").then(
-              (text) => (!/[a-z]/i.test(text) || (seconds < 1 && HALLUCINATIONS.test(text)) ? [] : toSignedSentences(text)),
+              (text) =>
+                !/[a-z]/i.test(text) || NEVER_SAID.test(text) || (seconds < 1.5 && SHORT_NOISE.test(text)) ? [] : toSignedSentences(text),
               (err) => {
                 // Whisper unreachable or failing: switch to the browser's recognition for what follows.
                 console.warn("[guest] Whisper failed, switching to browser speech recognition:", err);

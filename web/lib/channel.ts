@@ -14,7 +14,8 @@ export type ChannelMessage =
   | { type: "staff_utterance"; text: string; gloss: string[] } // staff spoke, guest screen plays the avatar
   | { type: "guest_utterance"; signs: Prediction[]; text: string } // guest signed, staff screen shows the text
   | { type: "repeat_request" } // low confidence, guest screen asks to repeat
-  | { type: "staff_status"; state: StaffState }; // addition: receptionist talking / being processed
+  | { type: "staff_status"; state: StaffState } // addition: receptionist talking / being processed
+  | { type: "voice_output"; playing: boolean }; // addition: /staff is speaking the guest aloud, /guest mutes its mic
 
 /** One turn of the conversation, whichever side it comes from. */
 export type ConversationTurn = {
@@ -25,7 +26,7 @@ export type ConversationTurn = {
   at: number; // Date.now()
 };
 
-const TYPES = new Set(["staff_utterance", "guest_utterance", "repeat_request", "staff_status"]);
+const TYPES = new Set(["staff_utterance", "guest_utterance", "repeat_request", "staff_status", "voice_output"]);
 
 function isMessage(data: unknown): data is ChannelMessage {
   return typeof data === "object" && data !== null && TYPES.has((data as { type?: unknown }).type as string);
