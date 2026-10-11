@@ -9,7 +9,7 @@
 //   stays in this page's memory; the server never receives it unless the guest shares it on the
 //   interpreter card (F11).
 // - ModeSwitch: the same five choices in the header of every later screen, one tap each.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   GUEST_HONEST_LINES,
   GUEST_NOTICE,
@@ -81,9 +81,30 @@ function SignLanguageStep(props: {
 }) {
   const [picked, setPicked] = useState<SignLanguage | null>(null);
   const other = picked && picked !== "ase" ? SIGN_LANGUAGES.find((l) => l.code === picked) : null;
+  const cardRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (picked && picked !== "ase") cardRef.current?.scrollIntoView({ block: "nearest" });
+  }, [picked]);
   return (
     <div className={s.first}>
       <h1 className={s.title}>Which sign language?</h1>
+      {/* Shown above the list, so the next step is on screen without scrolling (390x844, 844x390). */}
+      {other && (
+        <div className={s.card} role="status" ref={cardRef}>
+          <p className={s.cardText}>{SIGN_LANGUAGE_NOT_YET}</p>
+          <div className={s.buttonRow}>
+            <button type="button" className={s.primary} onClick={() => props.onOther("type")}>
+              Type
+            </button>
+            <button type="button" className={s.secondary} onClick={() => props.onOther("tap")}>
+              Tap pictures
+            </button>
+            <button type="button" className={s.secondary} onClick={() => props.onOther("interpreter")}>
+              Ask for an interpreter
+            </button>
+          </div>
+        </div>
+      )}
       <div className={s.langList} role="group" aria-label="Sign languages">
         {SIGN_LANGUAGES.map((l) => (
           <button
@@ -102,22 +123,6 @@ function SignLanguageStep(props: {
           </button>
         ))}
       </div>
-      {other && (
-        <div className={s.card} role="status">
-          <p className={s.cardText}>{SIGN_LANGUAGE_NOT_YET}</p>
-          <div className={s.buttonRow}>
-            <button type="button" className={s.primary} onClick={() => props.onOther("type")}>
-              Type
-            </button>
-            <button type="button" className={s.secondary} onClick={() => props.onOther("tap")}>
-              Tap pictures
-            </button>
-            <button type="button" className={s.secondary} onClick={() => props.onOther("interpreter")}>
-              Ask for an interpreter
-            </button>
-          </div>
-        </div>
-      )}
       <button type="button" className={s.quiet} onClick={props.onBack}>
         Back to all choices
       </button>
