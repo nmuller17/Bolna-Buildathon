@@ -27,3 +27,6 @@ Thumbs.db
 
 # MediaPipe models (downloaded on first run)
 *.task
+
+# Training data archives sent to P3
+train_*.zip
