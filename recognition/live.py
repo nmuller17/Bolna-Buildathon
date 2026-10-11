@@ -3,6 +3,18 @@ frames, Segmenter, capture.clean, Recognizer) -> events printed and, with --post
 
     python -m recognition.live [--camera 0] [--post http://127.0.0.1:3000/api/guest/signs] [--mock]
                                [--utterance-gap 1.5] [--waist hips|none]
+    python -m recognition.live --source screen --list-windows
+    python -m recognition.live --source screen --window-id ID [--region x,y,w,h] [--say]
+
+- --source screen (Option A, a guest on a Zoom / Teams / Meet / FaceTime call): the frames are
+  read from a window or rectangle of this laptop's screen instead of a camera, then go through
+  exactly the same pipeline (recognition/screen_source.py: options, mirroring, macOS Screen
+  Recording permission). It must be told what to read (--window-id, --window-name or --region);
+  the whole screen only with --whole-screen. SignBridge's own windows are never read. Start it
+  only after the guest has agreed to the notice on the shared page. The preview is off by default there (it could cover the call window);
+  --preview turns it on, unmirrored. --say speaks each clear utterance's fixed English sentence
+  with a local macOS voice and prints captions (recognition/call_voice.py); nothing goes to the
+  cloud. Captions are printed in screen mode even without --say.
 
 - MediaPipe gets the UNMIRRORED camera image at 1280x720, as capture.py records the training
   takes; only the preview is flipped. The preview shows the framing guide (head to waist).
@@ -32,7 +44,7 @@ import urllib.request
 from collections import deque
 from urllib.parse import urlparse
 
-from recognition import framing
+from recognition import call_voice, framing
 from recognition.classify_video import add_args, import_cv2, load_landmarker, load_recognizer, make_stream, show
 
 WIDTH, HEIGHT = 1280, 720      # capture.py's camera settings
@@ -270,6 +282,35 @@ def draw_guide(cv2, view, status, line2=""):
     return view
 
 
+def _region(text):
+    from recognition.screen_source import parse_region
+    try:
+        return parse_region(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
+def open_screen(args):
+    """ScreenSource for --source screen, or exit with a plain reason (permission, window, region)."""
+    from recognition import screen_source as ss
+    try:
+        src = ss.ScreenSource(region=args.region, window_name=args.window_name,
+                              fps=ss.DEFAULT_FPS if args.fps is None else args.fps, mirror=args.mirror,
+                              window_id=args.window_id, whole_screen=args.whole_screen)
+    except (ss.ScreenPermissionError, ss.ScreenSourceError, ValueError) as e:
+        sys.exit(str(e))
+    for warning in ss.warnings_for(src.size):
+        print(warning, file=sys.stderr)
+    return src
+
+
+def make_speaker(args):
+    try:
+        return call_voice.Speaker(voice=args.say_voice, engine=args.say_engine)
+    except RuntimeError as e:
+        sys.exit(str(e))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--camera", type=int, default=0)
@@ -279,8 +320,42 @@ def main(argv=None):
     ap.add_argument("--post-allow-remote", action="store_true",
                     help="allow --post to another host (https:// only; BRIDGE_KEY is sent there)")
     ap.add_argument("--no-preview", action="store_true", help="no window (stop with Ctrl+C)")
+    scr = ap.add_argument_group("screen source (a guest in a video call; recognition/screen_source.py)")
+    scr.add_argument("--source", choices=["camera", "screen"], default="camera",
+                     help="camera (default) or screen: read the guest's video tile from this screen")
+    scr.add_argument("--window-id", type=int, default=None, metavar="ID",
+                     help="read exactly this window (first column of --list-windows); the safest choice")
+    scr.add_argument("--window-name", default=None, metavar="NAME",
+                     help="the one on-screen window whose app or title contains NAME (zoom.us, Microsoft Teams, "
+                          "FaceTime); refuses when several match")
+    scr.add_argument("--whole-screen", action="store_true",
+                     help="read the whole main display (includes the avatar page, self-view, notifications)")
+    scr.add_argument("--region", type=_region, default=None, metavar="X,Y,W,H",
+                     help="screen rectangle in points; with --window-name, relative to that window (one tile)")
+    scr.add_argument("--list-windows", action="store_true", help="print the on-screen windows and exit")
+    scr.add_argument("--fps", type=float, default=None,
+                     help="screen frames per second (default 20; MediaPipe takes about 33 ms per frame)")
+    scr.add_argument("--mirror", action="store_true", help="flip each screen frame (the tile shows a mirror image)")
+    scr.add_argument("--preview", action="store_true", help="screen source: show the (unmirrored) preview window")
+    scr.add_argument("--say", action="store_true",
+                     help="speak each clear utterance's English sentence with a local macOS voice and print captions")
+    scr.add_argument("--say-voice", default=None, metavar="VOICE", help="macOS voice for --say (say -v '?' lists them)")
+    scr.add_argument("--say-engine", choices=["auto", "appkit", "say"], default="auto",
+                     help="auto (default): a warm macOS speech synthesizer (pyobjc AppKit), else the 'say' command")
     add_args(ap)
     args = ap.parse_args(argv)
+    screen = args.source == "screen"
+    if args.list_windows:
+        from recognition import screen_source as ss
+        try:
+            print(ss.format_windows(ss.quartz_windows()))
+        except ss.ScreenSourceError as e:
+            sys.exit(str(e))
+        return
+    if not screen and (args.window_name or args.window_id is not None or args.whole_screen or args.region
+                       or args.mirror or args.preview or args.fps is not None):
+        sys.exit("--window-id, --window-name, --whole-screen, --region, --fps, --mirror and --preview "
+                 "need --source screen")
     if args.post and (why := check_post_url(args.post, args.post_allow_remote)):
         sys.exit(why)
     key = os.environ.get("BRIDGE_KEY", "")
@@ -288,29 +363,39 @@ def main(argv=None):
         sys.exit(f"--post needs the environment variable BRIDGE_KEY ({'unset' if not key else f'{len(key)} characters'}), "
                  f"at least {BRIDGE_KEY_MIN} characters and the same as the app's; the app rejects every event otherwise")
     cv2 = import_cv2()
+    if screen:
+        cap = open_screen(args)                     # fails fast (permission, window) before loading models
+        w, h = cap.size
+        source_name = f"screen {cap.describe()}"
     rec, state = load_recognizer(args, allow_missing=True)
     landmarker = load_landmarker(args)
-    cap = cv2.VideoCapture(args.camera)
-    if not cap.isOpened():
-        sys.exit(f"cannot open camera {args.camera} (on macOS, allow camera access for the terminal)")
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
-    cap.set(cv2.CAP_PROP_FPS, 30)
-    w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    if w * HEIGHT != h * WIDTH:
-        print(f"WARNING: camera gives {w}x{h}; training captures are {WIDTH}x{HEIGHT} (16:9). "
-              "Landmarks are aspect-corrected, but the field of view differs.", file=sys.stderr)
+    if not screen:
+        cap = cv2.VideoCapture(args.camera)
+        if not cap.isOpened():
+            sys.exit(f"cannot open camera {args.camera} (on macOS, allow camera access for the terminal)")
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+        w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if w * HEIGHT != h * WIDTH:
+            print(f"WARNING: camera gives {w}x{h}; training captures are {WIDTH}x{HEIGHT} (16:9). "
+                  "Landmarks are aspect-corrected, but the field of view differs.", file=sys.stderr)
+        source_name = f"camera {args.camera}: {w}x{h}"
     stream = make_stream(rec, (w, h), args, clock=time.monotonic, time_offset=time.time() - time.monotonic())
     poster = Poster(args.post, key, allow_remote=args.post_allow_remote) if args.post else None
+    speaker = make_speaker(args) if args.say else None
+    captions = args.say or screen
+    preview = args.preview if screen else not args.no_preview
     reader = CameraReader(cap)
     status_line, last_summary = "", time.monotonic()
-    print(f"camera {args.camera}: {w}x{h}, recognizer {state}, waist={args.waist}"
-          + (f", posting events to {args.post}" if poster else "") + "; sign when ready")
+    print(f"{source_name}, recognizer {state}, waist={args.waist}"
+          + (f", posting events to {args.post}" if poster else "") + (", speaking with a local macOS voice" if speaker else "")
+          + "; sign when ready")
     try:
         while True:
             got = reader.get()
             if got is None:
-                print("camera stopped sending frames", file=sys.stderr)
+                print(f"{'screen source' if screen else 'camera'} stopped sending frames", file=sys.stderr)
                 break
             bgr, t = got
             events = stream.detect(landmarker, cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), t)
@@ -321,13 +406,22 @@ def main(argv=None):
                     poster.send(ev)
                 if ev["type"] == "sign":
                     status_line = f"{ev['top'][0]['label']} {ev['top'][0]['conf']:.2f}"
+                if ev["type"] == "utterance" and captions:
+                    line, sentence = call_voice.caption(ev, state)
+                    print(line, flush=True)
+                    if speaker and sentence:
+                        speaker.speak(sentence)
             now = time.monotonic()
             if any(ev["type"] == "utterance" for ev in events) or now - last_summary >= SUMMARY_SEC:
                 print(stream.timings.summary(stream.fps()) + f" | {reader.skipped} camera frames skipped")
                 last_summary = now
-            if not args.no_preview:
-                view = draw_guide(cv2, cv2.flip(bgr, 1), stream.status, status_line)   # mirror only the preview
-                cv2.imshow("recognition (preview is mirrored)", view)
+            if preview:
+                if screen:          # the remote guest as the call shows them; mirroring would confuse
+                    view = draw_guide(cv2, bgr.copy(), stream.status, status_line)
+                    cv2.imshow("recognition (screen source)", view)
+                else:
+                    view = draw_guide(cv2, cv2.flip(bgr, 1), stream.status, status_line)   # mirror only the preview
+                    cv2.imshow("recognition (preview is mirrored)", view)
                 if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
                     break
     except KeyboardInterrupt:
@@ -340,7 +434,9 @@ def main(argv=None):
             poster.close()
             print(f"bridge: {poster.sent} sent, {poster.failed} failed, {poster.dropped} dropped, "
                   f"{poster.stale} stale, {poster.coalesced} coalesced")
-        if not args.no_preview:
+        if speaker:
+            speaker.close()
+        if preview:
             cv2.destroyAllWindows()
         print(stream.timings.summary(stream.fps()))
 
