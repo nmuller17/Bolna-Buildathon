@@ -145,3 +145,25 @@ Only one public dataset is usable in the time we have: Kaggle "Google - Isolated
 - **Signers.** The data card describes 21 Deaf signers who use ASL as their primary form of communication, recorded on Pixel 4a phones, some signing with the left hand and some switching hands. That makes it most useful as an honest test on people who are not on our team: train on team data, then run `python -m recognition.benchmark --checkpoint recognition/models/model.pt --test-data data/gislr --tag gislr` (it only scores the 7 shared signs, and the other 14 classes simply never appear).
 - **Format details.** Each parquet has 543 rows per frame (face 468, left hand 21, pose 33, right hand 21), and a hand that was not detected is 21 rows of NaN, which the converter writes as `null`. The frame rate is not stated (30 fps is assumed), and the clip aspect ratio is not given, so x and y are scaled differently from our webcam.
 - **Other datasets checked and not used.** ASL Citizen covers 15 of our signs but its Microsoft Research licence forbids redistributing the data and allows non-commercial research only; WLASL covers 15 but is video scraped from third-party sites with many dead links and a non-commercial licence; PopSign has the same 250 signs as GISLR as raw video only; the Kaggle fingerspelling set is continuous character sequences, not whole-word `FS-WIFI` or `FS-CHECKOUT` units.
+
+## Demo path: live_key + sentence correction (Cosme, 2026-10-10)
+
+The speed-based segmenter (`live.py`) cuts signs differently from the training takes and live
+accuracy collapsed. The demo path records each sign exactly like the training takes and fixes
+the sentence with its context:
+
+```bash
+cp <model.pt from Cosme> recognition/models/model.pt   # sha256 1e6ef589ce64b58f5617eef7f4abbfaa546a29f11d625ad4772ec0c9ced05e57
+python -m recognition.live_key --camera 1 --post http://127.0.0.1:3000/api/guest/signs
+```
+
+- In the OpenCV window: SPACE = record one sign (1.5 s countdown, 2 s REC), ENTER = end of the
+  sentence, BACKSPACE = undo the last sign, Q = quit. One sign at a time, hands down in between.
+- `recognition/intents.py` snaps the sentence to the closest of the 20 guest sentences
+  (docs/vocabulary.md section 2) and gives the English text. NONE is never proposed.
+- Events POSTed as JSON (header `X-Bridge-Key` = env `BRIDGE_KEY` if set):
+  - after each sign: `{"type": "sign", "seq": 3, "top": [{"label": "TOWEL", "conf": 0.82}, ...3]}`
+  - at ENTER: `{"type": "utterance", "raw": ["PARKING", "TOWEL", "PLEASE"],
+    "labels": ["MORE", "TOWEL", "PLEASE"], "text": "Could I have more towels, please?", "snapped": true}`
+- Scores: live (Cosme) 14/20 sentences raw -> 17/20 corrected; held-out signer (talha, simulated)
+  84% -> 96%. `--test` (22 signs) and `--test-sentences` (20 sentences) re-run these checks.
