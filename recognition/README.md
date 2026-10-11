@@ -100,18 +100,28 @@ Both print the same events (below) and a latency summary; `--json` also prints e
 
 ## App bridge (recognizer to app)
 
-`live.py --post URL` sends every event as its own `POST` with `Content-Type: application/json` and, when the environment variable `BRIDGE_KEY` is set, the header `X-Bridge-Key: <BRIDGE_KEY>` (never printed or logged). The timeout is 1 s; posting runs in a worker thread with a queue of 64 events, and when the app is down the oldest queued event is dropped, so recognition never waits for the network. Redirects are not followed and proxies are not used, so the key only goes to the given URL. No video and no landmarks are ever sent. Times are Unix seconds (float, millisecond precision) taken from a monotonic clock, so they can be compared with the app's `Date.now() / 1000` on the same machine.
+`live.py --post URL` sends every event as its own `POST` with `Content-Type: application/json` and, when the environment variable `BRIDGE_KEY` is set, the header `X-Bridge-Key: <BRIDGE_KEY>` (never printed or logged). A key that is set must have at least 32 characters (`LIMITS.bridgeKeyMinLen` in the app; for example `openssl rand -hex 32`), otherwise the program refuses to start; an unset key only prints a warning, because the app accepts keyless events while its own `BRIDGE_KEY` is unset. `--post` only accepts a loopback URL (127.0.0.1, ::1 or localhost) unless `--post-allow-remote` is given with an `https://` URL. `live_key.py` and `live_window.py` apply the same two checks (`live.bridge_poster`). Redirects are not followed and proxies are not used, so the key only goes to the given URL. No video and no landmarks are ever sent. Times are Unix seconds (float, millisecond precision) taken from a monotonic clock, so they can be compared with the app's `Date.now() / 1000` on the same machine.
 
-Shutdown drains the queue for at most 2 s, then discards remaining events; an in-flight request may finish within its own timeout. Delivery is best effort: the app must handle missing sequence numbers, reject stale events after ending a guest session, and require confirmation before speaking. The bridge receiver is part of the pending app build. Use loopback for the bridge on the laptop and authenticated HTTPS for any LAN connection; a warning from the CLI does not make plain HTTP private.
+Delivery runs in one worker thread, so recognition never waits for the network:
+
+- `sign`, `utterance`, `framing` events with `rejected_seq` and every other event type (such as `live_key.py`'s `capture`) are sent first, in order, from a queue of at most 64 (the oldest is dropped when it is full), with a 1 s timeout.
+- Plain `framing` events and `status` events only describe the current state, so they are coalesced: only the newest of each waits, it is sent only when nothing else is waiting, and its timeout is 0.3 s.
+- An event that has waited more than 5 s is not sent at all, so an app that comes back after being down does not get a replay of old signs.
+- Every body carries `t_sent` (Unix seconds when it left the recognizer); the app may also discard events whose `t_sent` is more than a few seconds old.
+- The app's answer to the first event is printed once (a 401 or 403 adds a hint to check `BRIDGE_KEY`); later failures are printed at most every 5 s. At exit `live.py` prints how many events were sent, failed, dropped, stale and coalesced.
+
+With an app that takes 3 s to answer every request, sign events still reached it within 0.01 s of `t_predicted` and utterances within 0.3 s of `t_end` (before this change, the fifth sign arrived 9.5 s late).
+
+Shutdown drains the queue for at most 2 s, then discards remaining events; an in-flight request may finish within its own timeout. Delivery is best effort: the app must handle missing sequence numbers, reject stale events after ending a guest session, and require confirmation before speaking.
 
 ```json
 {"type": "sign", "seq": 3, "top": [{"label": "TOWEL", "conf": 0.82}, {"label": "MORE", "conf": 0.09}, {"label": "NONE", "conf": 0.04}],
- "t_sign_start": 1760112001.204, "t_sign_end": 1760112001.951, "t_closed": 1760112002.488, "t_predicted": 1760112002.503}
+ "t_sign_start": 1760112001.204, "t_sign_end": 1760112001.951, "t_closed": 1760112002.488, "t_predicted": 1760112002.503, "t_sent": 1760112002.504}
 {"type": "utterance", "signs": [{"label": "MORE", "conf": 0.91}, {"label": "TOWEL", "conf": 0.82}, {"label": "PLEASE", "conf": 0.44}],
- "seqs": [2, 3, 4], "needs_repeat": true, "t_end": 1760112004.371}
-{"type": "framing", "status": "STEP_BACK", "since": 1760112010.120}
-{"type": "framing", "status": "HANDS_OUT", "since": 1760112012.003, "rejected_seq": 5}
-{"type": "status", "fps": 27.4, "recognizer": "ok", "t": 1760112013.000}
+ "seqs": [2, 3, 4], "needs_repeat": true, "t_end": 1760112004.371, "t_sent": 1760112004.372}
+{"type": "framing", "status": "STEP_BACK", "since": 1760112010.120, "t_sent": 1760112010.621}
+{"type": "framing", "status": "HANDS_OUT", "since": 1760112012.003, "rejected_seq": 5, "t_sent": 1760112013.140}
+{"type": "status", "fps": 27.4, "recognizer": "ok", "t": 1760112013.000, "t_sent": 1760112013.001}
 ```
 
 - `sign`: sent the moment a sign closes, before the utterance ends; `seq` counts signs from 1 for the process. `top` is the top 3, best first, exactly as `POST /predict` would answer.

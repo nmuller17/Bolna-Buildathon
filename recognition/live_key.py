@@ -24,7 +24,6 @@ the free mode with POST http://127.0.0.1:8765/sign, /end, /undo (loopback only, 
 empty body) and shows the countdown from the "capture" events. GET /health answers ok.
 """
 import argparse
-import os
 import queue
 import sys
 import threading
@@ -39,7 +38,7 @@ from capture.capture import GREEN, RED, WHITE, Recorder, show
 from recognition import features
 from recognition.intents import GUEST_INTENTS, decode, without_none
 from recognition.labels import CLASSES
-from recognition.live import Poster
+from recognition.live import bridge_poster
 from recognition.recognizer import load_predictor, validate
 
 LONG_SIGNS = {"FS-WIFI", "PASSWORD"}
@@ -140,6 +139,7 @@ def main(argv=None):
     ap.add_argument("--no-preview", action="store_true", help="no OpenCV window (single-screen demo)")
     ap.add_argument("--control-port", type=int, help="serve POST /sign, /end, /undo on 127.0.0.1:PORT")
     a = ap.parse_args(argv)
+    poster = bridge_poster(a.post) if a.post else None   # loopback URL, BRIDGE_KEY length
     if a.no_preview:            # every drawing call of the capture UI becomes a no-op
         def quiet(*_args, **_kwargs):
             time.sleep(0.001)
@@ -150,7 +150,6 @@ def main(argv=None):
         serve_control(a.control_port)
 
     predictor = load_predictor(a.checkpoint)
-    poster = Poster(a.post, os.environ.get("BRIDGE_KEY")) if a.post else None
     rec = Recorder(a.camera)
     seq = 0
 
