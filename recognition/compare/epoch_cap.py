@@ -102,7 +102,7 @@ def run_all(workers, log=print):
     want = protocol_code()
     now = manifest.training_code_hashes()
     if now != want:
-        sys.exit("training code here differs from the protocol run's manifests; run from /Users/trehman/CamelHack-bench")
+        sys.exit("training code here differs from the protocol run's manifests; run from the bench worktree (../CamelHack-bench, branch bench/track-a-v1)")
     OUT.mkdir(parents=True, exist_ok=True)
     if not (OUT / "index.json").exists():
         (OUT / "index.json").write_text((PROTOCOL_RUN / "index.json").read_text())
