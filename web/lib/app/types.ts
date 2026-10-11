@@ -1878,6 +1878,9 @@ export type LineSourceLabel =
   | "Signs recognised, confirmed by guest"
   | "Typed by guest"
   | "Tapped on board"
+  /** Builder G addition (additive): the guest picked a fixed sentence from the phrase list, or after typing (F8). */
+  | "Picked from the list"
+  | "Typed, matched to a request"
   | "Interpreter";
 
 /* ---------------- F16: anonymous equal-access counters ---------------- */
