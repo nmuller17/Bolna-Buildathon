@@ -1,6 +1,6 @@
-// P4: { text } -> audio/wav. ElevenLabs when ELEVENLABS_API_KEY is set, local Piper otherwise or if ElevenLabs fails.
-// Piper takes ~7 s per run (mostly loading the voice), so the first request also pre-generates every
-// known guest sentence with Piper in a single run, to keep the fallback fast. All audio is cached in memory.
+// P4: { text } -> audio/wav with ElevenLabs. If it fails, a 500: the client speaks with the browser's voice.
+// Piper (local) is off: set PIPER_FALLBACK=1 to use it when ElevenLabs fails. It takes ~7 s per run (mostly loading
+// the voice), so it then also pre-generates every known guest sentence in one run. All audio is cached in memory.
 import { spawn } from "node:child_process";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -10,7 +10,8 @@ import { INTENTS } from "../english/intents";
 export const runtime = "nodejs";
 
 const PIPER_TIMEOUT_MS = 30_000;
-const ELEVENLABS_TIMEOUT_MS = 2000; // leaves time for the Piper fallback before speakSigns gives up at 2.5 s
+const PIPER_ON = process.env.PIPER_FALLBACK === "1";
+const ELEVENLABS_TIMEOUT_MS = 2000; // the client gives up at 2.5 s and uses the browser's voice
 const DEFAULT_ELEVENLABS_VOICE = "EXAVITQu4vr4xnSDxMaL"; // "Sarah", an ElevenLabs premade voice
 
 // text -> WAV, per engine. Also holds in-flight runs so the same sentence is never synthesized twice at once.
@@ -132,9 +133,11 @@ async function synthesize(text: string): Promise<Buffer> {
     try {
       return await cached(elevenLabsCache, text, () => synthesizeElevenLabs(text, apiKey));
     } catch (err) {
+      if (!PIPER_ON) throw err;
       console.warn("[api/tts] ElevenLabs failed, using Piper:", err);
     }
   }
+  if (!PIPER_ON) throw new Error("ELEVENLABS_API_KEY is not set (and PIPER_FALLBACK is off)");
   return cached(piperCache, text, () => synthesizePiper(text));
 }
 
@@ -150,7 +153,7 @@ export async function POST(req: Request) {
   const text = typeof raw === "string" ? raw.replace(/\s+/g, " ").trim() : "";
   if (!text) return Response.json({ error: "Expected { text: non-empty string }" }, { status: 400 });
 
-  startWarmUp();
+  if (PIPER_ON) startWarmUp();
   try {
     const wav = await synthesize(text);
     return new Response(new Uint8Array(wav), { headers: { "Content-Type": "audio/wav" } });
