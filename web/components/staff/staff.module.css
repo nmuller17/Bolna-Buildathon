@@ -132,6 +132,13 @@
   color: var(--mist);
 }
 
+.connBadge[data-state="stale"],
+.connBadge[data-state="retrying"],
+.connBadge[data-state="connecting"] {
+  color: #ffd27d;
+  font-weight: 700;
+}
+
 .connBadge[data-state="unauthorized"] {
   color: var(--white);
   font-weight: 700;
@@ -1085,4 +1092,10 @@
 
 .quickGrid {
   gap: 5px;
+}
+
+/* The stream to the desk server is down: the slats show the last values received, dimmed. */
+.slats[data-last-known] dd {
+  opacity: 0.75;
+  font-style: italic;
 }

@@ -27,7 +27,14 @@ import type {
 } from "@/lib/app/types";
 import { helpTone, speakLocal, unlockAudio, voiceFixed } from "./audio";
 
-export type DeskConn = "idle" | "connecting" | "open" | "retrying" | "unauthorized";
+/** "stale" = the stream is open but the server has sent nothing for 5 s (frozen or overloaded). */
+export type DeskConn = "idle" | "connecting" | "open" | "stale" | "retrying" | "unauthorized";
+
+/**
+ * A guest sentence confirmed while this page had no stream (a drop, a reload, the Start desk screen)
+ * is read aloud when the stream comes back, if it is at most this old. Older ones wait for a tap.
+ */
+export const REPLAY_WINDOW_MS = 120_000;
 
 export type EvidenceItem = { sign: StaffSignView; simulated: boolean; undone?: boolean };
 
@@ -61,6 +68,8 @@ export type StaffUi = {
   receipt: WipeReceipt | null;
   /** Voicing results per guest line (log seq): when it started and how, or why not. */
   spoken: Record<number, { at: number | null; how: "tts" | "local" | "none" }>;
+  /** Guest lines (log seq) whose voicing is in progress right now. */
+  voicing: Record<number, true>;
   lastError: string | null;
 };
 
@@ -90,6 +99,7 @@ const INITIAL: StaffUi = {
   repeats: { count: 0, streak: 0 },
   receipt: null,
   spoken: {},
+  voicing: {},
   lastError: null,
 };
 
@@ -97,6 +107,7 @@ type Act =
   | { t: "env"; env: BusEnvelope<StaffEvent> }
   | { t: "set"; patch: Partial<StaffUi> }
   | { t: "spoken"; seq: number; at: number | null; how: "tts" | "local" | "none" }
+  | { t: "voicing"; seq: number }
   | { t: "dismiss_typed"; logSeq: number }
   | { t: "dismiss_reply"; key: number }
   | { t: "ack"; about: AlertKind };
@@ -132,8 +143,13 @@ function reduce(ui: StaffUi, a: Act): StaffUi {
   switch (a.t) {
     case "set":
       return { ...ui, ...a.patch };
-    case "spoken":
-      return { ...ui, spoken: { ...ui.spoken, [a.seq]: { at: a.at, how: a.how } } };
+    case "spoken": {
+      const { [a.seq]: _done, ...voicing } = ui.voicing;
+      void _done;
+      return { ...ui, spoken: { ...ui.spoken, [a.seq]: { at: a.at, how: a.how } }, voicing };
+    }
+    case "voicing":
+      return { ...ui, voicing: { ...ui.voicing, [a.seq]: true } };
     case "dismiss_typed":
       return { ...ui, typed: ui.typed.filter((t) => t.logSeq !== a.logSeq) };
     case "dismiss_reply":
@@ -343,6 +359,7 @@ function reduce(ui: StaffUi, a: Act): StaffUi {
         repeats: { count: 0, streak: 0 },
         receipt: msg.receipt,
         spoken: {},
+        voicing: {},
       };
     case "device_health":
     case "vlm_proposal":
@@ -384,11 +401,16 @@ export function useStaffDesk() {
     return data;
   }, []);
 
+  /** Proposal ids this page already started voicing on its own (live event or replay): never twice. */
+  const voicedRef = useRef(new Set<string>());
+
   /** Runs a guest line's speak plan (fixed sentences only go to /api/tts). */
   const voiceLine = useCallback(
     async (entry: Extract<LogEntry, { kind: "guest" }>, force = false) => {
       const plan = entry.speak;
       if (plan.mode === "tts") {
+        voicedRef.current.add(entry.proposalId);
+        dispatch({ t: "voicing", seq: entry.seq });
         const v = await voiceFixed(plan.fixedText, ttsRef.current, plan.intentId);
         dispatch({ t: "spoken", seq: entry.seq, at: v.startedAt, how: v.how });
         if (!force && v.startedAt) void staffAction({ type: "speak_done", ref: entry.proposalId, how: v.how, startedAt: v.startedAt });
@@ -420,10 +442,35 @@ export function useStaffDesk() {
     [staffAction],
   );
 
+  /**
+   * After a reconnect or a reload the server's snapshot is the only record of guest sentences confirmed
+   * while this page was away: the live guest_utterance event that normally starts the voice was never
+   * received. Read the recent unspoken ones aloud, oldest first, one after the other.
+   */
+  const replayRef = useRef<Promise<void>>(Promise.resolve());
+  const replayMissed = useCallback(
+    (log: LogEntry[]) => {
+      const now = Date.now();
+      const missed = log.filter(
+        (e): e is Extract<LogEntry, { kind: "guest" }> =>
+          e.kind === "guest" && e.speak.mode === "tts" && e.spokenAt === null && now - e.at <= REPLAY_WINDOW_MS && !voicedRef.current.has(e.proposalId),
+      );
+      for (const e of missed) voicedRef.current.add(e.proposalId);
+      replayRef.current = replayRef.current.then(async () => {
+        for (const e of missed) {
+          await voiceLine(e);
+          await untilQuiet(e.speak.mode === "tts" ? e.speak.fixedText : e.text);
+        }
+      });
+    },
+    [voiceLine],
+  );
+
   const onEnvelope = useCallback(
     (env: BusEnvelope<StaffEvent>) => {
       dispatch({ t: "env", env });
       const m = env.msg;
+      if (m.type === "snapshot") replayMissed(m.log);
       // A confirmed fixed sentence is voiced at once; names and typed text wait for a staff tap (AS-13).
       if (m.type === "guest_utterance" && m.speak.mode === "tts") {
         const entry = {
@@ -440,11 +487,11 @@ export function useStaffDesk() {
           confirmedBy: m.confirmedBy,
           simulated: false,
         } as const;
-        void voiceLine(entry);
+        if (!voicedRef.current.has(m.proposalId)) void voiceLine(entry);
       }
       if (m.type === "emergency") helpTone();
     },
-    [voiceLine],
+    [voiceLine, replayMissed],
   );
 
   /** The "Start desk" tap: unlock audio, claim the capability, open the stream, warm the voice. */
@@ -467,11 +514,14 @@ export function useStaffDesk() {
         onMessage: onEnvelope,
         onState: (state) => {
           if (state === "open") dispatch({ t: "set", patch: { conn: "open" } });
+          else if (state === "stale") dispatch({ t: "set", patch: { conn: "stale" } });
           else if (state === "retrying") dispatch({ t: "set", patch: { conn: "retrying" } });
           else if (state === "unauthorized") dispatch({ t: "set", patch: { conn: "unauthorized" } });
         },
       },
-      { watchdogMs: 15_000, retryMs: 2_000 },
+      // The server pushes a status every 2 s to an open staff stream: 5 s of silence means it is frozen
+      // or gone (shown in the header), 8 s reconnects.
+      { watchdogMs: 8_000, staleMs: 5_000, retryMs: 1_000, maxRetryMs: 5_000 },
     );
 
   }, [onEnvelope]);
@@ -529,4 +579,17 @@ export function useStaffDesk() {
 }
 
 export type Desk = ReturnType<typeof useStaffDesk>;
+
+/** Waits until the on-device voice has finished (or a fair estimate for a WAV), at most 12 s. */
+async function untilQuiet(text: string): Promise<void> {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const end = Date.now() + 12_000;
+  const minEnd = Date.now() + Math.min(8_000, 400 + text.length * 60);
+  await sleep(150);
+  while (Date.now() < end) {
+    const speaking = typeof window !== "undefined" && "speechSynthesis" in window && window.speechSynthesis.speaking;
+    if (!speaking && Date.now() >= minEnd) return;
+    await sleep(200);
+  }
+}
 export type SignSourceLabel = SignsSource;

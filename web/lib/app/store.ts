@@ -581,6 +581,13 @@ export class Store {
         p.messagesToGuest += d.delivered;
         p.bytesToGuest += d.bytes;
       });
+      // A caption sent while no guest stream was open reaches the screen only in this snapshot. The
+      // screen acknowledges the snapshot's seq, which then marks the caption as shown on the device.
+      if (msg.type === "snapshot" && msg.lastCaption && d.delivered > 0) {
+        const captionId = msg.lastCaption.id;
+        const e = s.log.find((x) => x.kind === "staff" && x.id === captionId);
+        if (e && e.kind === "staff" && e.shownOnDeviceAt === null) this.remember(s, d.seq, { kind: "caption", sentAt: this.now(), captionId });
+      }
     }
     s.lastHeardAt = this.now();
     this.sendStatus();
