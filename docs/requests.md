@@ -55,3 +55,24 @@ Fingerspelling C-H-E-C-K-O-U-T (8 letters) in 3 s was too long to sign consisten
 
 ## 2026-10-10, from P4 (Nath) to P1: /api/gloss drops the second intent after a comma
 Whisper often writes "Welcome, do you have a reservation?" instead of "Welcome! Do you have a reservation?". `/api/gloss` then returns `HELLO WELCOME` only, so the question is never signed. With "!" it returns both intents. Could it return every intent of a sentence (the BROWS marker can go first), or split on the commas between intents? A Whisper `prompt` with demo sentences written with full stops would also help. `/guest` already sends one `/api/gloss` request per sentence (split on . ! ?).
+
+## 2026-10-10, from P3 to P4: streaming recognition bridge
+
+The backend closure adds immediate `sign` events, followed by `utterance` events, plus
+`framing` and `status` events. The payload examples and timestamps are in
+`recognition/README.md`, section "App bridge". `live.py --post` sends each event to
+`/api/guest/signs` with `X-Bridge-Key`; it sends no images or landmarks.
+
+The draft `p4-app` plan and `web/lib/app/types.ts` still accept only a `signs` batch.
+Update the receiver and its validators for these four event types during the app build.
+Display each sign immediately, use the completed utterance for the confirmation step,
+and never speak an utterance marked `needs_repeat`, a mock result, or a stale event
+from an ended guest session. Keep the bridge loopback-only and require the configured
+key. Sequence numbers restart with the recognizer process; they are not session IDs.
+Bind incoming events to the active guest session and reject stale/replayed events.
+The transport is best effort and drops queued events under backpressure, so account
+for missing sequence numbers. The protected `/predict` Frame[] contract is unchanged.
+
+Validation and release remain separate: the current local checkpoint is synthetic,
+benchmark accuracy is unaudited, and real held-out signer recordings are still needed.
+No security attack testing should run on Talha's own Mac.

@@ -1,0 +1,2 @@
+# MediaPipe model files (download with the curl line in mediapipe_adapter.py / README)
+models/*.task
