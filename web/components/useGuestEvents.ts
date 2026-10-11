@@ -6,18 +6,30 @@ import type { GuestEvent } from "@/app/api/guest/bus";
 
 export type GuestSign = Extract<GuestEvent, { type: "sign" }>;
 export type GuestUtterance = Extract<GuestEvent, { type: "utterance" }>;
+export type GuestTurnEvent = Extract<GuestEvent, { type: "turn" }>;
+export type GuestCapture = Extract<GuestEvent, { type: "capture" }>;
 type Received = GuestEvent & { replay: boolean };
 
-/** `onUtterance` is called for live sentences only, never for the state replayed when the page (re)connects. */
-export function useGuestEvents(onUtterance?: (utterance: GuestUtterance) => void) {
+/**
+ * `onUtterance` and `onTurnEnd` are called for live events only, never for the state replayed when the page
+ * (re)connects. `turn` is the open guest turn (null outside one), `capture` its current phase.
+ */
+export function useGuestEvents(
+  onUtterance?: (utterance: GuestUtterance) => void,
+  onTurnEnd?: (end: GuestTurnEvent) => void,
+) {
   const [signs, setSigns] = useState<GuestSign[]>([]);
   const [utterance, setUtterance] = useState<GuestUtterance | null>(null);
   const [framing, setFraming] = useState<string | null>(null);
   const [recognizer, setRecognizer] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
+  const [turn, setTurn] = useState<GuestTurnEvent | null>(null);
+  const [capture, setCapture] = useState<GuestCapture | null>(null);
   const callback = useRef(onUtterance);
+  const turnEndCallback = useRef(onTurnEnd);
   useEffect(() => {
     callback.current = onUtterance;
+    turnEndCallback.current = onTurnEnd;
   });
 
   useEffect(() => {
@@ -48,9 +60,14 @@ export function useGuestEvents(onUtterance?: (utterance: GuestUtterance) => void
         if (!event.replay) callback.current?.(event);
       } else if (event.type === "framing") setFraming(event.status);
       else if (event.type === "recognizer") setRecognizer(event.state);
+      else if (event.type === "turn") {
+        setTurn(event.phase === "start" ? event : null);
+        setCapture(null);
+        if (event.phase === "end" && !event.replay) turnEndCallback.current?.(event);
+      } else if (event.type === "capture") setCapture(event);
     };
     return () => source.close();
   }, []);
 
-  return { signs, utterance, framing, recognizer, connected };
+  return { signs, utterance, framing, recognizer, connected, turn, capture };
 }

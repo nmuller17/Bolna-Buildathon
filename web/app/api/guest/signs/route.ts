@@ -1,9 +1,10 @@
 // P4: receives the recognizer's events (recognition/live_key.py and live.py, --post) and pushes them to the pages.
-// Loopback only; X-Bridge-Key must match when BRIDGE_KEY is set. Events: sign, utterance (two shapes), framing, status.
+// Loopback only; X-Bridge-Key must match when BRIDGE_KEY is set.
+// Events: sign, utterance (two shapes), framing, status, turn (start / end), capture (phase of the guest's turn).
 // For a real guarantee, also run the app bound to loopback (next dev -H 127.0.0.1) with a BRIDGE_KEY.
 import { timingSafeEqual } from "node:crypto";
 import { LABELS, type Prediction } from "../../english/intents";
-import { fromLoopback, guestBus, publish, type GuestEvent } from "../bus";
+import { fromLoopback, guestBus, publish, type CapturePhase, type GuestEvent } from "../bus";
 
 export const runtime = "nodejs";
 
@@ -117,6 +118,30 @@ export async function POST(request: Request) {
       if (bus.recognizer?.type !== "recognizer" || bus.recognizer.state !== body.recognizer) {
         publish({ type: "recognizer", state: body.recognizer, at });
       }
+      return Response.json({ ok: true });
+    }
+
+    case "turn": {
+      if (body.phase !== "start" && body.phase !== "end") return bad('Expected { type: "turn", phase: "start" | "end" }');
+      const expected =
+        Array.isArray(body.expected) && body.expected.length <= 30 && body.expected.every(isLabels)
+          ? (body.expected as string[][])
+          : null;
+      publish({ type: "turn", phase: body.phase, expected, empty: body.empty === true, at });
+      return Response.json({ ok: true });
+    }
+
+    case "capture": {
+      const phases: CapturePhase[] = ["listening", "signing", "processing", "countdown"];
+      if (!phases.includes(body.phase as CapturePhase)) return bad(`Expected { type: "capture", phase: ${phases.join(" | ")} }`);
+      const seconds = (v: unknown) => (typeof v === "number" && v >= 0 && v <= 30 ? v : null);
+      publish({
+        type: "capture",
+        phase: body.phase as CapturePhase,
+        countdown: seconds(body.countdown),
+        duration: seconds(body.duration),
+        at,
+      });
       return Response.json({ ok: true });
     }
 

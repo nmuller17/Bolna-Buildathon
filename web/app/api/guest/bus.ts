@@ -17,7 +17,14 @@ export type GuestEvent =
       at: number;
     }
   | { type: "framing"; status: string; at: number }
-  | { type: "recognizer"; state: string; at: number };
+  | { type: "recognizer"; state: string; at: number }
+  // The guest's turn (recognition/live_key.py POST /turn): start (with the expected answers) and end.
+  | { type: "turn"; phase: "start" | "end"; expected: string[][] | null; empty: boolean; at: number }
+  // Where the guest is in their turn: waiting for the hands, signing, translating
+  // (or, for one-sign capture windows, a countdown before a REC of `duration` s).
+  | { type: "capture"; phase: CapturePhase; countdown: number | null; duration: number | null; at: number };
+
+export type CapturePhase = "listening" | "signing" | "processing" | "countdown";
 
 type Listener = (event: GuestEvent) => void;
 
@@ -27,6 +34,8 @@ type Bus = {
   lastUtterance: GuestEvent | null;
   framing: GuestEvent | null;
   recognizer: GuestEvent | null;
+  turn: GuestEvent | null; // last turn start while the turn is open, else null
+  capture: GuestEvent | null; // last capture phase of the open turn
   nextId: number;
 };
 
@@ -34,7 +43,16 @@ const KEY = Symbol.for("signbridge.guestBus");
 
 export function guestBus(): Bus {
   const g = globalThis as unknown as Record<symbol, Bus | undefined>;
-  return (g[KEY] ??= { listeners: new Set(), sentence: [], lastUtterance: null, framing: null, recognizer: null, nextId: 1 });
+  return (g[KEY] ??= {
+    listeners: new Set(),
+    sentence: [],
+    lastUtterance: null,
+    framing: null,
+    recognizer: null,
+    turn: null,
+    capture: null,
+    nextId: 1,
+  });
 }
 
 export function publish(event: GuestEvent) {
@@ -46,14 +64,20 @@ export function publish(event: GuestEvent) {
     bus.sentence = [];
     bus.lastUtterance = event;
   } else if (event.type === "framing") bus.framing = event;
-  else bus.recognizer = event;
+  else if (event.type === "recognizer") bus.recognizer = event;
+  else if (event.type === "turn") {
+    bus.turn = event.phase === "start" ? event : null;
+    bus.capture = null;
+  } else if (event.type === "capture") bus.capture = event;
   for (const listener of bus.listeners) listener(event);
 }
 
-/** Current state for a page that just connected: recognizer, framing, last sentence, signs in progress. */
+/** Current state for a page that just connected: recognizer, framing, last sentence, open turn, signs in progress. */
 export function snapshot(): GuestEvent[] {
   const bus = guestBus();
-  return [bus.recognizer, bus.framing, bus.lastUtterance, ...bus.sentence].filter((e): e is GuestEvent => e !== null);
+  return [bus.recognizer, bus.framing, bus.lastUtterance, bus.turn, bus.capture, ...bus.sentence].filter(
+    (e): e is GuestEvent => e !== null,
+  );
 }
 
 export function subscribe(listener: Listener) {
