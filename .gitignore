@@ -39,3 +39,6 @@ train_*.zip
 # Training data archives
 train_*.zip
 *_train.zip
+
+# Office lock files (a deck or document is open)
+~$*
