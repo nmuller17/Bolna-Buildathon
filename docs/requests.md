@@ -224,3 +224,18 @@ From `docs/features-plan.md` (Talha asked for these features). Nothing here chan
 | 2 | P2 | Add `rate` (0.5 to 1.5) to `playGloss` options (`PlayOptions.rate`), next to `onToken` | Guest control "avatar speed" (features-plan F5, roadmap R5). Until then the guest has size and captions-only, not speed |
 | 3 | P1 | No change needed. Live captions use `/api/transcribe` only as the second backend ("Cloud: OpenAI speech-to-text"), utterance at a time, only when `OPENAI_API_KEY` is set and the profile is `stage`. The local backend (`web/stt/local_stt.py`, faster-whisper on 127.0.0.1) is P4's | Features plan section 1: local first, cloud only on an explicit choice and labelled |
 | 4 | Talha | Confirm or reject the SES-11 amendment in `dad4b47` (manifest on the guest page, no service worker, no storage) | AS-3 as written forbids the manifest; the features plan keeps it (F15) only if confirmed |
+
+## 2026-10-11, from P4 (talha/app-shell builder G, local branch) to builder S: what the guest screen now sends
+
+The guest screen (commit `f34d9f1`) sends these, exactly as typed in `web/lib/app/types.ts`. `validate.ts` refuses them until builder S accepts them, so these taps answer 400 until then.
+
+| # | Action | Shape |
+|---|---|---|
+| 1 | `guest_choice` | `choice: "tap"` (first screen and header) |
+| 2 | `guest_phrase` | optional `via: "board" \| "phrase_list" \| "typed_match"` |
+| 3 | `guest_reply` | `reply: "say_another_way" \| "write_number"` |
+| 4 | `guest_number` | `{ about: "nights" \| "room" \| "people" \| "other", value: "1".."999999" }` |
+| 5 | `ack_alert` | `{ id }` (the guest removes the alert locally at once; staff "Seen" is best effort) |
+| 6 | `interpreter_request` | optional `context: { language: SignLanguage \| null, topics: boolean }`, sent only after ticking; the first request from the guest never carries it |
+
+The guest's preview of the interpreter card uses `interpreterCard()` and `interpreterCardLines()` in `web/lib/app/guestfeatures.ts`: topics are topic words of the fixed requests the guest sent (`topicsFromIntents`), never a name, typed text or a number, and "Last request" is the guest's last fixed sentence. For the desk's banner to show exactly what the guest saw, build the staff card with the same functions.
