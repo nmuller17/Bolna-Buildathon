@@ -1,0 +1,110 @@
+/* Check-in co-pilot on /staff: same card look as the staff page, ticks in the guest colour. */
+.card {
+  padding: 18px 22px;
+  border-radius: var(--radius);
+  background: rgba(17, 31, 61, 0.65);
+  border: 1px solid var(--line);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.title {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.reset {
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.reset:hover {
+  color: var(--ink);
+}
+
+.note {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--gold);
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 2px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 5px 0;
+}
+
+.mark {
+  width: 14px;
+  height: 14px;
+  margin-top: 3px;
+  border-radius: 50%;
+  border: 2px solid var(--ink-muted);
+  box-sizing: border-box;
+}
+
+.mark[data-state="sent"],
+.mark[data-state="confirmed"] {
+  border-color: var(--ok);
+  background: var(--ok);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.label {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.item[data-state="not_shared"] .label {
+  color: var(--ink-soft);
+}
+
+.state {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.asked {
+  color: var(--gold-strong);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.reminder {
+  margin: 12px 0 0;
+  color: var(--gold-strong);
+  font-size: 14px;
+}

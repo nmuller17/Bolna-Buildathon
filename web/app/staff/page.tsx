@@ -5,11 +5,14 @@
 // Staff -> guest runs hands-free on /guest; this page also offers push-to-talk (button or Space) and a text field,
 // sent to /guest over the BroadcastChannel (MediaRecorder -> /api/transcribe -> /api/gloss -> staff_utterance).
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { CheckinCopilot } from "@/components/CheckinCopilot";
 import { speakText, warmUpVoice } from "@/components/speakSigns";
 import { toSignedSentences, transcribe } from "@/components/speechToSigns";
 import { useGuestEvents, type GuestUtterance } from "@/components/useGuestEvents";
 import { usePushToTalk, type Recording } from "@/components/usePushToTalk";
+import { initChecklist, onGuestSigned, onStaffSent } from "@/lib/app/checklist";
 import { useSignbridgeChannel, type ChannelMessage, type ConversationTurn, type StaffState } from "@/lib/channel";
+import { mapStaffTextToGloss } from "@/lib/voice/intents";
 import styles from "./staff.module.css";
 
 type Source = "whisper" | "browser" | "typed" | "guest";
@@ -31,6 +34,8 @@ const BUTTON_LABEL: Record<StaffState, string> = { idle: "Hold to talk", listeni
 const STATUS_LABEL: Record<StaffState, string> = { idle: "Ready", listening: "Listening", processing: "Translating" };
 
 const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+/** Staff intents in a sentence that was signed on the guest screen, for the check-in co-pilot. */
+const staffIntents = (text: string) => mapStaffTextToGloss(text).matches.map((m) => m.intentId);
 
 /** Whisper first; if it fails or takes too long, the transcript the browser made in parallel. */
 async function transcribeRecording(recording: Recording): Promise<{ text: string; source: Source }> {
@@ -51,6 +56,7 @@ export default function StaffPage() {
   const [typed, setTyped] = useState("");
   const [history, setHistory] = useState<ConversationTurn[]>([]);
   const [soundOn, setSoundOn] = useState(false);
+  const [checklist, setChecklist] = useState(initChecklist);
   const holding = useRef(false);
   const busy = useRef(false);
   const starting = useRef<Promise<void> | null>(null);
@@ -65,6 +71,7 @@ export default function StaffPage() {
     if (message.type === "staff_utterance") {
       setLast({ text: message.text, gloss: message.gloss, source: "guest", seconds: 0 });
       setHistory((turns) => [{ from: "staff", text: message.text, gloss: message.gloss, at: Date.now() }, ...turns]);
+      setChecklist((list) => onStaffSent(list, staffIntents(message.text), message.text, Date.now()));
     } else if (message.type === "guest_utterance") {
       setHistory((turns) => [{ from: "guest", text: message.text, signs: message.signs, at: Date.now() }, ...turns]);
     } else if (message.type === "repeat_request") {
@@ -93,6 +100,7 @@ export default function StaffPage() {
       const text = u.needsRepeat ? "(asked to sign again)" : u.text;
       setHistory((turns) => [{ from: "guest", text, gloss: u.labels, at: Date.now() }, ...turns]);
       if (u.needsRepeat || u.mock || !u.text) return; // never speak a guess
+      setChecklist((list) => onGuestSigned(list, u.labels, u.text, Date.now()));
       if (soundRef.current) say(u.text);
       else waiting.current = { text: u.text, at: Date.now() / 1000 };
     },
@@ -138,6 +146,7 @@ export default function StaffPage() {
       const sentences = await toSignedSentences(text);
       if (sentences.length === 0) throw new Error("Nothing to sign in this sentence.");
       for (const s of sentences) send({ type: "staff_utterance", text: s.text, gloss: s.gloss });
+      setChecklist((list) => sentences.reduce((l, s) => onStaffSent(l, staffIntents(s.text), s.text, Date.now()), list));
       const gloss = sentences.flatMap((s) => s.gloss);
       setLast({ text, gloss, source, seconds: (performance.now() - since) / 1000 });
       setHistory((turns) => [{ from: "staff", text, gloss, at: Date.now() }, ...turns]);
@@ -292,6 +301,8 @@ export default function StaffPage() {
             Send
           </button>
         </form>
+
+        <CheckinCopilot items={checklist} onReset={() => setChecklist(initChecklist())} />
       </section>
 
       <aside className={styles.side}>
