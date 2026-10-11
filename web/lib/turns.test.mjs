@@ -110,3 +110,18 @@ test("script: the closing step has no guest turn", () => {
   assert.equal(s.staffSigned, false);
   assert.equal(s.scriptStep, 10);
 });
+
+test("after the script: Q&A, simple answers to questions only", () => {
+  let s = { ...initialTurns(0), scriptStep: 10 };
+  s = turnsReducer(s, { type: "staffSigned", intents: [], text: "Did you like the hotel?", now: 0 });
+  let next = nextExpected(s, true);
+  assert.equal(next.skip, false);
+  assert.deepEqual(next.expected, [["YES"], ["NO"], ["THANK-YOU"]]);
+  s = turnsReducer(s, { type: "staffSigned", intents: [], text: "Do you need a taxi to the airport?", now: 0 });
+  next = nextExpected(s, true);
+  assert.deepEqual(next.expected, [["YES"], ["NO"], ["THANK-YOU"], ["TAXI", "PLEASE"]]);
+  s = turnsReducer(s, { type: "staffSigned", intents: [], text: "Great demo.", now: 0 });
+  next = nextExpected(s, true);
+  assert.equal(next.skip, true, "not a question: no guest turn");
+  assert.equal(next.scriptStep, 10);
+});

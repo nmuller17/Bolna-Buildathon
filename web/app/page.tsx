@@ -23,7 +23,7 @@ import { useGuestEvents, type GuestTurnEvent, type GuestUtterance } from "@/comp
 import { useHandsFreeSpeech } from "@/components/useHandsFreeSpeech";
 import { mountAvatar, playGloss } from "@/lib/avatar/player";
 import { guestTurnDue, initialTurns, nextExpected, turnsReducer, type TurnEvent, type TurnState } from "@/lib/turns";
-import { DEMO_SCRIPT, expectedAfter } from "@/lib/voice/expectedAnswers";
+import { DEMO_SCRIPT, expectedAfter, isQuestion } from "@/lib/voice/expectedAnswers";
 import type { StaffIntentId } from "@/lib/voice/intents";
 import styles from "./page.module.css";
 
@@ -79,6 +79,7 @@ export default function SignBridgePage() {
     if (draining.current) return;
     draining.current = true;
     let intents: StaffIntentId[] = [];
+    const texts: string[] = [];
     while (queue.current.length > 0 && mounted.current) {
       const sentence = queue.current.shift()!;
       setCaption(sentence);
@@ -95,10 +96,13 @@ export default function SignBridgePage() {
       }
       setActiveIndex(null);
       if (sentence.intents?.length) intents = sentence.intents; // a trailing unknown sentence keeps the last known intents
+      texts.push(sentence.text);
     }
     setPlaying(false);
     draining.current = false;
-    apply({ type: "staffSigned", intents, now: performance.now() });
+    // The question of the turn, if any ("Great demo. Did you like it?"), else the last sentence.
+    const text = [...texts].reverse().find(isQuestion) ?? texts.at(-1) ?? "";
+    apply({ type: "staffSigned", intents, text, now: performance.now() });
   }, [apply]);
 
   // What the microphone heard: signed only during the front desk turn (a transcription that lands after the
@@ -281,7 +285,7 @@ export default function SignBridgePage() {
       </div>
       {scriptMode && (
         <div className={styles.guided} aria-hidden>
-          guided · step {Math.min(turns.scriptStep + 1, DEMO_SCRIPT.length)}/{DEMO_SCRIPT.length}
+          {turns.scriptStep >= DEMO_SCRIPT.length ? "Q&A" : `guided · step ${turns.scriptStep + 1}/${DEMO_SCRIPT.length}`}
         </div>
       )}
     </main>

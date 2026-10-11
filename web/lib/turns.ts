@@ -1,7 +1,7 @@
 // Turn-taking of the single-screen demo: the receptionist talks and the bellhop signs, then the guest answers
 // in signs (recorded by recognition/live_key.py), the answer is spoken aloud, then back to the receptionist.
 // Pure reducer: the page feeds it events and runs the side effects (POST /turn, speaking) on phase changes.
-import { expectedAfter, scriptedExpected, type Expected } from "./voice/expectedAnswers.ts";
+import { DEMO_SCRIPT, expectedAfter, qaExpected, scriptedExpected, type Expected } from "./voice/expectedAnswers.ts";
 import type { StaffIntentId } from "./voice/intents";
 
 export type TurnPhase =
@@ -16,6 +16,7 @@ export type TurnState = {
   staffSigned: boolean; // a receptionist sentence was signed since the last guest turn
   idleSince: number | null; // ms, when the bellhop and the mic both became idle (front desk turn)
   lastIntents: StaffIntentId[]; // intents of the last receptionist sentence
+  lastText: string; // the receptionist's last sentence (the question, if there was one)
   expected: Expected; // answers sent with the current / last guest turn
   scriptStep: number; // next step of DEMO_SCRIPT (script mode)
   scripted: boolean; // the current guest turn follows the script
@@ -24,7 +25,7 @@ export type TurnState = {
 };
 
 export type TurnEvent =
-  | { type: "staffSigned"; intents: StaffIntentId[]; now: number } // a receptionist sentence finished signing
+  | { type: "staffSigned"; intents: StaffIntentId[]; text?: string; now: number } // a receptionist turn finished signing
   | { type: "staffBusy"; now: number } // the mic hears someone, a sentence is being transcribed or signed
   | { type: "staffIdle"; now: number } // bellhop queue empty and mic quiet
   | { type: "tick"; now: number; busy?: boolean } // busy: bellhop signing or mic hearing / translating
@@ -48,6 +49,7 @@ export const initialTurns = (now = 0): TurnState => ({
   staffSigned: false,
   idleSince: null,
   lastIntents: [],
+  lastText: "",
   expected: null,
   scriptStep: 0,
   scripted: false,
@@ -75,6 +77,11 @@ export function nextExpected(
   s: TurnState,
   scriptMode: boolean,
 ): { expected: Expected; scriptStep: number; scripted: boolean; skip: boolean } {
+  if (scriptMode && s.scriptStep >= DEMO_SCRIPT.length) {
+    // Q&A with the jury after the script: simple answers to a question, no guest turn after anything else.
+    const expected = qaExpected(s.lastText);
+    return { expected, scriptStep: s.scriptStep, scripted: false, skip: expected === null };
+  }
   if (scriptMode) {
     const r = scriptedExpected(s.scriptStep, s.lastIntents, s.expected);
     return { expected: r.expected, scriptStep: r.nextStep, scripted: r.scripted, skip: r.skip };
@@ -86,7 +93,7 @@ export function turnsReducer(s: TurnState, e: TurnEvent): TurnState {
   switch (e.type) {
     case "staffSigned":
       if (s.phase !== "frontDesk") return s; // heard during the guest's turn: ignored
-      return { ...s, staffSigned: true, lastIntents: e.intents, idleSince: null };
+      return { ...s, staffSigned: true, lastIntents: e.intents, lastText: e.text ?? "", idleSince: null };
     case "staffBusy":
       return s.phase === "frontDesk" ? { ...s, idleSince: null } : s;
     case "staffIdle":

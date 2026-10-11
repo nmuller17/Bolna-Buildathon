@@ -128,3 +128,45 @@ export function scriptedExpected(
   }
   return { expected: expectedAfter(intents, previous), nextStep: step, scripted: false, skip: false };
 }
+
+// ---- Q&A with the jury, after the script -------------------------------------------------------------------------
+// A team member holds Space and says the juror's question; the bellhop signs it; the guest answers with a simple
+// sentence made only of learned signs: always YES / NO / THANK-YOU, plus the guest sentences about a topic the
+// question mentions ("Do you need a taxi?" -> TAXI PLEASE). A sentence that is not a question gets no guest turn.
+
+const QUESTION_START = /^(do|does|did|is|are|was|were|can|could|would|will|have|has|had|should|shall|may|might|what|where|when|why|who|how|which)\b/i;
+
+/** True for a question: a question mark, or a sentence starting like one (Whisper sometimes drops the "?"). */
+export function isQuestion(text: string): boolean {
+  const t = text.trim();
+  return t.endsWith("?") || QUESTION_START.test(t);
+}
+
+const QA_ALWAYS: GuestAnswerId[] = ["yes", "no", "thank_you"];
+
+// Topic words of the question -> guest sentences about that topic (all made of learned signs).
+const QA_TOPICS: [RegExp, GuestAnswerId[]][] = [
+  [/\bname\b/i, ["name", "yes_name"]],
+  [/\b(reservation|booking|booked)\b/i, ["yes_reservation"]],
+  [/\b(elevator|lift)\b/i, ["where_elevator"]],
+  [/\b(wi-?fi|internet|password)\b/i, ["wifi_password"]],
+  [/\bbreakfast\b/i, ["breakfast_time", "where_breakfast"]],
+  [/\b(towel|towels)\b/i, ["more_towels"]],
+  [/\b(checkout|check out|leave|leaving)\b/i, ["checkout_time", "late_checkout"]],
+  [/\b(parking|park|car|garage)\b/i, ["where_parking"]],
+  [/\b(taxi|cab|uber)\b/i, ["taxi"]],
+  [/\bhelp\b/i, ["help"]],
+  [/\broom\b/i, ["where_room", "room_problem"]],
+  [/\b(restaurant|dinner|lunch|eat)\b/i, ["where_restaurant", "restaurant_time"]],
+  [/\b(anything else|something else)\b/i, ["no_thanks"]],
+];
+
+/** Expected answers to a juror's question: null when it is not a question (no guest turn). */
+export function qaExpected(question: string): Expected {
+  if (!isQuestion(question)) return null;
+  const ids = [...QA_ALWAYS];
+  for (const [pattern, answers] of QA_TOPICS) {
+    if (pattern.test(question)) for (const id of answers) if (!ids.includes(id)) ids.push(id);
+  }
+  return toLabels(ids);
+}
