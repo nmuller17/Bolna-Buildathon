@@ -44,11 +44,24 @@ function playWav(wav: Blob): Promise<void> {
   }).finally(() => URL.revokeObjectURL(url));
 }
 
+/**
+ * SECURITY (red-team D9, docs/app-plan.md "Red-team requirements"): the last-resort voice must be an
+ * on-device voice (localService === true). A network voice would send the sentence to the browser
+ * vendor; when no local English voice exists we stay silent (the caller still gets the text to show).
+ */
+function localEnglishVoice(): SpeechSynthesisVoice | null {
+  const voices = window.speechSynthesis.getVoices().filter((v) => v.localService);
+  return voices.find((v) => v.lang === "en-US") ?? voices.find((v) => v.lang.startsWith("en")) ?? null;
+}
+
 function speakWithBrowser(text: string): Promise<void> {
   return new Promise((resolve) => {
     if (!("speechSynthesis" in window)) return resolve();
+    const voice = localEnglishVoice();
+    if (!voice) return resolve();
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "en-US";
+    utterance.voice = voice;
+    utterance.lang = voice.lang;
     utterance.onend = () => resolve();
     utterance.onerror = () => resolve();
     window.speechSynthesis.cancel();

@@ -1,17 +1,64 @@
 // P4: { text } -> audio/wav. ElevenLabs when ELEVENLABS_API_KEY is set, local Piper otherwise or if ElevenLabs fails.
 // Piper takes ~7 s per run (mostly loading the voice), so the first request also pre-generates every
 // known guest sentence with Piper in a single run, to keep the fallback fast. All audio is cached in memory.
+// SECURITY (P4 red-team fixes B1/B3/B6/B9/C3/D2/D3/D5, 2026-10-10): see docs/requests.md "Red-team changes
+// to teammate routes". Changes are marked "SECURITY:" below; synthesis itself is unchanged.
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { INTENTS } from "../english/intents";
+import { cleanSentence } from "@/lib/app/access";
+import { guardLoopbackJsonPost } from "@/lib/app/guard";
 
 export const runtime = "nodejs";
 
 const PIPER_TIMEOUT_MS = 30_000;
 const ELEVENLABS_TIMEOUT_MS = 2000; // leaves time for the Piper fallback before speakSigns gives up at 2.5 s
 const DEFAULT_ELEVENLABS_VOICE = "EXAVITQu4vr4xnSDxMaL"; // "Sarah", an ElevenLabs premade voice
+// SECURITY: request limits (docs/app-plan.md section 7: 4 KB body, 20/min) and a text cap.
+const MAX_BODY_BYTES = 4 * 1024;
+const PER_MINUTE = 20;
+const MAX_TEXT_CHARS = 300;
+// SECURITY (B6/D3): only the fixed guest sentences are cached. Any other text is synthesized
+// uncached (no unbounded memory, no "was this sentence said before?" timing oracle) and at most
+// MAX_UNCACHED_IN_FLIGHT at a time (no Piper process flood).
+const FIXED_TEXTS = new Set(INTENTS.map((i) => i.text));
+const MAX_UNCACHED_IN_FLIGHT = 2;
+let uncachedInFlight = 0;
+class TtsBusy extends Error {}
+// SECURITY (B9/C3/D5): the Piper child gets only these variables, never the API keys or BRIDGE_KEY.
+const PIPER_ENV_KEYS = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TEMP", "TMP", "SYSTEMROOT", "USERPROFILE"];
+let warnedBarePython = false;
+
+/** SECURITY (B9/C3): an absolute interpreter: PIPER_PYTHON, else the repo's .venv, else (warned) PATH. */
+function piperPython(): string {
+  const configured = process.env.PIPER_PYTHON;
+  if (configured) {
+    if (!path.isAbsolute(configured)) throw new Error("PIPER_PYTHON must be an absolute path");
+    return configured;
+  }
+  for (const venv of [path.resolve(process.cwd(), "..", ".venv"), path.resolve(process.cwd(), ".venv")]) {
+    for (const exe of [path.join(venv, "bin", "python"), path.join(venv, "Scripts", "python.exe")]) {
+      if (existsSync(/*turbopackIgnore: true*/ exe)) return exe;
+    }
+  }
+  if (!warnedBarePython) {
+    warnedBarePython = true;
+    console.warn("[api/tts] PIPER_PYTHON is not set and no .venv was found; using `python` from PATH");
+  }
+  return "python";
+}
+
+function piperEnv(): NodeJS.ProcessEnv {
+  const env: Record<string, string> = { PYTHONIOENCODING: "utf-8" };
+  for (const key of PIPER_ENV_KEYS) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env as unknown as NodeJS.ProcessEnv;
+}
 
 // text -> WAV, per engine. Also holds in-flight runs so the same sentence is never synthesized twice at once.
 const elevenLabsCache = new Map<string, Promise<Buffer>>();
@@ -45,9 +92,10 @@ function runPiper(args: string[], input: string): Promise<void> {
   if (!voice) return Promise.reject(new Error("PIPER_VOICE is not set in web/.env.local"));
 
   return new Promise((resolve, reject) => {
-    const child = spawn("python", ["-m", "piper", "-m", path.resolve(voice), ...args], {
+    // SECURITY (B9/C3/D5): absolute interpreter and an allowlisted environment (was "python" + {...process.env}).
+    const child = spawn(/*turbopackIgnore: true*/ piperPython(), ["-m", "piper", "-m", path.resolve(voice), ...args], {
       stdio: ["pipe", "ignore", "pipe"],
-      env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+      env: piperEnv(),
       windowsHide: true,
     });
     const timer = setTimeout(() => child.kill(), PIPER_TIMEOUT_MS);
@@ -127,35 +175,51 @@ function startWarmUp() {
 }
 
 async function synthesize(text: string): Promise<Buffer> {
-  const apiKey = process.env.ELEVENLABS_API_KEY;
-  if (apiKey) {
-    try {
-      return await cached(elevenLabsCache, text, () => synthesizeElevenLabs(text, apiKey));
-    } catch (err) {
-      console.warn("[api/tts] ElevenLabs failed, using Piper:", err);
+  // SECURITY (B6/D3): cache fixed sentences only; free text is uncached and concurrency-limited.
+  const fixed = FIXED_TEXTS.has(text);
+  if (!fixed && uncachedInFlight >= MAX_UNCACHED_IN_FLIGHT) throw new TtsBusy("busy");
+  const run = (cache: Map<string, Promise<Buffer>>, make: () => Promise<Buffer>) =>
+    fixed ? cached(cache, text, make) : make();
+  if (!fixed) uncachedInFlight++;
+  try {
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+    if (apiKey) {
+      try {
+        return await run(elevenLabsCache, () => synthesizeElevenLabs(text, apiKey));
+      } catch (err) {
+        console.warn("[api/tts] ElevenLabs failed, using Piper:", err instanceof Error ? err.message : "error");
+      }
     }
+    return await run(piperCache, () => synthesizePiper(text));
+  } finally {
+    if (!fixed) uncachedInFlight--;
   }
-  return cached(piperCache, text, () => synthesizePiper(text));
 }
 
 export async function POST(req: Request) {
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  // SECURITY (B1/B3/D2): loopback only (via web/server.mjs), Host allowlist, same-origin,
+  // application/json, 4 KB capped read, 20 requests a minute. Replaces `await req.json()`.
+  const guarded = await guardLoopbackJsonPost(req, { route: "tts", maxBytes: MAX_BODY_BYTES, perMinute: PER_MINUTE });
+  if (!guarded.ok) return guarded.res;
+  const body: unknown = guarded.body;
   const raw = (body as { text?: unknown } | null)?.text;
-  // Piper reads one sentence per line, so newlines would split the audio.
-  const text = typeof raw === "string" ? raw.replace(/\s+/g, " ").trim() : "";
-  if (!text) return Response.json({ error: "Expected { text: non-empty string }" }, { status: 400 });
+  // Piper reads one sentence per line, so newlines would split the audio (cleanSentence collapses them).
+  // SECURITY (B6/D2): at most MAX_TEXT_CHARS plain-sentence characters (no markup, no control characters).
+  const text = cleanSentence(raw, MAX_TEXT_CHARS);
+  if (!text) {
+    return Response.json(
+      { error: `Expected { text: one plain sentence of at most ${MAX_TEXT_CHARS} characters }` },
+      { status: 400 },
+    );
+  }
 
   startWarmUp();
   try {
     const wav = await synthesize(text);
     return new Response(new Uint8Array(wav), { headers: { "Content-Type": "audio/wav" } });
   } catch (err) {
-    console.error("[api/tts] TTS failed:", err);
+    if (err instanceof TtsBusy) return Response.json({ error: "TTS busy, retry" }, { status: 503 });
+    console.error("[api/tts] TTS failed:", err instanceof Error ? err.message : "error");
     return Response.json({ error: "TTS failed" }, { status: 500 });
   }
 }
