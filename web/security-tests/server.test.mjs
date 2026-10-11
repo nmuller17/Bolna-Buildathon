@@ -563,6 +563,19 @@ describe("Tier 0 app routes on server.mjs (stage profile, guest input on)", { co
     for (let i = 0; i < 3; i++) assert.equal((await guest(g, { type: "emergency" })).status, 200);
     assert.ok(await until(() => st.messages().some((m) => m.type === "emergency" && m.count === 3)));
     assert.equal(st.messages().some((m) => m.type === "warning"), false);
+    // Review F2: a page on another localhost port is the same site, so the browser sends sb_g; Help from
+    // there (no-cors, text/plain, Sec-Fetch-Site: same-site) is refused and raises nothing.
+    const foreign = await request({
+      port,
+      method: "POST",
+      path: "/api/guest/action",
+      noAuth: true,
+      headers: { ...guestH(g), Origin: `http://localhost:${port + 1}`, "Sec-Fetch-Site": "same-site", "Content-Type": "text/plain" },
+      body: json({ type: "emergency" }),
+    });
+    assert.equal(foreign.status, 403);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(st.messages().some((m) => m.type === "emergency" && m.count === 4), false, "no alert from a foreign page");
     // End guest.
     const end = await staff({ type: "end_guest" });
     assert.equal(end.status, 200);

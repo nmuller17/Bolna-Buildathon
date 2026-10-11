@@ -375,6 +375,8 @@ export class Store {
 
   touch(s: Session): void {
     s.lastActivityAt = this.now();
+    // The idle warning is over: tell the guest so its "will end soon" line goes away (BN-5).
+    if (s.idleWarned && s.state === "ACTIVE") this.toGuest({ type: "warning_cleared", kind: "idle" });
     s.idleWarned = false;
   }
 
@@ -458,6 +460,17 @@ export class Store {
       framing: this.recognizer.framing,
       signingAvailable: this.signingAvailable,
       emergencyPending: s.emergency !== null,
+      warnings: this.warningsLeft(s),
+    };
+  }
+
+  /** Seconds left on the idle and cap warnings that were already sent (null when not warned). */
+  warningsLeft(s: Session): GuestSnapshot["warnings"] {
+    const now = this.now();
+    const left = (at: number) => Math.max(1, Math.round((at - now) / 1000));
+    return {
+      idleSecondsLeft: s.idleWarned && s.lastActivityAt !== null ? left(s.lastActivityAt + this.idleMsInForce()) : null,
+      capSecondsLeft: s.capWarned && s.capAt !== null ? left(s.capAt) : null,
     };
   }
 
@@ -816,6 +829,7 @@ export class Store {
           s.capAt += LIMITS.extendMs;
           s.extensions++;
           s.capWarned = false;
+          this.toGuest({ type: "warning_cleared", kind: "cap" });
           this.systemLine("Staff extended the conversation by 5 minutes");
           return ok();
         }
@@ -1153,7 +1167,8 @@ export class Store {
       return;
     }
     if (!s) return;
-    this.touch(s);
+    // No touch here: a sign_control tap is guest-device input, and only staff actions and accepted
+    // desk-camera signs move the idle timer (AS-16, SES-8). The sign the tap produces touches in ingest.
     if (cmd !== "undo") return;
     const t = this.runs.recognizer;
     const seq = t?.sentence.pop();
@@ -1421,7 +1436,10 @@ export class Store {
           this.wipe("idle");
           return this.housekeeping(now);
         }
-        if (!s.idleWarned && now >= idleAt - LIMITS.idleWarnBeforeMs) {
+        // BN-5: two minutes before the wipe, but never earlier than halfway, so a short idle limit
+        // (engagement, 2 min) does not show the warning on every activity.
+        const warnBefore = Math.min(LIMITS.idleWarnBeforeMs, Math.floor(this.idleMsInForce() / 2));
+        if (!s.idleWarned && now >= idleAt - warnBefore) {
           s.idleWarned = true;
           const secondsLeft = Math.max(1, Math.round((idleAt - now) / 1000));
           this.toGuest({ type: "idle_warning", secondsLeft, canAskForTime: false });

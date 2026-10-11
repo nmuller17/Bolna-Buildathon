@@ -141,7 +141,8 @@ export const LIMITS = {
   /** Session timing for the "engagement" profile; SESSION_PROFILES overrides per profile, env overrides both. */
   idleWipeMs: 120_000,
   idleWipeUnconfirmedMs: 60_000,
-  idleWarnBeforeMs: 30_000,
+  /** BN-5: two minutes before the idle wipe, capped at half the idle limit (store.tick). */
+  idleWarnBeforeMs: 2 * 60_000,
   sessionCapMs: 15 * 60_000,
   capWarnBeforeMs: 2 * 60_000,
   extendMs: 5 * 60_000,
@@ -835,6 +836,11 @@ export type GuestSnapshot = {
   signingAvailable: boolean;
   /** Help pressed and not yet acknowledged, so a reconnect keeps "Staff has been alerted". */
   emergencyPending: boolean;
+  /**
+   * Warnings already sent and still running, so a guest window that (re)connects after the
+   * idle_warning / cap_warning event still shows "This session will end soon" (BN-5).
+   */
+  warnings: { idleSecondsLeft: number | null; capSecondsLeft: number | null };
 };
 
 /** CLAUDE.md 6.7 staff_utterance, extended. */
@@ -898,6 +904,8 @@ export type GuestStaffAck = { type: "staff_ack"; about: AlertKind };
 /** Both warnings reach the guest (C2-10). `canAskForTime` shows "I need more time" (Tier 1). */
 export type GuestIdleWarning = { type: "idle_warning"; secondsLeft: number; canAskForTime: boolean };
 export type GuestCapWarning = { type: "cap_warning"; secondsLeft: number; canAskForTime: boolean };
+/** The idle warning ended (a staff action or an accepted sign), or staff extended past the cap warning. */
+export type GuestWarningCleared = { type: "warning_cleared"; kind: "idle" | "cap" };
 
 export type GuestSessionPaused = { type: "session_paused"; reason: "device_changed" };
 
@@ -927,6 +935,7 @@ export type GuestEvent =
   | GuestStaffAck
   | GuestIdleWarning
   | GuestCapWarning
+  | GuestWarningCleared
   | GuestSessionPaused
   | GuestSigningAvailable
   | GuestSessionEnd;

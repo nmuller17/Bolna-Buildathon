@@ -287,12 +287,15 @@ export async function guestJoin(req: Request, d: RouteDeps): Promise<Response> {
 }
 
 /**
- * POST /api/guest/action. `emergency` is dispatched before the content-type, origin, nonce, limiter and
- * state checks and is never refused with 409 or 429 (C1-15, GST-2a). It still needs the guest cookie,
- * which is SameSite=Strict, so a cross-site page cannot raise it.
+ * POST /api/guest/action. `emergency` is dispatched before the content-type, nonce, limiter and state
+ * checks and is never refused with 409 or 429 (C1-15, GST-2a). It still needs the guest cookie and the
+ * origin check: SameSite=Strict alone is not enough, because every port on localhost is the same
+ * *site*, so a page on another localhost port gets the sb_g cookie on a no-cors POST (security review
+ * F2, 2026-10-11). The real guest window always sends Sec-Fetch-Site: same-origin (or no Origin at all
+ * from non-browser clients), so this never blocks a real Help tap.
  */
 export async function guestAction(req: Request, d: RouteDeps): Promise<Response> {
-  const bad = guestCheck(req, d, { origin: false });
+  const bad = guestCheck(req, d);
   if (bad) return bad;
   const b = await readJson(req, LIMITS.bodySmallJson, { anyType: true });
   if (!b.ok) return b.res;
@@ -302,7 +305,6 @@ export async function guestAction(req: Request, d: RouteDeps): Promise<Response>
     const r = d.store.emergency(token, ua);
     return json(r.status, r.body);
   }
-  if (!originOk(req, `http://${guestHost(d)}`)) return apiError(403, "Cross-origin request refused.");
   if (!isJsonContentType(req.headers.get("content-type"))) return apiError(415, "Content-Type must be application/json.");
   const v = validateGuestAction(b.body);
   if (!v.ok) return json(400, { ok: false, error: "bad_request", message: v.message, ...(v.field ? { field: v.field } : {}) });

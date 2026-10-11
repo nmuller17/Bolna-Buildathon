@@ -298,6 +298,26 @@ test("GST-2a: Get staff now is dispatched first: text/plain, no nonce, after eve
   assert.equal(JSON.stringify(w.store.warnings.map((x) => [x.kind, x.count])), warningsBefore, "Help raised a safety warning");
   // Without the cookie Help gets 401 (the printed card is the independent path).
   assert.equal((await guestAction(guestReq("/api/guest/action", { type: "emergency" }, undefined), w.deps)).status, 401);
+  // Security review F2: another localhost port is the same *site*, so the browser sends sb_g; Help from
+  // there is refused (same-site and cross-site, foreign Origin), and no alert is raised.
+  for (const o of [
+    { origin: "http://localhost:3548", site: "same-site" },
+    { origin: "http://evil.example", site: "cross-site" },
+    { origin: "http://localhost:3548", site: null },
+  ]) {
+    const r = await guestAction(guestReq("/api/guest/action", { type: "emergency" }, g, { ct: "text/plain", ...o }), w.deps);
+    assert.equal(r.status, 403, JSON.stringify(o));
+  }
+  assert.equal(w.store.session?.emergency?.count, 20, "a foreign page raised no alert");
+});
+
+test("AS-16/SES-8 (security review F1): a guest sign_control tap does not move the idle timer", async () => {
+  const w = world();
+  await startGuest(w);
+  const s = w.store.session!;
+  s.lastActivityAt = 1;
+  for (const cmd of ["record", "end", "undo"] as const) w.store.noteSignControl(cmd, true);
+  assert.equal(s.lastActivityAt, 1);
 });
 
 test("GST-8: a reused nonce is 409 and raises 'Repeated request'; a stale confirm too", async () => {
