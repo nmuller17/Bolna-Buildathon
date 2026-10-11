@@ -38,6 +38,7 @@ import {
   type FramingStatus,
   type GlossSource,
   type GuestAction,
+  type SignControlCmd,
   type GuestEvent,
   type GuestHello,
   type GuestIntentId,
@@ -87,12 +88,20 @@ export type StoreConfig = {
   englishFallback: boolean;
   bridgeKeyConfigured: boolean;
   transcribeAvailable: boolean;
+  /** /api/tts can make audio: ELEVENLABS_API_KEY is set, or PIPER_FALLBACK=1. Otherwise it answers 500. */
+  ttsAvailable: boolean;
   /** Names only, e.g. ["OPENAI_API_KEY"]. Empty during the engagement window (D8). */
   vendorKeysConfigured: string[];
   vri: VriInfo;
   emergencyNote: string;
   /** Keys of signs/index.json: the gloss tokens the avatar can play (CAP-2). */
   knownSigns: ReadonlySet<string>;
+  /**
+   * LIVE_KEY_CONTROL_PORT: live_key.py --control-port on 127.0.0.1. When set, the guest's "Record a
+   * sign", "Undo last sign" and "Done" go through the app server to it (consent gate and limits here),
+   * and its GET /health keeps the recognizer marked as up (live_key.py sends no status event).
+   */
+  signControlPort: number | null;
 };
 
 export function defaultConfig(over: Partial<StoreConfig> = {}): StoreConfig {
@@ -110,10 +119,12 @@ export function defaultConfig(over: Partial<StoreConfig> = {}): StoreConfig {
     englishFallback: false,
     bridgeKeyConfigured: false,
     transcribeAvailable: false,
+    ttsAvailable: false,
     vendorKeysConfigured: [],
     vri: { label: null, url: null, contact: null },
     emergencyNote: "This app does not call 911.",
     knownSigns: new Set(),
+    signControlPort: null,
     ...over,
   };
 }
@@ -254,6 +265,7 @@ const GUEST_LIMITS: Record<string, [number, number, "429" | "ignore" | "merge"]>
   prefs: [10, 60_000, "429"],
   guest_choice: [10, 60_000, "429"],
   stop_signing: [10, 60_000, "429"],
+  sign_control: [40, 60_000, "429"],
   guest_confirm: [30, 60_000, "429"],
   guest_fix: [30, 60_000, "429"],
   ack: [120, 60_000, "ignore"],
@@ -299,6 +311,8 @@ export class Store {
     run: null as string | null,
     /** live_key.py recording phase (shared contract 2026-10-11); not shown on a screen yet. */
     capture: null as { phase: "countdown" | "processing"; at: number; countdown: number | null; duration: number | null } | null,
+    /** live_key.py control port answered GET /health at the last probe; null without a control port. */
+    controlUp: null as boolean | null,
   };
   runs: Record<SignsSource, RunTrack | null> = { recognizer: null, simulated: null };
   signingAvailable = false;
@@ -426,6 +440,7 @@ export class Store {
       check: null,
       displayOnly: this.displayOnly,
       signingAvailable: this.signingAvailable,
+      signTrigger: this.config.signControlPort !== null ? "key" : "auto",
     };
   }
 
@@ -466,6 +481,8 @@ export class Store {
         framingNotOkSince: r.framingNotOkSince,
         source: r.source,
         signingAvailable: this.signingAvailable,
+        trigger: this.config.signControlPort !== null ? "key" : "auto",
+        controlUp: r.controlUp,
       },
       session: {
         state: s ? s.state : "NO_SESSION",
@@ -496,6 +513,7 @@ export class Store {
         englishFallback: this.config.englishFallback,
         bridgeKeyConfigured: this.config.bridgeKeyConfigured,
         transcribeAvailable: this.config.transcribeAvailable,
+        ttsAvailable: this.config.ttsAvailable,
       },
       alerts: s
         ? { emergency: s.emergency ? { ...s.emergency } : null, interpreterAt: s.interpreterAt, moreTimeAt: s.moreTimeAt }
@@ -1047,6 +1065,8 @@ export class Store {
         return this.choose(a.choice);
       case "stop_signing":
         return this.setMode(s, "choosing");
+      case "sign_control":
+        return this.signControl(s, a.cmd);
       case "guest_confirm":
         return this.confirm(a.proposalId, a.candidateId, a.name, "guest", a.voice !== false);
       case "guest_fix":
@@ -1107,6 +1127,56 @@ export class Store {
     this.toStaff({ type: "guest_choice", guestMode: s.guestMode, speakAloud: s.speakAloud, showAvatar: s.showAvatar });
     if (mode === "sign" && this.recognizer.framing) this.toGuest({ type: "framing", status: this.recognizer.framing, text: FRAMING_GUIDANCE[this.recognizer.framing] });
     return ok();
+  }
+
+  /**
+   * live_key.py control (shared contract 2026-10-11). The store only decides; the route forwards an
+   * accepted command to 127.0.0.1:LIVE_KEY_CONTROL_PORT and reports back with noteSignControl.
+   * Recording needs the consent gate (the guest chose Sign) and no sentence waiting for confirmation.
+   */
+  signControl(s: Session, cmd: SignControlCmd): Result {
+    if (this.config.signControlPort === null) return fail(409, "conflict", "The desk camera starts by itself here. Just sign.");
+    if (s.guestMode !== "sign") return fail(409, "conflict", "Choose Sign first.");
+    if (!this.signingAvailable) return fail(409, "conflict", "Signing is not available right now. Please type or ask for an interpreter.");
+    if (s.pending) return fail(409, "conflict", "Choose Say it, Text only or Fix for the sentence on screen first.");
+    return ok({ forward: cmd });
+  }
+
+  /** After the route forwarded a sign_control command: undo bookkeeping, or a staff line when it failed. */
+  noteSignControl(cmd: SignControlCmd, delivered: boolean): void {
+    const s = this.session;
+    if (!delivered) {
+      this.recognizer.controlUp = false;
+      this.updateSigningAvailable();
+      if (s) this.systemLine("The camera program did not answer the guest's button. Check that live_key.py is running");
+      this.sendStatus();
+      return;
+    }
+    if (!s) return;
+    this.touch(s);
+    if (cmd !== "undo") return;
+    const t = this.runs.recognizer;
+    const seq = t?.sentence.pop();
+    if (seq === undefined) return;
+    this.systemLine("Guest undid the last sign");
+    this.toGuest({ type: "live_sign_undone", seq });
+    this.toStaff({ type: "live_sign_undone", seq });
+  }
+
+  /** The runtime probes live_key.py's GET /health every second (only with a control port). */
+  noteControlHealth(up: boolean): void {
+    const r = this.recognizer;
+    const changed = r.controlUp !== up;
+    r.controlUp = up;
+    if (up) {
+      // live_key.py sends no status event; an answering control port is its heartbeat. A status event,
+      // if one ever arrives, still sets the mode (mock, no_model) and wins.
+      r.lastEventAt = this.now();
+      r.source = "recognizer";
+      if (r.mode === null) r.mode = "ok";
+    }
+    this.updateSigningAvailable();
+    if (changed) this.sendStatus();
   }
 
   choose(choice: "sign" | "type" | "interpreter" | "text_only"): Result {

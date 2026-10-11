@@ -11,7 +11,7 @@ import type { RouteDeps } from "./routes.ts";
 import { claimCapability, isStaffToken } from "./staffcap.ts";
 import { defaultConfig, Store, type StoreConfig } from "./store.ts";
 import { drainVendorTaps } from "./taps.ts";
-import { LIMITS, SESSION_PROFILES, type SessionProfile, type VriInfo } from "./types.ts";
+import { LIMITS, SESSION_PROFILES, type SessionProfile, type SignControlCmd, type VriInfo } from "./types.ts";
 
 const STORE_KEY = Symbol.for("signbridge.store.v2");
 const SWEEPER_KEY = Symbol.for("signbridge.sweeper.v2");
@@ -68,10 +68,12 @@ export function configFromEnv(env: Env, knownSigns: ReadonlySet<string>): StoreC
     englishFallback: flag(env.ENGLISH_FALLBACK),
     bridgeKeyConfigured: (env.BRIDGE_KEY ?? "").length >= LIMITS.bridgeKeyMinLen,
     transcribeAvailable: (env.OPENAI_API_KEY ?? "").trim() !== "",
+    ttsAvailable: (env.ELEVENLABS_API_KEY ?? "").trim() !== "" || env.PIPER_FALLBACK === "1",
     vendorKeysConfigured,
     vri: vriFromEnv(env),
     emergencyNote: clean(env.EMERGENCY_NOTE, 200) ?? "This app does not call 911.",
     knownSigns,
+    signControlPort: posInt(env.LIVE_KEY_CONTROL_PORT, 1_024, 65_535),
   });
 }
 
@@ -94,10 +96,22 @@ export function getStore(): Store {
   }
   if (!g[SWEEPER_KEY]) {
     const s = store;
+    let probing = false;
+    let lastProbe = 0;
     const timer = setInterval(() => {
       try {
         s.noteVendorTaps(drainVendorTaps());
         s.tick();
+        const port = s.config.signControlPort;
+        if (port !== null && !probing && Date.now() - lastProbe >= CONTROL_PROBE_MS) {
+          probing = true;
+          lastProbe = Date.now();
+          controlRequest(port, "GET", "/health")
+            .then((up) => s.noteControlHealth(up))
+            .finally(() => {
+              probing = false;
+            });
+        }
       } catch {
         // A sweeper error must never take the server down; the next tick tries again.
       }
@@ -106,6 +120,23 @@ export function getStore(): Store {
     g[SWEEPER_KEY] = timer;
   }
   return store;
+}
+
+const CONTROL_PROBE_MS = 1_000;
+const CONTROL_PATH: Record<SignControlCmd, string> = { record: "/sign", undo: "/undo", end: "/end" };
+
+/**
+ * One request to live_key.py --control-port, on 127.0.0.1 only (the port comes from the environment,
+ * the path from a fixed table; no body, no redirects, 1 s timeout). True when it answered 200.
+ */
+async function controlRequest(port: number, method: "GET" | "POST", p: string): Promise<boolean> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}${p}`, { method, redirect: "manual", signal: AbortSignal.timeout(1_000), body: method === "POST" ? "" : undefined });
+    await res.arrayBuffer().catch(() => null);
+    return res.status === 200;
+  } catch {
+    return false;
+  }
 }
 
 const LIMITERS_KEY = Symbol.for("signbridge.routelimiters.v2");
@@ -143,5 +174,9 @@ export function routeDeps(): RouteDeps {
     limit,
     staff: { isToken: isStaffToken, claim: claimCapability },
     readBenchmark,
+    signControl: (cmd) => {
+      const port = store.config.signControlPort;
+      return port === null ? Promise.resolve(false) : controlRequest(port, "POST", CONTROL_PATH[cmd]);
+    },
   };
 }

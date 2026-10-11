@@ -184,6 +184,14 @@ function LiveRegions({ ui }: { ui: GuestUi }) {
     if (ui.echo) setPolite(`Sent to the front desk: ${ui.echo.text}`);
   }, [ui.echo]);
   useEffect(() => {
+    if (!ui.capture) return;
+    if (ui.capture.phase === "processing") setPolite("Recording stopped. Reading your sign.");
+    else
+      setPolite(
+        `Get ready. Recording starts in ${ui.capture.countdown ?? 0} seconds and lasts ${ui.capture.duration ?? 2} seconds. Make one sign.`,
+      );
+  }, [ui.capture]);
+  useEffect(() => {
     if (ui.framing && ui.settings.guestMode === "sign") setPolite(FRAMING_GUIDANCE[ui.framing]);
   }, [ui.framing, ui.settings.guestMode]);
   useEffect(() => {
@@ -426,9 +434,11 @@ function DisplayOnlyChoices() {
 function Conversation({ u }: { u: Ui }) {
   const { ui } = u.session;
   const displayOnly = ui.hello?.displayOnly ?? false;
+  // Key-triggered signing: the Record button is used every few seconds, so it also comes first.
+  const keySigning = ui.hello?.signTrigger === "key" && ui.settings.guestMode === "sign" && ui.signingAvailable;
   return (
     // While a sentence waits for the guest, a phone shows it first, within thumb reach (plan 4.5).
-    <div className={s.conversation} data-pending={(ui.pending !== null && !displayOnly) || undefined}>
+    <div className={s.conversation} data-pending={((ui.pending !== null || keySigning) && !displayOnly) || undefined}>
       <DeskSaid session={u.session} />
       <section className={s.you} aria-labelledby="you-title">
         {displayOnly ? <DisplayOnlyYou ui={ui} /> : <YouPanel session={u.session} />}
@@ -566,18 +576,27 @@ function SignPanel({ session }: { session: Session }) {
 
   const repeat = ui.repeat && ui.repeat !== dismissedRepeat ? ui.repeat : null;
   const framingNotOk = ui.framing && ui.framing !== "OK";
+  const keyTrigger = ui.hello?.signTrigger === "key";
   // BT-26: after two framing misses in a row, or three misses of any kind, typing comes first.
   const typeFirst = repeat ? repeat.streak >= 3 || (repeat.streak >= 2 && repeat.reason === "framing") : false;
 
   return (
     <div className={s.stack}>
       <p className={s.lead}>
-        {isMode0 ? "Signing is on. Face the desk camera, with both hands free." : "Signing is on. Put the phone in the stand so both hands are free."}
+        {keyTrigger
+          ? "Signing is on. Tap Record a sign, wait for the countdown, then make one sign. Repeat for each word."
+          : isMode0
+            ? "Signing is on. Face the desk camera, with both hands free."
+            : "Signing is on. Put the phone in the stand so both hands are free."}
       </p>
-      <p className={framingNotOk ? s.framingAlert : s.framingOk}>
-        <FramingIcon ok={!framingNotOk} />
-        {FRAMING_GUIDANCE[ui.framing ?? "OK"]}
-      </p>
+      {(!keyTrigger || ui.framing !== null) && (
+        <p className={framingNotOk ? s.framingAlert : s.framingOk}>
+          <FramingIcon ok={!framingNotOk} />
+          {FRAMING_GUIDANCE[ui.framing ?? "OK"]}
+        </p>
+      )}
+
+      {keyTrigger && !repeat && <KeyCapture session={session} onRecord={() => setDismissedRepeat(ui.repeat)} />}
 
       {ui.live.length > 0 && !repeat && !ui.echo && (
         <div className={s.liveBlock}>
@@ -621,6 +640,110 @@ function SignPanel({ session }: { session: Session }) {
       <button type="button" className={s.quiet} onClick={() => void act({ type: "stop_signing" })}>
         Stop signing
       </button>
+    </div>
+  );
+}
+
+/** Seconds left in the current capture phase, from this screen's clock. */
+type CaptureView = { step: "ready" | "rec" | "reading"; left: number; total: number };
+
+function captureView(c: GuestUi["capture"], now: number): CaptureView | null {
+  if (!c) return null;
+  if (c.phase === "processing") return { step: "reading", left: 0, total: 1 };
+  const t = (now - c.at) / 1000;
+  const cd = c.countdown ?? 0;
+  const dur = c.duration ?? 2;
+  if (t < cd) return { step: "ready", left: cd - t, total: cd };
+  if (t < cd + dur) return { step: "rec", left: cd + dur - t, total: dur };
+  return { step: "reading", left: 0, total: 1 };
+}
+
+const CAPTURE_WORDS: Record<CaptureView["step"], string> = { ready: "Get ready", rec: "Sign now", reading: "Reading your sign" };
+
+/**
+ * Key-triggered signing (live_key.py through the app server, shared contract 2026-10-11): one tap
+ * records one sign, recorded exactly like the training takes. The countdown comes from the
+ * recognizer's own "capture" events, drawn on this screen's clock. Nothing is sent to the desk until
+ * the guest checks the sentence (BN-1).
+ */
+function KeyCapture({ session, onRecord }: { session: Session; onRecord: () => void }) {
+  const { ui, act } = session;
+  const [waiting, setWaiting] = useState<null | "record" | "undo" | "end">(null);
+  const [error, setError] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const view = captureView(ui.capture, now);
+  const count = ui.liveClosed ? 0 : ui.live.length;
+
+  // Ticks only while a recording is on screen.
+  useEffect(() => {
+    if (!ui.capture || ui.capture.phase === "processing") return;
+    const id = setInterval(() => setNow(Date.now()), 100);
+    return () => clearInterval(id);
+  }, [ui.capture]);
+
+  // The recording ended with a sign (or a proposal / repeat cleared it): the buttons come back.
+  useEffect(() => {
+    if (waiting === "record" && ui.capture === null) setWaiting(null);
+  }, [ui.capture, waiting]);
+  // A recording that never reports back (camera program stopped) frees the buttons after 8 s.
+  useEffect(() => {
+    if (!waiting) return;
+    const id = setTimeout(() => setWaiting(null), 8_000);
+    return () => clearTimeout(id);
+  }, [waiting]);
+
+  const busy = waiting !== null || (view !== null && view.step !== "reading") || ui.capture?.phase === "processing";
+
+  const send = async (cmd: "record" | "undo" | "end") => {
+    setError(null);
+    setWaiting(cmd);
+    if (cmd === "record") onRecord();
+    const r = await act({ type: "sign_control", cmd });
+    if (!r.ok) {
+      setError(r.message);
+      setWaiting(null);
+    } else if (cmd !== "record") {
+      setWaiting(null);
+    }
+  };
+
+  const ring = view ? (view.step === "reading" ? 1 : Math.max(0, Math.min(1, view.left / Math.max(view.total, 0.001)))) : 0;
+
+  return (
+    <div className={s.capture} data-step={view?.step ?? "idle"}>
+      <div className={s.captureDial} style={{ ["--p" as string]: ring.toFixed(3) }} aria-hidden="true">
+        <span className={s.captureNumber}>{view ? (view.step === "reading" ? "…" : Math.ceil(view.left)) : count}</span>
+      </div>
+      <div className={s.captureText}>
+        <p className={s.captureWord}>{view ? CAPTURE_WORDS[view.step] : count === 0 ? "Ready for your first sign" : `${count} ${count === 1 ? "sign" : "signs"} so far`}</p>
+        <p className={s.small}>
+          {view?.step === "ready"
+            ? "Raise your hands when the count reaches zero."
+            : view?.step === "rec"
+              ? "Make one sign now. Hands down when it is done."
+              : view?.step === "reading"
+                ? "The computer is reading the sign. This takes a moment."
+                : count === 0
+                  ? "One sign per recording. Hands down between signs."
+                  : "Record the next sign, or finish. You check the sentence before anything is sent."}
+        </p>
+      </div>
+      <div className={s.captureButtons}>
+        <button type="button" className={s.primary} disabled={busy} onClick={() => void send("record")}>
+          {view && view.step !== "reading" ? "Recording…" : count === 0 ? "Record a sign" : "Record the next sign"}
+        </button>
+        <button type="button" className={s.secondary} disabled={busy || count === 0} onClick={() => void send("end")}>
+          Finish sentence
+        </button>
+        <button type="button" className={s.secondary} disabled={busy || count === 0} onClick={() => void send("undo")}>
+          Undo last sign
+        </button>
+      </div>
+      {error && (
+        <p className={s.error} role="alert">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
@@ -1175,6 +1298,13 @@ function MoreMenu({ u }: { u: Ui }) {
     return () => document.removeEventListener("keydown", onKey);
   }, [open]);
 
+  // Choosing how to talk is a "do and go" action: the menu closes so the new panel is in view.
+  const pick = (run: () => void) => {
+    run();
+    setOpen(false);
+    document.getElementById("guest-more-button")?.focus();
+  };
+
   return (
     <div className={s.more}>
       <button type="button" id="guest-more-button" className={s.moreButton} aria-expanded={open} aria-controls="guest-more" onClick={() => setOpen((v) => !v)}>
@@ -1186,17 +1316,17 @@ function MoreMenu({ u }: { u: Ui }) {
             How I talk
           </p>
           <div className={s.buttonRow} role="group" aria-labelledby="more-mode">
-            <button type="button" className={s.secondary} aria-pressed={mode === "sign"} disabled={!ui.signingAvailable} onClick={() => void act({ type: "guest_choice", choice: "sign" })}>
+            <button type="button" className={s.secondary} aria-pressed={mode === "sign"} disabled={!ui.signingAvailable} onClick={() => pick(() => void act({ type: "guest_choice", choice: "sign" }))}>
               Sign
             </button>
-            <button type="button" className={s.secondary} aria-pressed={mode === "type"} onClick={() => void act({ type: "guest_choice", choice: "type" })}>
+            <button type="button" className={s.secondary} aria-pressed={mode === "type"} onClick={() => pick(() => void act({ type: "guest_choice", choice: "type" }))}>
               Type
             </button>
-            <button type="button" className={s.secondary} aria-pressed={mode === "text_only"} onClick={() => void act({ type: "guest_choice", choice: "text_only" })}>
+            <button type="button" className={s.secondary} aria-pressed={mode === "text_only"} onClick={() => pick(() => void act({ type: "guest_choice", choice: "text_only" }))}>
               Text only
             </button>
           </div>
-          <button type="button" className={s.secondary} onClick={() => void requestInterpreter()}>
+          <button type="button" className={s.secondary} onClick={() => pick(() => void requestInterpreter())}>
             Ask for a human interpreter
           </button>
           <p className={s.subTitle} id="more-size">

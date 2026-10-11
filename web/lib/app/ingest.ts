@@ -84,11 +84,16 @@ export function ingestBridge(store: Store, raw: unknown, source: SignsSource): I
   }
 
   if (ev.type === "capture") {
-    // live_key.py recording phase: no personal data, accepted outside the consent gate and stored for
-    // the screens (a countdown on the guest screen is a later screen task).
+    // live_key.py recording phase: no personal data, accepted outside the consent gate, stored, and
+    // relayed as a countdown to staff and (while the guest is signing) to the guest.
     markSeen();
     store.bothPrivacy((p) => p.bridgeEvents++);
     r.capture = { phase: ev.phase, at: now, countdown: ev.countdown ?? null, duration: ev.duration ?? null };
+    const phase = { phase: ev.phase, countdown: ev.countdown ?? null, duration: ev.duration ?? null };
+    store.toStaff({ type: "capture", ...phase });
+    // The guest sees the countdown only while signing (same rule as framing, plan 6.4).
+    const s = store.session;
+    if (s && s.state === "ACTIVE" && s.guestMode === "sign") store.toGuest({ type: "capture", ...phase });
     return okOut("capture");
   }
 

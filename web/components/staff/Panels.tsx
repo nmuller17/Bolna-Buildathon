@@ -212,19 +212,22 @@ function Evidence({ items }: { items: EvidenceItem[] }) {
       <p className={s.evidenceNote}>{EVIDENCE_NOTE}</p>
       {list.length === 0 && <p className={s.hint}>No signs recognised for this guest yet. Evidence never includes video.</p>}
       <ol className={s.evidenceList}>
-        {list.map(({ sign, simulated }, i) => {
+        {list.map(({ sign, simulated, undone }, i) => {
           const top = sign.top[0];
           const delay = sign.tPredicted !== null && sign.tSignEnd !== null ? `${(sign.tPredicted - sign.tSignEnd).toFixed(2)} s` : "—";
           return (
             <li key={`${sign.seq}-${sign.receivedAt}-${i}`} className={s.evidenceRow}>
               <span className={s.evSeq}>#{sign.seq ?? "?"}</span>
+              {undone && <span className={s.hint}>undone by the guest, not in the sentence</span>}
               <KeyTag token={top?.label ?? "NONE"} small missed={sign.light === "red"} />
               <TrafficLight light={sign.light} surface="staff" red={sign.red} />
               <span>
                 {top ? top.conf.toFixed(2) : "—"} <span className={s.hint}>model score (uncalibrated), bar {sign.bar.toFixed(2)}</span>
               </span>
               <span className={s.hint}>
-                moved {clockMs(sign.tSignStart)} to {clockMs(sign.tSignEnd)}, predicted +{delay}
+                {sign.tSignStart === null && sign.tSignEnd === null && sign.tPredicted === null
+                  ? `received ${clockMs(sign.receivedAt / 1000)}; no movement times from this recognizer`
+                  : `moved ${clockMs(sign.tSignStart)} to ${clockMs(sign.tSignEnd)}, predicted +${delay}`}
               </span>
               <span className={s.hint}>
                 {sign.joined && sign.top.length > 1

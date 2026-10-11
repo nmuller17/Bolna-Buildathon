@@ -20,7 +20,7 @@ import { benchmarkFromReport } from "./benchmark.ts";
 import { accepting, ingestBridge } from "./ingest.ts";
 import { STAFF_COOKIE, readCookie, type ClaimResult } from "./staffcap.ts";
 import type { Store } from "./store.ts";
-import { LIMITS, type Role } from "./types.ts";
+import { LIMITS, type Role, type SignControlCmd } from "./types.ts";
 import { validateGuestAction, validateStaffAction } from "./validate.ts";
 
 export const GUEST_COOKIE = "sb_g";
@@ -37,6 +37,8 @@ export type RouteDeps = {
   staff: { isToken: (t: string | null) => boolean; claim: (k: unknown) => ClaimResult };
   /** Reads BENCHMARK_CLEARED_FILE (parsed JSON) or null. */
   readBenchmark: () => unknown;
+  /** Forwards a guest's sign_control to live_key.py on 127.0.0.1; true when it answered 200. */
+  signControl?: (cmd: SignControlCmd) => Promise<boolean>;
 };
 
 const NO_STORE = { "Cache-Control": "no-store" } as const;
@@ -305,6 +307,15 @@ export async function guestAction(req: Request, d: RouteDeps): Promise<Response>
   const v = validateGuestAction(b.body);
   if (!v.ok) return json(400, { ok: false, error: "bad_request", message: v.message, ...(v.field ? { field: v.field } : {}) });
   const r = d.store.guestAction(token, v.value, ua);
+  if (v.value.type === "sign_control" && r.status === 200 && r.body.forward) {
+    // live_key.py control (shared contract 2026-10-11): the browser never talks to the camera program;
+    // only a command the store accepted (consent gate, no pending sentence, limits) is forwarded.
+    const cmd = v.value.cmd;
+    const delivered = d.signControl ? await d.signControl(cmd).catch(() => false) : false;
+    d.store.noteSignControl(cmd, delivered);
+    if (!delivered) return apiError(503, "The desk camera did not answer. Please type instead, or wave to the desk.");
+    return json(200, { ok: true });
+  }
   return json(r.status, r.body, r.status === 401 && token ? { "Set-Cookie": expireCookie(GUEST_COOKIE) } : {});
 }
 

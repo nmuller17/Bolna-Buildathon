@@ -798,7 +798,18 @@ export type GuestHello = {
   displayOnly: boolean;
   /** False when the recognizer is down, in mock mode or has no model (C2-23). No personal data. */
   signingAvailable: boolean;
+  /**
+   * How a sign is captured. "auto" = live.py cuts signs from continuous movement. "key" = live_key.py
+   * records one sign per "Record a sign" tap, driven through the app server (LIVE_KEY_CONTROL_PORT).
+   */
+  signTrigger: SignTrigger;
 };
+
+/** See GuestHello.signTrigger. */
+export type SignTrigger = "auto" | "key";
+
+/** live_key.py recording phase, relayed while the guest is signing (no personal data). */
+export type CapturePhase = { phase: "countdown" | "processing"; countdown: number | null; duration: number | null };
 
 export type GuestPairConfirmed = { type: "pair_confirmed"; deskShows: string };
 
@@ -839,6 +850,12 @@ export type GuestStaffUtterance = {
 };
 
 export type GuestLiveSign = { type: "live_sign"; sign: GuestSignView; simulated: boolean };
+
+/** live_key.py: a recording started ("countdown") or stopped ("processing"). Shown as a countdown. */
+export type GuestCapture = { type: "capture" } & CapturePhase;
+
+/** The guest's "Undo last sign" reached live_key.py: this sign is no longer part of the sentence. */
+export type GuestLiveSignUndone = { type: "live_sign_undone"; seq: number };
 
 export type GuestFraming = { type: "framing"; status: FramingStatus; text: string };
 
@@ -901,6 +918,8 @@ export type GuestEvent =
   | GuestSnapshot
   | GuestStaffUtterance
   | GuestLiveSign
+  | GuestCapture
+  | GuestLiveSignUndone
   | GuestFraming
   | GuestRepeatRequest
   | GuestProposal
@@ -1067,6 +1086,10 @@ export type StaffStatus = {
     source?: SignsSource | null;
     /** Builder A addition: the value the guest screen currently has (C2-23), for the staff fallback band. */
     signingAvailable?: boolean;
+    /** "key" when live_key.py is driven through LIVE_KEY_CONTROL_PORT; "auto" for live.py. */
+    trigger?: SignTrigger;
+    /** live_key.py: true while its control port answers GET /health. Null without a control port. */
+    controlUp?: boolean | null;
   };
   session: {
     state: SessionState;
@@ -1107,6 +1130,8 @@ export type StaffStatus = {
     englishFallback: boolean;
     bridgeKeyConfigured: boolean;
     transcribeAvailable: boolean;
+    /** Builder B addition: /api/tts can make audio (ElevenLabs key, or PIPER_FALLBACK=1). Optional for older servers. */
+    ttsAvailable?: boolean;
   };
 };
 
@@ -1155,6 +1180,10 @@ export type StaffDelivered = {
 };
 
 export type StaffLiveSign = { type: "live_sign"; sign: StaffSignView; source: SignsSource };
+/** live_key.py recording phase, for the staff live-sign strip. */
+export type StaffCapture = { type: "capture" } & CapturePhase;
+/** The guest undid this sign (live_key.py); it is left out of the sentence. */
+export type StaffLiveSignUndone = { type: "live_sign_undone"; seq: number };
 
 export type StaffFraming = { type: "framing"; status: FramingStatus; hint: string; rejectedSeq: number | null; notOkSince: number | null };
 
@@ -1216,6 +1245,8 @@ export type StaffEvent =
   | StaffStaffUtterance
   | StaffDelivered
   | StaffLiveSign
+  | StaffCapture
+  | StaffLiveSignUndone
   | StaffFraming
   | StaffRecognition
   | StaffRepeatRequest
@@ -1247,6 +1278,8 @@ export type Role = "guest" | "staff";
 /** POST /api/guest/join body. The code comes from the URL fragment (#p=), never a query string. */
 export type GuestJoinRequest = { code: string };
 
+export type SignControlCmd = "record" | "undo" | "end";
+
 export type GuestFixAction = "sign_again" | "type" | "interpreter" | "not_this";
 
 /**
@@ -1258,6 +1291,8 @@ export type GuestFixAction = "sign_again" | "type" | "interpreter" | "not_this";
 export type GuestAction = { n: string } & (
   | { type: "guest_choice"; choice: "sign" | "type" | "interpreter" | "text_only" }
   | { type: "stop_signing" }
+  /** live_key.py through the app server: "record" one sign, "undo" the last one, "end" the sentence. */
+  | { type: "sign_control"; cmd: SignControlCmd }
   /** Also accepted for the previous proposal within LIMITS.proposalGraceMs after it was replaced (C1-5). */
   /** BN-1: `voice: false` is the guest's "Text only" (shown at the desk, never voiced); omitted or true is "Say it". */
   | { type: "guest_confirm"; proposalId: string; candidateId: string; name?: string; voice?: boolean }
