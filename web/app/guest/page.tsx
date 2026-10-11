@@ -16,6 +16,8 @@ import { mountAvatar, playGloss } from "@/lib/avatar/player";
 import { useSignbridgeChannel, type StaffState } from "@/lib/channel";
 import styles from "./guest.module.css";
 
+const SIGN_TIMEOUT_MS_PER_TOKEN = 4000; // longest a sign (or a fingerspelled word) may take before we move on
+
 export default function GuestPage() {
   const stageRef = useRef<HTMLDivElement>(null);
   const [webgl, setWebgl] = useState(true);
@@ -47,7 +49,15 @@ export default function GuestPage() {
       setCaption(sentence);
       setActiveIndex(null);
       setPlaying(true);
-      await playGloss(sentence.gloss, { onToken: (i) => mounted.current && setActiveIndex(i) });
+      try {
+        // A sentence that fails or hangs (sign file missing, tab hidden) never blocks the ones after it.
+        await Promise.race([
+          playGloss(sentence.gloss, { onToken: (i) => mounted.current && setActiveIndex(i) }),
+          new Promise((resolve) => setTimeout(resolve, SIGN_TIMEOUT_MS_PER_TOKEN * sentence.gloss.length + 6000)),
+        ]);
+      } catch (err) {
+        console.warn(`[guest] could not sign "${sentence.text}":`, err);
+      }
       setActiveIndex(null);
     }
     setPlaying(false);

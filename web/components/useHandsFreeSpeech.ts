@@ -3,7 +3,7 @@
 // Browser mode (no OpenAI key, or Whisper unreachable): Chrome's continuous Web Speech recognition (CLAUDE.md rule 7).
 // Sentences are handed over in the order they were spoken, even if a later one is transcribed first.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { toSignedSentences, transcribe, whisperAvailable, type SignedSentence } from "./speechToSigns";
+import { TranscribeError, toSignedSentences, transcribe, whisperAvailable, type SignedSentence } from "./speechToSigns";
 import { VoiceListener } from "./voiceListener";
 
 export type ListenState =
@@ -37,6 +37,9 @@ function browserRecognition(): (new () => Recognition) | null {
 }
 
 const UNMUTE_GRACE_MS = 900; // speech still ending (or echoing) just after the mute is lifted
+const MAX_MUTE_MS = 20000; // a mute is lifted on its own, even if "unmute" never arrives (page closed meanwhile)
+const WHISPER_FAILURES_BEFORE_SWITCH = 3; // in a row; a missing key (401/503) switches at once
+const RESTART_MS = [300, 1000, 3000]; // browser recognition restart backoff
 
 /**
  * `muted`: while true (and shortly after), what the microphone hears is dropped. /guest sets it while /staff speaks
@@ -52,7 +55,7 @@ export function useHandsFreeSpeech(onSentences: (sentences: SignedSentence[]) =>
   const resumeRef = useRef<(() => void) | null>(null);
   const mutedUntil = useRef(0);
   useEffect(() => {
-    mutedUntil.current = muted ? Infinity : performance.now() + UNMUTE_GRACE_MS;
+    mutedUntil.current = performance.now() + (muted ? MAX_MUTE_MS : UNMUTE_GRACE_MS);
   }, [muted]);
   const isMuted = () => performance.now() < mutedUntil.current;
 
@@ -87,7 +90,14 @@ export function useHandsFreeSpeech(onSentences: (sentences: SignedSentence[]) =>
         return;
       }
       setMode("browser");
+      console.info("[guest] listening with the browser's speech recognition");
       let clicked = false;
+      let failedStarts = 0;
+      const retry = () => {
+        const wait = RESTART_MS[Math.min(failedStarts, RESTART_MS.length - 1)];
+        failedStarts++;
+        setTimeout(run, wait);
+      };
       const run = () => {
         if (!active) return;
         const rec = new Ctor();
@@ -111,14 +121,17 @@ export function useHandsFreeSpeech(onSentences: (sentences: SignedSentence[]) =>
           }
         };
         rec.onend = () => {
-          if (active && recognition === rec) setTimeout(run, 250); // Chrome ends continuous sessions on its own
+          if (active && recognition === rec) retry(); // Chrome ends continuous sessions on its own
         };
         recognition = rec;
         try {
           rec.start();
+          failedStarts = 0;
           idle();
-        } catch {
-          setState("needs-click");
+        } catch (err) {
+          console.warn("[guest] speech recognition did not start, retrying:", err);
+          recognition = null;
+          retry();
         }
       };
       resumeRef.current = () => {
@@ -130,8 +143,16 @@ export function useHandsFreeSpeech(onSentences: (sentences: SignedSentence[]) =>
 
     const startWhisper = async () => {
       setMode("whisper");
+      console.info("[guest] listening with Whisper");
       let startedMuted = false;
+      let failures = 0;
       const l = new VoiceListener({
+        onLost: () => {
+          console.warn("[guest] microphone lost, restarting the listener");
+          l.stop();
+          if (listener === l) listener = null;
+          if (active) setTimeout(() => active && void startWhisper(), 1000);
+        },
         onSpeechStart: () => {
           startedMuted = isMuted();
           if (active && !startedMuted) setState("hearing");
@@ -142,14 +163,22 @@ export function useHandsFreeSpeech(onSentences: (sentences: SignedSentence[]) =>
             ? idle()
             : enqueue(
             transcribe(wav, "speech.wav").then(
-              (text) =>
-                !/[a-z]/i.test(text) || NEVER_SAID.test(text) || (seconds < 1.5 && SHORT_NOISE.test(text)) ? [] : toSignedSentences(text),
+              (text) => {
+                failures = 0;
+                return !/[a-z]/i.test(text) || NEVER_SAID.test(text) || (seconds < 1.5 && SHORT_NOISE.test(text))
+                  ? []
+                  : toSignedSentences(text);
+              },
               (err) => {
-                // Whisper unreachable or failing: switch to the browser's recognition for what follows.
-                console.warn("[guest] Whisper failed, switching to browser speech recognition:", err);
-                l.stop();
-                listener = null;
-                if (active) startBrowser();
+                failures++;
+                const noKey = err instanceof TranscribeError && (err.status === 401 || err.status === 503);
+                console.warn(`[guest] Whisper failed (${failures} in a row):`, err);
+                // Missing key, or Whisper keeps failing: the browser's recognition takes over for what follows.
+                if ((noKey || failures >= WHISPER_FAILURES_BEFORE_SWITCH) && listener === l) {
+                  l.stop();
+                  listener = null;
+                  if (active) startBrowser();
+                }
                 return [];
               },
             ),

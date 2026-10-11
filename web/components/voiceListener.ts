@@ -35,6 +35,8 @@ export type ListenerEvents = {
   onUtterance?: (wav: Blob, seconds: number) => void;
   /** Speech that ended up too short to keep. */
   onDiscard?: () => void;
+  /** The microphone went away (unplugged, sleep, another app): the caller should start a new listener. */
+  onLost?: () => void;
 };
 
 export class VoiceListener {
@@ -63,6 +65,15 @@ export class VoiceListener {
     this.node = new AudioWorkletNode(this.context, "signbridge-tap");
     this.node.port.onmessage = (event: MessageEvent<Float32Array>) => this.block(event.data);
     this.context.createMediaStreamSource(this.stream).connect(this.node);
+    const track = this.stream.getAudioTracks()[0];
+    if (track) track.onended = () => this.events.onLost?.();
+    // Chrome can suspend the context (device change, sleep): try to resume it once it has been running.
+    let wasRunning = false;
+    this.context.onstatechange = () => {
+      const state = this.context?.state;
+      if (state === "running") wasRunning = true;
+      else if (state && state !== "closed" && wasRunning) void this.context?.resume().catch(() => this.events.onLost?.());
+    };
     await this.context.resume().catch(() => {});
   }
 
