@@ -21,13 +21,14 @@ import {
 import type { Desk, EvidenceItem } from "./useStaffDesk";
 import s from "./staff.module.css";
 
+/** Desk clock, 24-hour, so a log column never wraps: "10:02" or "10:02:41". */
 export const clock = (ms: number | null, seconds = false) =>
-  ms === null ? "—" : new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", ...(seconds ? { second: "2-digit" } : {}) });
+  ms === null ? "—" : new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", ...(seconds ? { second: "2-digit" } : {}) });
 
 const clockMs = (unixSeconds: number | null) => {
   if (unixSeconds === null) return "—";
   const d = new Date(unixSeconds * 1000);
-  return `${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}.${String(d.getMilliseconds()).padStart(3, "0").slice(0, 2)}`;
+  return `${d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}.${String(d.getMilliseconds()).padStart(3, "0").slice(0, 2)}`;
 };
 
 /* ------------------------------------------------------------------ */
@@ -81,43 +82,126 @@ export function Checklist({ desk }: { desk: Desk }) {
 /* Bottom tabs                                                         */
 /* ------------------------------------------------------------------ */
 
-type TabKey = "evidence" | "latency" | "privacy" | "benchmark" | "simulator" | "safety" | "device";
+export type TabKey = "evidence" | "latency" | "privacy" | "benchmark" | "simulator" | "safety" | "device";
 
-export function BottomTabs({ desk }: { desk: Desk }) {
+type TabsProps = { desk: Desk; tab: TabKey; setTab: (t: TabKey) => void; open: boolean; setOpen: (v: boolean) => void };
+
+/** The details drawer under the columns. WAI-ARIA tabs: arrow keys move between tabs, Home and End jump. */
+export function BottomTabs({ desk, tab, setTab, open, setOpen }: TabsProps) {
   const sim = desk.ui.status?.flags.simulateEnabled ?? false;
-  const [tab, setTab] = useState<TabKey>("evidence");
+  const openWarnings = desk.ui.warnings.filter((w) => w.open).length;
   const tabs: { key: TabKey; label: string }[] = [
     { key: "evidence", label: "Evidence" },
     { key: "latency", label: "Latency" },
     { key: "privacy", label: "Privacy" },
     { key: "benchmark", label: "Benchmark" },
     ...(sim ? [{ key: "simulator" as const, label: "Simulator" }] : []),
-    { key: "safety", label: `Safety${desk.ui.warnings.filter((w) => w.open).length ? ` (${desk.ui.warnings.filter((w) => w.open).length})` : ""}` },
+    { key: "safety", label: `Safety${openWarnings ? ` (${openWarnings})` : ""}` },
     { key: "device", label: "Device" },
   ];
+  const current = tabs.some((t) => t.key === tab) ? tab : "evidence";
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const onKey = (e: React.KeyboardEvent) => {
+    const i = tabs.findIndex((t) => t.key === current);
+    let next = -1;
+    if (e.key === "ArrowRight") next = (i + 1) % tabs.length;
+    else if (e.key === "ArrowLeft") next = (i - 1 + tabs.length) % tabs.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = tabs.length - 1;
+    if (next === -1) return;
+    e.preventDefault();
+    setTab(tabs[next].key);
+    setOpen(true);
+    listRef.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+  };
+
   return (
-    <section className={s.tabs} aria-label="Details">
-      <div role="tablist" className={s.tabList}>
-        {tabs.map((t) => (
-          <button key={t.key} role="tab" type="button" id={`tab-${t.key}`} aria-selected={tab === t.key} aria-controls={`panel-${t.key}`} className={s.tab} onClick={() => setTab(t.key)}>
-            {t.label}
-          </button>
-        ))}
+    <section className={s.tabs} aria-label="Details" data-open={open || undefined}>
+      <div className={s.tabBar}>
+        <div role="tablist" aria-label="Details" className={s.tabList} ref={listRef} onKeyDown={onKey}>
+          {tabs.map((t) => (
+            <button
+              key={t.key}
+              role="tab"
+              type="button"
+              id={`tab-${t.key}`}
+              aria-selected={current === t.key}
+              aria-controls="details-panel"
+              tabIndex={current === t.key ? 0 : -1}
+              className={s.tab}
+              onClick={() => {
+                setTab(t.key);
+                setOpen(true);
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <button type="button" className={s.drawerToggle} aria-expanded={open} aria-controls="details-panel" onClick={() => setOpen(!open)}>
+          {open ? "Hide details" : "Show details"}
+        </button>
       </div>
-      <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`} className={s.tabPanel}>
-        {tab === "evidence" && <Evidence items={desk.ui.evidence} />}
-        {tab === "latency" && <Latency desk={desk} />}
-        {tab === "privacy" && <Privacy desk={desk} />}
-        {tab === "benchmark" && <Benchmark />}
-        {tab === "simulator" && sim && <Simulator desk={desk} />}
-        {tab === "safety" && <Safety desk={desk} />}
-        {tab === "device" && (
-          <p className={s.hint}>
-            Not available in this build. When it is added, it will only show how busy a team-owned device is, where its browser can report it. It is not a security check.
-          </p>
-        )}
+      <div role="tabpanel" id="details-panel" aria-labelledby={`tab-${current}`} className={s.tabPanel} hidden={!open} tabIndex={0}>
+        {current === "evidence" && <Evidence items={desk.ui.evidence} />}
+        {current === "latency" && <Latency desk={desk} />}
+        {current === "privacy" && <Privacy desk={desk} />}
+        {current === "benchmark" && <Benchmark />}
+        {current === "simulator" && sim && <Simulator desk={desk} />}
+        {current === "safety" && <Safety desk={desk} />}
+        {current === "device" && <DevicePanel desk={desk} />}
       </div>
     </section>
+  );
+}
+
+const PRESSURE_WORDS = { nominal: "normal", fair: "busy", serious: "very busy", critical: "overloaded" } as const;
+
+/** Tier 2 slot: shows a load state only when a team-owned device's browser reported one (C2-8). */
+function DevicePanel({ desk }: { desk: Desk }) {
+  const h = desk.ui.status?.deviceHealth;
+  const line = (who: string, v: { state: keyof typeof PRESSURE_WORDS | null; at: number | null } | undefined) =>
+    v && v.state ? `${who}: ${PRESSURE_WORDS[v.state]} (reported ${clock(v.at, true)})` : `${who}: not available`;
+  return (
+    <div className={s.panelBody}>
+      <p>{line("Guest device", h?.guest)}</p>
+      <p>{line("This laptop", h?.staff)}</p>
+      <p className={s.hint}>This only reflects how busy a device is, where its browser can report it. It is not a security check.</p>
+    </div>
+  );
+}
+
+/**
+ * The skeleton snapshot (plan 6.2) as dots and lines: shoulders, arms and hands, no face. Coordinates
+ * are the recognizer's normalized x/y (y down). Drawn only on the staff screen; never sent to the guest.
+ */
+function SkeletonSketch({ sk }: { sk: NonNullable<EvidenceItem["sign"]["skeleton"]> }) {
+  const pts = [...sk.pose, ...(sk.lh ?? []), ...(sk.rh ?? [])];
+  const xs = pts.map((p) => p[0]);
+  const ys = pts.map((p) => p[1]);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const span = Math.max(maxX - minX, maxY - minY, 0.05);
+  const pad = span * 0.12;
+  const vb = `${minX - pad} ${minY - pad} ${span + pad * 2} ${span + pad * 2}`;
+  const P = sk.pose;
+  // pose order: 0 nose (shown only as the neck anchor), 11 L shoulder, 12 R shoulder, 13 L elbow, 14 R elbow, 15 L wrist, 16 R wrist
+  const bones: [number, number][] = [[1, 2], [1, 3], [3, 5], [2, 4], [4, 6]];
+  const hand = (h: [number, number][] | null) =>
+    h ? [[0, 1, 2, 3, 4], [0, 5, 6, 7, 8], [0, 9, 10, 11, 12], [0, 13, 14, 15, 16], [0, 17, 18, 19, 20]].map((f) => f.map((i) => h[i]).filter(Boolean)) : [];
+  const w = span / 90;
+  return (
+    <svg className={s.skeleton} viewBox={vb} role="img" aria-label="Skeleton snapshot: shoulders, arms and hands, no face">
+      {bones.map(([a, b], i) =>
+        P[a] && P[b] ? <line key={i} x1={P[a][0]} y1={P[a][1]} x2={P[b][0]} y2={P[b][1]} stroke="currentColor" strokeWidth={w * 2.2} strokeLinecap="round" /> : null,
+      )}
+      {[...hand(sk.lh), ...hand(sk.rh)].map((f, i) => (
+        <polyline key={`f${i}`} points={f.map((p) => `${p[0]},${p[1]}`).join(" ")} fill="none" stroke="var(--brass-dark)" strokeWidth={w * 1.2} strokeLinecap="round" strokeLinejoin="round" />
+      ))}
+      {P.slice(1).map((p, i) => (
+        <circle key={`p${i}`} cx={p[0]} cy={p[1]} r={w * 2.2} fill="currentColor" />
+      ))}
+    </svg>
   );
 }
 
@@ -150,7 +234,14 @@ function Evidence({ items }: { items: EvidenceItem[] }) {
                       .join(", ")}`
                   : "top-1 only: the sign event did not arrive"}
               </span>
-              <span className={s.hint}>{sign.skeleton ? "skeleton snapshot held in memory (arms and hands, no face)" : "skeleton: none from this recognizer build"}</span>
+              {sign.skeleton ? (
+                <span className={s.skeletonCell}>
+                  <SkeletonSketch sk={sign.skeleton} />
+                  <span className={s.hint}>skeleton snapshot, memory only, no face</span>
+                </span>
+              ) : (
+                <span className={s.hint}>skeleton: none from this recognizer build</span>
+              )}
               {simulated && <SimulatedBadge />}
             </li>
           );
@@ -204,7 +295,7 @@ function PrivacyColumn({ title, c }: { title: string; c: PrivacyCounters }) {
     <div className={s.privacyCol}>
       <h3 className={s.subTitle}>{title}</h3>
       <dl className={s.dl}>
-        <dt>Vendor calls</dt>
+        <dt>Vendor calls made by the SignBridge server</dt>
         <dd>
           {c.vendorKeysConfigured.length === 0 && c.vendorCalls.length === 0
             ? "0 (no vendor keys configured: none possible)"
@@ -242,10 +333,12 @@ function Privacy({ desk }: { desk: Desk }) {
         <PrivacyColumn title="This guest" c={p.thisGuest} />
         <PrivacyColumn title="Since the server started" c={p.sinceStart} />
       </div>
-      <p className={s.hint}>
-        Vendor keys on this laptop: {p.sinceStart.vendorKeysConfigured.length ? p.sinceStart.vendorKeysConfigured.join(", ") : "none"}.{" "}
-        {p.lastWipe ? `Last wipe ${clock(p.lastWipe.at, true)}: ${p.lastWipe.itemsErased} items erased.` : "No wipe yet."}
-      </p>
+      <dl className={s.dl}>
+        <dt>Vendor keys on this laptop</dt>
+        <dd>{p.sinceStart.vendorKeysConfigured.length ? p.sinceStart.vendorKeysConfigured.join(", ") : "none"}</dd>
+        <dt>Session data wiped</dt>
+        <dd>{p.lastWipe ? `yes, ${clock(p.lastWipe.at, true)}: ${p.lastWipe.itemsErased} items erased` : "no wipe yet"}</dd>
+      </dl>
       <p className={s.diskNote}>{PRIVACY_DISK_NOTE}</p>
     </div>
   );

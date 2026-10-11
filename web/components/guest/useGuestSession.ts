@@ -3,10 +3,11 @@
 // event stream open, and turns guest events into what the screen shows (docs/app-plan.md 4.4-4.6).
 //
 // Memory only: no localStorage, sessionStorage, IndexedDB, Cache API or service worker (SES-11).
-// The page keeps the last three staff sentences in memory; the server's snapshot holds only the
-// last one (AS-1, GST-12).
+// The caption area shows the last three staff sentences. BN-5 adds the guest's own record: every
+// staff sentence and every sentence the guest sent, kept in this page's memory only and erased at the
+// end. The server's reconnect snapshot still holds only the last caption (AS-1).
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { openEventStream, postJson, sendGuestAction, type GuestActionBody } from "@/lib/channel";
+import { openEventStream, postJson, sendGuestAction, type GuestActionBody, type PostResult } from "@/lib/channel";
 import {
   LIMITS,
   type ApiError,
@@ -28,12 +29,22 @@ export type GuestConn = "connecting" | "no_session" | "link_used" | "live" | "lo
 
 export type CaptionItem = { cap: GuestStaffUtterance; seq: number; isNew: boolean };
 
+/** One line of the guest's own record (BN-5): what the desk said, and what the guest sent. */
+export type RecordItem =
+  | { kind: "desk"; key: string; at: number; text: string; fromSpeech: boolean }
+  | { kind: "you"; key: string; at: number; text: string; delivery: GuestUtteranceEcho["delivery"] };
+
+/** Upper bound on the in-memory record, so a long session cannot grow without limit. */
+const RECORD_MAX = 120;
+
 export type GuestUi = {
   conn: GuestConn;
   hello: GuestHello | null;
   settings: GuestSettings;
   /** Newest first, at most LIMITS.guestCaptionsKept. */
   captions: CaptionItem[];
+  /** BN-5 scrollback, oldest first, memory only. */
+  record: RecordItem[];
   /** Signs of the current utterance, shown the moment each is recognised (GST-5). */
   live: GuestLiveSign[];
   /** The next live sign starts a new row (set after a proposal, repeat or echo). */
@@ -61,6 +72,7 @@ const INITIAL: GuestUi = {
   hello: null,
   settings: DEFAULT_SETTINGS,
   captions: [],
+  record: [],
   live: [],
   liveClosed: true,
   framing: null,
@@ -110,6 +122,13 @@ function pushCaption(list: CaptionItem[], cap: GuestStaffUtterance, seq: number)
   return [{ cap, seq, isNew: true }, ...rest].slice(0, LIMITS.guestCaptionsKept);
 }
 
+function addRecord(list: RecordItem[], item: RecordItem): RecordItem[] {
+  if (list.some((r) => r.key === item.key)) return list;
+  return [...list, item].slice(-RECORD_MAX);
+}
+
+const deskItem = (cap: GuestStaffUtterance, at: number): RecordItem => ({ kind: "desk", key: `d-${cap.id}`, at, text: cap.text, fromSpeech: cap.captionSource === "voice" });
+
 function reduce(ui: GuestUi, a: Act): GuestUi {
   switch (a.t) {
     case "conn":
@@ -144,6 +163,7 @@ function reduce(ui: GuestUi, a: Act): GuestUi {
         conn: "live",
         settings: msg.settings,
         captions,
+        record: msg.lastCaption ? addRecord(ui.record, deskItem(msg.lastCaption, at)) : ui.record,
         pending: msg.pending,
         framing: msg.framing,
         signingAvailable: msg.signingAvailable,
@@ -158,7 +178,12 @@ function reduce(ui: GuestUi, a: Act): GuestUi {
       return { ...ui, pairedWith: msg.deskShows, paused: false };
     case "staff_utterance":
       // A staff action resets the idle timer on the server, so an idle warning is over.
-      return { ...ui, captions: pushCaption(ui.captions, msg, seq), warning: ui.warning?.kind === "idle" ? null : ui.warning };
+      return {
+        ...ui,
+        captions: pushCaption(ui.captions, msg, seq),
+        record: addRecord(ui.record, deskItem(msg, at)),
+        warning: ui.warning?.kind === "idle" ? null : ui.warning,
+      };
     case "live_sign": {
       const live = ui.liveClosed ? [msg] : [...ui.live, msg].slice(-LIMITS.maxSigns);
       // A new utterance has started: the previous echo or repeat is finished with.
@@ -171,7 +196,14 @@ function reduce(ui: GuestUi, a: Act): GuestUi {
     case "guest_proposal":
       return { ...ui, pending: msg, repeat: null, echo: null, liveClosed: true };
     case "guest_utterance":
-      return { ...ui, echo: msg, pending: null, repeat: null, liveClosed: true };
+      return {
+        ...ui,
+        echo: msg,
+        pending: null,
+        repeat: null,
+        liveClosed: true,
+        record: addRecord(ui.record, { kind: "you", key: `y-${seq}`, at, text: msg.text, delivery: msg.delivery }),
+      };
     case "staff_ack":
       if (msg.about === "emergency") return { ...ui, help: { state: "acked", at: ui.help.at } };
       if (msg.about === "interpreter") return { ...ui, interpreter: "acked" };
@@ -200,6 +232,21 @@ function outcomeOf(status: number, data: unknown): ActionOutcome {
   if (status === 409) return { ok: false, message: "That choice is no longer waiting. Please sign again or type." };
   if (status === 401) return { ok: false, message: "This screen is no longer connected. Ask the desk to reconnect." };
   return { ok: false, message: err?.message || "That did not go through. Please try again.", field: err?.field };
+}
+
+let joinPromise: Promise<PostResult<GuestJoinResponse> | null> | null = null;
+
+/**
+ * Reads the pairing code from the fragment, removes it from the address bar before any request, and
+ * posts it once. Memoised for the page's life: React runs effects twice in development, and the second
+ * run must wait for the same join instead of opening the stream before the cookie exists.
+ */
+function joinOnce(): Promise<PostResult<GuestJoinResponse> | null> {
+  if (joinPromise) return joinPromise;
+  const m = /(?:^#|&)p=([A-Za-z0-9_-]{8,128})/.exec(location.hash);
+  if (location.hash) history.replaceState(null, "", location.pathname);
+  joinPromise = m ? postJson<GuestJoinResponse>("/api/guest/join", { code: m[1] }) : Promise.resolve(null);
+  return joinPromise;
 }
 
 /** The whole guest session: state, actions and the side effects (join, stream, acks, heartbeat). */
@@ -263,24 +310,20 @@ export function useGuestSession() {
       );
     };
 
-    const m = /(?:^#|&)p=([A-Za-z0-9_-]{8,128})/.exec(location.hash);
-    if (location.hash) history.replaceState(null, "", location.pathname);
-    if (!m) {
-      startStream();
-    } else {
-      void postJson<GuestJoinResponse>("/api/guest/join", { code: m[1] }).then(({ status, data }) => {
-        if (cancelled) return;
-        if (status === 200 && data && data.ok) {
-          dispatch({ t: "hello", hello: data.hello });
-          startStream();
-        } else if (status === 410) {
-          dispatch({ t: "conn", conn: "link_used" });
-        } else {
-          // The cookie from an earlier join may still be valid (a reload): try the stream.
-          startStream();
-        }
-      });
-    }
+    void joinOnce().then((res) => {
+      if (cancelled) return;
+      if (res === null) return startStream();
+      const { status, data } = res;
+      if (status === 200 && data && data.ok) {
+        dispatch({ t: "hello", hello: data.hello });
+        startStream();
+      } else if (status === 410) {
+        dispatch({ t: "conn", conn: "link_used" });
+      } else {
+        // The cookie from an earlier join may still be valid (a reload): try the stream.
+        startStream();
+      }
+    });
     return () => {
       cancelled = true;
       streamRef.current?.close();

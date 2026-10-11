@@ -123,6 +123,17 @@ export default function TalkPanel({ desk }: { desk: Desk }) {
           : "Speech-to-text is off (no vendor key). Type or use a quick reply."}
       </p>
 
+      <h3 className={s.subTitle} id="quick-title">
+        Quick replies <span className={s.hint}>(one tap, no cloud service)</span>
+      </h3>
+      <div className={s.quickGrid} role="group" aria-labelledby="quick-title">
+        {QUICK_REPLIES.map((q) => (
+          <button key={q.key} type="button" className={s.quick} title={q.text} disabled={!active} onClick={() => void staffAction({ type: "say_quick", intent: q.key })}>
+            {q.short}
+          </button>
+        ))}
+      </div>
+      {!active && <p className={s.hint}>Quick replies work once a guest window is connected.</p>}
       <div className={s.field}>
         <label htmlFor="staff-text">This text will appear on the guest&apos;s device</label>
         <textarea
@@ -158,15 +169,6 @@ export default function TalkPanel({ desk }: { desk: Desk }) {
         <p className={s.hint}>Never type the Wi-Fi password, card numbers or another guest&apos;s details here: the guest&apos;s screen shows them.</p>
       </div>
 
-      <h3 className={s.subTitle}>Quick replies</h3>
-      <div className={s.quickGrid}>
-        {QUICK_REPLIES.map((q) => (
-          <button key={q.key} type="button" className={s.quick} title={q.text} disabled={!active} onClick={() => void staffAction({ type: "say_quick", intent: q.key })}>
-            {q.short}
-          </button>
-        ))}
-      </div>
-      {!active && <p className={s.hint}>Quick replies work once a guest window is connected.</p>}
     </section>
   );
 }

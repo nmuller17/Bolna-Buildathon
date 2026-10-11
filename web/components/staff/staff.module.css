@@ -933,3 +933,156 @@
     grid-column: 1 / -1;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Builder B, 2026-10-11: header slats, drawer, bands, skeleton         */
+/* ------------------------------------------------------------------ */
+
+.root {
+  --brass-dark: #8a5200;
+}
+
+/* The header reads like the lobby directory board: one slat per fact, label over value. */
+.slats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  margin: 10px 0 0;
+  border-top: 1px solid rgba(201, 214, 230, 0.25);
+}
+
+.slats > div {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 16px 2px 0;
+  margin-right: 16px;
+  border-right: 1px solid rgba(201, 214, 230, 0.25);
+  font-variant-numeric: tabular-nums;
+}
+
+.slats > div:last-child {
+  border-right: 0;
+}
+
+.slats dt {
+  font-size: 0.75rem;
+  color: var(--mist);
+}
+
+.slats dd {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.92rem;
+  font-weight: 650;
+  color: var(--white);
+}
+
+.slats > div[data-level="amber"] dd {
+  color: #ffd27d;
+}
+
+.slats > div[data-level="red"] dd {
+  color: var(--white);
+  text-decoration: underline wavy #ff8a80;
+  text-underline-offset: 4px;
+}
+
+.slatNote {
+  font-weight: 400;
+  color: var(--mist);
+}
+
+.simBand {
+  padding: 8px 20px;
+  background: var(--paper-2);
+  color: var(--ink);
+  border-bottom: 2px dashed var(--navy);
+  font-size: 0.95rem;
+}
+
+.fallbackBand {
+  padding: 10px 20px;
+}
+
+.warnStrip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 20px;
+  background: #fff1d6;
+  color: var(--ink);
+  border-left: 8px solid var(--s-wait);
+}
+
+/* Drawer */
+.tabBar {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  background: var(--paper-2);
+  border-bottom: 1px solid var(--rule);
+}
+
+.tabBar .tabList {
+  border-bottom: 0;
+  background: none;
+}
+
+.drawerToggle {
+  margin: 4px 12px;
+  padding: 4px 12px;
+  border: 1.5px solid var(--navy);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--navy);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tabPanel[hidden] {
+  display: none;
+}
+
+.tabPanel:focus-visible {
+  outline-offset: -3px;
+}
+
+.skeletonCell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.skeleton {
+  width: 56px;
+  height: 56px;
+  color: var(--navy);
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+}
+
+@media (min-width: 1100px) {
+  .columns {
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .tabPanel {
+    height: 190px;
+  }
+}
+
+.quick {
+  min-height: 36px;
+  padding: 4px 8px;
+}
+
+.quickGrid {
+  gap: 5px;
+}

@@ -1,7 +1,7 @@
 "use client";
 // P4 (builder B): the staff dashboard (docs/app-plan.md 4.2): header strip, recognizer fallback band,
 // alerts, talk column, conversation log with live signs, check-in co-pilot and the bottom tabs.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { KeyTag, SimulatedBadge, TrafficLight } from "@/components/app/KeyTag";
 import { tagText } from "@/components/app/displayVocab";
 import {
@@ -13,7 +13,7 @@ import {
   type LogEntry,
   type StaffStatus,
 } from "@/lib/app/types";
-import { BottomTabs, Checklist, clock } from "./Panels";
+import { BottomTabs, Checklist, clock, type TabKey } from "./Panels";
 import TalkPanel from "./TalkPanel";
 import { useStaffDesk, type Desk } from "./useStaffDesk";
 import s from "./staff.module.css";
@@ -38,6 +38,8 @@ const duration = (ms: number) => (ms % 60_000 === 0 ? `${ms / 60_000} min` : `${
 export default function StaffApp() {
   const desk = useStaffDesk();
   const { ui } = desk;
+  const [tab, setTab] = useState<TabKey>("evidence");
+  const [drawerOpen, setDrawerOpen] = useState(true);
 
   if (!ui.started) {
     return (
@@ -62,6 +64,13 @@ export default function StaffApp() {
       <Header desk={desk} />
       <FallbackBand status={ui.status} />
       <Alerts desk={desk} />
+      <WarningStrip
+        desk={desk}
+        onOpen={() => {
+          setTab("safety");
+          setDrawerOpen(true);
+        }}
+      />
       {ui.lastError && (
         <p className={s.errorLine} role="alert">
           {ui.lastError}{" "}
@@ -79,7 +88,7 @@ export default function StaffApp() {
           <Checklist desk={desk} />
         </div>
       )}
-      <BottomTabs desk={desk} />
+      <BottomTabs desk={desk} tab={tab} setTab={setTab} open={drawerOpen} setOpen={setDrawerOpen} />
     </main>
   );
 }
@@ -102,6 +111,10 @@ function Header({ desk }: { desk: Desk }) {
   const rec = st?.recognizer;
   const framingBadFor = rec?.framingNotOkSince ? now - rec.framingNotOkSince : null;
   const hasSession = ui.sessionState !== "NO_SESSION";
+  const device = st?.guest.device ?? null;
+  const guestWhere = device ? (st?.mode === "mode0" ? "this laptop (Mode 0)" : `${device.deviceClass}, ${device.address}`) : hasSession ? "not connected yet" : "none";
+  const recWords = rec ? (rec.state === "down" ? "down" : (rec.mode ?? rec.state)) : "unknown";
+  const simulated = rec?.source === "simulated";
 
   return (
     <header className={s.header}>
@@ -118,47 +131,62 @@ function Header({ desk }: { desk: Desk }) {
             <button type="button" className={s.endButton} onClick={() => void staffAction({ type: "end_guest" })}>
               End guest
             </button>
-          ) : (
-            <button type="button" className={s.newButton} onClick={() => void staffAction({ type: "new_guest" })}>
-              New guest
-            </button>
-          )}
+          ) : null}
         </div>
       </div>
-      <ul className={s.statusStrip}>
-        <li>
-          Guest window:{" "}
-          {st?.guest.device ? `${st.guest.device.deviceClass}${st.mode === "mode0" ? " (this laptop)" : `, ${st.guest.device.address}`}` : hasSession ? "not connected yet" : "none"}
-        </li>
-        <li data-level={heardLevel}>
-          {heardAgo === null ? "Not heard yet" : `Heard ${Math.round(heardAgo / 1000)} s ago`}
-          {heardLevel === "red" && ": check on the guest"}
-        </li>
-        <li>Streams {st?.guest.streams ?? 0}</li>
-        <li>
-          Idle wipe {idleLeft !== null ? mmss(idleLeft) : "—"} ({st?.profile ?? "?"}: {st ? duration(st.session.idleWipeMs) : "?"})
-        </li>
-        <li>
-          Session ends in {capLeft !== null ? mmss(capLeft) : "—"}
-          {capLeft !== null && capLeft <= LIMITS.capWarnBeforeMs && (
-            <button type="button" className={s.inlineBtn} onClick={() => void staffAction({ type: "extend" })}>
-              Extend 5 min
-            </button>
-          )}
-        </li>
-        <li data-level={!rec || rec.state === "down" || rec.mode !== "ok" ? "amber" : "ok"}>
-          Recognizer: {rec ? (rec.state === "down" ? "down" : rec.mode ?? rec.state) : "unknown"}
-          {rec?.fps ? `, ${Math.round(rec.fps)} fps` : ""}
-        </li>
-        <li data-level={rec?.framing && rec.framing !== "OK" ? "amber" : "ok"}>
-          Framing: {rec?.framing ?? "—"}
-          {framingBadFor !== null && framingBadFor > LIMITS.framingStuckHintMs && ` not OK for ${Math.round(framingBadFor / 1000)} s`}
-        </li>
-        <li data-level={ui.voice === "ready" ? "ok" : "amber"}>
-          Voice: {ui.voice === "warming" ? "warming up" : ui.voice === "ready" ? "ready" : ui.voice === "failed" ? "warm-up failed (local voice only)" : "off"}
-        </li>
-        <li>Vendor keys: {st ? (st.privacy.sinceStart.vendorKeysConfigured.length ? st.privacy.sinceStart.vendorKeysConfigured.join(", ") : "none") : "—"}</li>
-      </ul>
+      <dl className={s.slats}>
+        <div>
+          <dt>Guest window</dt>
+          <dd>{guestWhere}</dd>
+        </div>
+        <div data-level={hasSession ? heardLevel : "none"}>
+          <dt>Guest screen</dt>
+          <dd>
+            {heardAgo === null ? "not heard yet" : `heard ${Math.round(heardAgo / 1000)} s ago`}
+            {heardLevel === "red" && ", check on the guest"}
+            {st && st.guest.streams > 1 && ` (${st.guest.streams} streams)`}
+          </dd>
+        </div>
+        <div>
+          <dt>Idle wipe</dt>
+          <dd>
+            {idleLeft !== null ? mmss(idleLeft) : "—"} <span className={s.slatNote}>({st?.profile ?? "?"}: {st ? duration(st.session.idleWipeMs) : "?"})</span>
+          </dd>
+        </div>
+        <div data-level={capLeft !== null && capLeft <= LIMITS.capWarnBeforeMs ? "amber" : "ok"}>
+          <dt>Session ends in</dt>
+          <dd>
+            {capLeft !== null ? mmss(capLeft) : "—"}
+            {capLeft !== null && capLeft <= LIMITS.capWarnBeforeMs && (
+              <button type="button" className={s.inlineBtn} onClick={() => void staffAction({ type: "extend" })}>
+                Extend 5 min
+              </button>
+            )}
+          </dd>
+        </div>
+        <div data-level={!rec || rec.state === "down" || rec.mode !== "ok" ? "amber" : "ok"}>
+          <dt>Recognizer</dt>
+          <dd>
+            {simulated ? "simulator" : recWords}
+            {rec?.fps && !simulated ? `, ${Math.round(rec.fps)} fps` : ""}
+          </dd>
+        </div>
+        <div data-level={rec?.framing && rec.framing !== "OK" ? "amber" : "ok"}>
+          <dt>Framing</dt>
+          <dd>
+            {rec?.framing ? rec.framing.replace(/_/g, " ").toLowerCase() : "—"}
+            {framingBadFor !== null && framingBadFor > LIMITS.framingStuckHintMs && `, not OK for ${Math.round(framingBadFor / 1000)} s`}
+          </dd>
+        </div>
+        <div data-level={ui.voice === "ready" ? "ok" : "amber"}>
+          <dt>Voice</dt>
+          <dd>{ui.voice === "warming" ? "warming up" : ui.voice === "ready" ? "ready" : ui.voice === "failed" ? "local voice only" : "off"}</dd>
+        </div>
+        <div>
+          <dt>Vendor keys</dt>
+          <dd>{st ? (st.privacy.sinceStart.vendorKeysConfigured.length ? st.privacy.sinceStart.vendorKeysConfigured.join(", ") : "none") : "—"}</dd>
+        </div>
+      </dl>
       {rec?.framing && rec.framing !== "OK" && framingBadFor !== null && framingBadFor > LIMITS.framingStuckHintMs && (
         <p className={s.framingHint}>{FRAMING_STAFF_HINT[rec.framing] ?? FRAMING_GUIDANCE[rec.framing]}</p>
       )}
@@ -170,20 +198,45 @@ function Header({ desk }: { desk: Desk }) {
   );
 }
 
-/** Large band when signing cannot work (DSH-11, C1-9). */
+/** Large band when signing cannot work (DSH-11, C1-9), or a declared band while the simulator drives it. */
 function FallbackBand({ status }: { status: StaffStatus | null }) {
   const now = useNow();
   if (!status) return null;
   const r = status.recognizer;
+  if (r.source === "simulated" && r.mode === "ok") {
+    return (
+      <div className={s.simBand} role="status">
+        <strong>Simulator rehearsal.</strong> Signs come from the Simulator tab, not the desk camera, and carry a SIMULATED badge on both screens. Say so out loud on stage.
+      </div>
+    );
+  }
   const silent = r.lastEventAt === null || now - r.lastEventAt > 5_000;
   let why: string | null = null;
   if (r.mode === "no_model") why = "the recognizer reports no model";
   else if (r.mode === "mock") why = "the recognizer is in mock mode (invented signs, never spoken)";
-  else if (r.state === "down" || silent) why = "the recognizer has sent nothing for over 5 seconds";
+  else if (r.state === "down" || (r.signingAvailable === false && silent) || (r.signingAvailable === undefined && silent))
+    why = r.lastEventAt === null ? "no recognizer has connected yet" : "the recognizer has sent nothing for over 5 seconds";
   if (!why) return null;
   return (
     <div className={s.fallbackBand} role="status">
       <strong>Signing is not available: {why}.</strong> Use Phrases or Type, or switch to the declared simulator rehearsal.
+    </div>
+  );
+}
+
+/** Open session warnings stay visible above the columns (plan 6.6); the Safety tab has the details. */
+function WarningStrip({ desk, onOpen }: { desk: Desk; onOpen: () => void }) {
+  const open = desk.ui.warnings.filter((w) => w.open);
+  if (open.length === 0) return null;
+  const latest = open[open.length - 1];
+  return (
+    <div className={s.warnStrip} role="status">
+      <span>
+        <strong>{open.length === 1 ? "Session warning:" : `${open.length} session warnings. Latest:`}</strong> {latest.text}
+      </span>
+      <button type="button" className={s.bannerBtnDark} onClick={onOpen}>
+        Open Safety
+      </button>
     </div>
   );
 }
@@ -231,15 +284,19 @@ function Alerts({ desk }: { desk: Desk }) {
       )}
       {ui.idleWarnUntil && ui.idleWarnUntil > now && (
         <div className={s.brassBanner} role="status">
-          <span>No staff action for a while: the conversation is wiped in {mmss(ui.idleWarnUntil - now)}.</span>
+          <span>
+            <strong>This session will end soon.</strong> No staff action for a while: the conversation is wiped in {mmss(ui.idleWarnUntil - now)}.
+          </span>
           <button type="button" className={s.bannerBtnDark} onClick={() => void staffAction({ type: "touch" })}>
-            Keep open
+            Guest is still here: keep open
           </button>
         </div>
       )}
       {ui.capWarnUntil && ui.capWarnUntil > now && (
         <div className={s.brassBanner} role="status">
-          <span>This conversation reaches its time limit in {mmss(ui.capWarnUntil - now)}.</span>
+          <span>
+            <strong>This session will end soon.</strong> It reaches its time limit in {mmss(ui.capWarnUntil - now)}.
+          </span>
           <button type="button" className={s.bannerBtnDark} onClick={() => void staffAction({ type: "extend" })}>
             Extend 5 min
           </button>
@@ -385,6 +442,17 @@ function Pending({ desk }: { desk: Desk }) {
         {p.simulated && <SimulatedBadge />} Waiting for the guest: {p.kind === "pick" ? "which one did you mean?" : p.kind === "unmatched" ? "not a request we know" : p.kind === "did_you_mean_help" ? "did you mean HELP?" : `"${p.candidates[0]?.text ?? ""}"`}
         {p.testMode && " (test mode, never spoken)"}
       </p>
+      {p.signs.length > 0 && (
+        <div className={s.tagLine}>
+          {p.signs.map((sg, i) => (
+            <span key={`${sg.seq ?? "x"}-${i}`} className={s.signChip}>
+              <KeyTag token={sg.label} small missed={sg.light === "red"} />
+              <TrafficLight light={sg.light} surface="staff" red={sg.red} />
+            </span>
+          ))}
+        </div>
+      )}
+      {!displayOnly && <p className={s.hint}>Nothing is said aloud until the guest taps Say it on their screen.</p>}
       {displayOnly && (
         <>
           <p className={s.hint}>The guest cannot tap in this mode. Ask them to point at the card on the counter.</p>
@@ -452,7 +520,14 @@ function LogLine({ e, desk }: { e: LogEntry; desk: Desk }) {
             </div>
             <p className={s.hint}>
               {plan.mode === "tts" && (spoken ? (spoken.how === "none" ? "could not be voiced: read it out" : `read aloud ${clock(spoken.at, true)}`) : "reading aloud…")}
-              {plan.mode === "none" && (plan.why === "test_mode" ? "test mode: never spoken" : plan.why === "no_local_voice" ? "no on-device voice: read it out" : "shown as text (the guest chose text)")}
+              {plan.mode === "none" &&
+                (plan.why === "test_mode"
+                  ? "test mode: never spoken"
+                  : plan.why === "no_local_voice"
+                    ? "no on-device voice: read it out"
+                    : plan.why === "guest_chose_text"
+                      ? "the guest chose Text only for this sentence: do not read it aloud"
+                      : "shown as text (the guest turned off reading aloud)")}
               {plan.mode === "local_after_tap" && (spoken ? (spoken.how === "none" ? "no on-device voice: read it out" : `spoken ${clock(spoken.at, true)}`) : "not spoken yet")}
             </p>
             {plan.mode === "local_after_tap" && (
@@ -508,14 +583,22 @@ function LogLine({ e, desk }: { e: LogEntry; desk: Desk }) {
 
 function Middle({ desk }: { desk: Desk }) {
   const { ui } = desk;
+  const logRef = useRef<HTMLOListElement>(null);
+  // Newest at the bottom: follow new lines unless staff scrolled up to read older ones.
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 160) el.scrollTop = el.scrollHeight;
+  }, [ui.log.length]);
+  const liveSimulated = ui.live.some((l) => l.simulated);
   const latestGuest = [...ui.log].reverse().find((e): e is Extract<LogEntry, { kind: "guest" }> => e.kind === "guest") ?? null;
   return (
-    <section className={`${s.column} ${s.middle}`} aria-labelledby="log-title">
+    <section className={`${s.column} ${s.middle}`} aria-labelledby="log-title" tabIndex={0}>
       <SessionControls desk={desk} />
       <h2 id="log-title" className={s.colTitle}>
         Conversation <span className={s.hint}>(memory only, wiped at End guest)</span>
       </h2>
-      <ol className={s.log} aria-live="polite" aria-relevant="additions">
+      <ol className={s.log} ref={logRef} aria-live="polite" aria-relevant="additions" aria-label="Conversation log" tabIndex={0}>
         {ui.log.length === 0 && <li className={s.hint}>Nothing yet. Start with a quick reply.</li>}
         {ui.log.map((e) => (
           <LogLine key={`${e.kind}-${e.seq}-${e.at}`} e={e} desk={desk} />
@@ -525,9 +608,9 @@ function Middle({ desk }: { desk: Desk }) {
       <div className={s.liveStrip} aria-label="Live signs">
         <span className={s.liveLabel}>Live signs</span>
         {ui.live.length === 0 && <span className={s.hint}>none yet</span>}
-        {ui.live.map(({ sign, simulated }, i) => (
+        {liveSimulated && <SimulatedBadge />}
+        {ui.live.map(({ sign }, i) => (
           <span key={`${sign.seq}-${i}`} className={s.signChip}>
-            {simulated && <SimulatedBadge />}
             <KeyTag token={sign.top[0]?.label ?? "NONE"} small missed={sign.light === "red"} />
             <TrafficLight light={sign.light} surface="staff" red={sign.red} />
             <span className={s.score}>{sign.top[0]?.conf.toFixed(2)}</span>

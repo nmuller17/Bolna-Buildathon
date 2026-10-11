@@ -187,12 +187,16 @@ function reduce(ui: StaffUi, a: Act): StaffUi {
           },
         ],
       };
-    case "delivered":
-      // The guest device rendered the event with this bus seq (staff and guest copies share it).
+    case "delivered": {
+      // The guest device rendered a caption. The staff and guest copies of an event have different bus
+      // seqs, so the server names the caption (captionId); without it the next snapshot fills it in.
+      const id = msg.captionId ?? null;
+      if (!id) return ui;
       return {
         ...ui,
-        log: ui.log.map((e) => (e.kind === "staff" && e.seq === msg.eventSeq && e.shownOnDeviceAt === null ? { ...e, shownOnDeviceAt: at } : e)),
+        log: ui.log.map((e) => (e.kind === "staff" && e.id === id && e.shownOnDeviceAt === null ? { ...e, shownOnDeviceAt: at } : e)),
       };
+    }
     case "live_sign": {
       const item = { sign: msg.sign, simulated: msg.source === "simulated" };
       return {
