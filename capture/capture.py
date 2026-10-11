@@ -85,7 +85,7 @@ def draw_raw(img, raw):
 
 # ---------- capture ----------
 
-def open_camera(index):
+def open_camera(index, exit_on_failure=True):
     """Open the given camera, or the first one sending a non-black image
     (an idle iPhone Continuity Camera shows up as a black camera on macOS)."""
     for i in [index] if index is not None else range(4):
@@ -100,6 +100,8 @@ def open_camera(index):
                 return cap
         cap.release()
         print(f"Camera {i}: black image, skipped")
+    if not exit_on_failure:
+        return None
     sys.exit("No working camera (check the camera permission for VS Code / your terminal).")
 
 
@@ -110,30 +112,41 @@ class Recorder:
         self.landmarker = create_landmarker()
         self.t0 = time.monotonic()
 
-    def open(self):
-        self.cap = open_camera(self.camera)
+    def open(self, exit_on_failure=True):
+        cap = open_camera(self.camera, exit_on_failure)
+        if cap is None:
+            return False
+        self.cap = cap
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         self.cap.set(cv2.CAP_PROP_FPS, 30)
+        return True
 
     def now_ms(self):
         return (time.monotonic() - self.t0) * 1000
 
+    REOPEN_FOR_SEC = 60
+
     def read(self):
-        """Next webcam frame. Retries for 2 s (macOS cameras drop frames while warming up),
-        then reopens the camera once, e.g. after another app grabbed it."""
-        for attempt in range(2):
+        """Next webcam frame. Retries for 2 s (macOS cameras drop frames while warming up), then keeps
+        reopening the camera every 2 s for REOPEN_FOR_SEC (another app grabbed it, the Mac paused it)."""
+        give_up = None
+        while True:
             end = time.monotonic() + 2
             while time.monotonic() < end:
                 ok, img = self.cap.read()
                 if ok:
                     return img
                 time.sleep(0.05)
-            if attempt == 0:
-                print("Webcam stopped sending frames, reopening it...")
-                self.cap.release()
-                self.open()
-        sys.exit("Webcam stopped sending frames (close other apps using the camera, check the camera permission).")
+            give_up = give_up or time.monotonic() + self.REOPEN_FOR_SEC
+            if time.monotonic() > give_up:
+                sys.exit("Webcam stopped sending frames (close other apps using the camera, check the camera permission).")
+            print("Webcam stopped sending frames, reopening it...")
+            self.cap.release()
+            while not self.open(exit_on_failure=False):
+                if time.monotonic() > give_up:
+                    sys.exit("No working camera (close other apps using the camera, check the camera permission).")
+                time.sleep(2)
 
     def wait_start(self, lines):
         """Live preview until SPACE (start), S (skip) or Q (quit)."""
