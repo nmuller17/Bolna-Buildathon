@@ -372,6 +372,48 @@ This section records what was checked in `web/node_modules/next/dist/docs` for N
 | 23 | No outbound requests from the guest page | guest page | M: DevTools network panel on `/guest` shows only requests to the laptop |
 | 24 | Wipe on End guest and idle | store | U: after wipe the store holds no log, name, typed text or token; the canary string is absent from `JSON.stringify(store)` |
 
+
+### 10a. Red-team requirements (from the 2026-10-10 adversarial test)
+
+The red team attacked the running app on this laptop (from 127.0.0.1 and from the laptop's own LAN address, standing in for a hotel-network attacker). The findings are labelled A (recognizer), B (web app), C (supply chain) and D (privacy and LLM). Part of the shell above is now **built**, and the attacks are replayed as regression tests in `web/security-tests/` (`npm run test:security`) and `recognition/tests/security/` (`pytest recognition/tests/security`). Both suites must pass before any demo or hotel use. What is not built yet is a **requirement**, and the unbuilt part must meet it before it ships.
+
+**Built now (2026-10-10):**
+
+- `web/server.mjs` is the only supported way to run the app (`npm run dev`, `npm run dev:lan`, `npm run start`, `npm run start:lan`). The scripts use `--lan` and `--production` flags instead of the shell environment syntax in section 9, so they also work on Windows. By default the server listens on 127.0.0.1 only. In LAN mode it adds a second listener on `LAN_IP` only, not `0.0.0.0`, so other interfaces stay closed. It strips client-sent `x-sb-*` headers and checks the Host allowlist, which stops DNS rebinding. It decides loopback from the socket and applies the default-deny LAN path list (`web/lib/app/access.ts` `lanPathAllowed`). It answers 413 when Content-Length is over 8 KB (5 MB for `/api/transcribe`), and it never logs URLs. (B1, B3, B4, B8)
+- `web/lib/app/guard.ts` `guardLoopbackJsonPost()` is called by `/api/english` and `/api/tts`. It runs these checks in order: the SB_PROOF loopback check (403, failing closed under plain `next dev`), the Host allowlist (403), same-origin via `Sec-Fetch-Site` and `Origin` (403), `application/json` only (415), a capped body reader that also catches chunked bodies (413), a per-route rate limit (english 10 a minute, tts 20 a minute, 429), and the JSON parse (400). (B1, B3, B4, D1, D2)
+- `/api/english` accepts at most 8 signs. Each label must be one of the 22 classifier labels, and each `conf` must be finite and in [0, 1]. Claude's reply must pass `cleanSentence()` (one plain sentence of at most 200 characters, with no markup, braces, backticks or control characters); otherwise the route falls back to the label words. A vendor error is logged by status only. (B4, B5, D1, D6)
+- `/api/tts` accepts one plain sentence of at most 300 characters. Only the 19 fixed guest sentences are cached. Other text is never cached, which removes both the memory growth and the "was this sentence said before" timing oracle, and at most 2 uncached syntheses run at once (503 otherwise). Piper runs an absolute interpreter (`PIPER_PYTHON`, else the repo `.venv`, else `python` from PATH with a warning) and gets an allowlisted environment with no API keys and no `BRIDGE_KEY`. (B6, B9, C3, D2, D3, D5)
+- `next.config.ts` sets `poweredByHeader: false` and `logging.incomingRequests: false`, plus the section-10 row-22 headers on every response: CSP with `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`, and a Permissions-Policy that also sets `microphone=()` on `/guest`. API responses also carry `Cache-Control: no-store`. HSTS waits for HTTPS. (B7, B8, D4)
+- The `web/public/signs` symlink is replaced by `web/app/signs/[...path]/route.ts`. The route serves only `*.json` files one or two levels deep under `signs/`, refuses anything that resolves outside that folder, and removes the `signer` field. The URLs are unchanged. A LAN device may only `GET /signs/<dir>/<file>.json` (the guest avatar needs them). (B2, D7)
+- `web/components/speakSigns.ts`: the last-resort browser voice must be an on-device voice (`localService === true`). With no local English voice it stays silent and the text is still returned for display. (D9)
+- Recognizer, in the P3 checkout:
+  - An unpinned `model.pt` is refused unless `RECOGNITION_ALLOW_UNPINNED=1` is set (development only), and a set pin always wins. `holistic_landmarker.task` is SHA-256-pinned and loaded from the checked bytes.
+  - `/health` returns only `{status}` to a LAN caller that does not hold the token.
+  - A non-loopback bind needs TLS (`--ssl-certfile/--ssl-keyfile`) unless `--insecure-http` is given.
+  - `live.py --post` sends only to loopback, unless `--post-allow-remote` is given with an `https://` URL.
+  - Face points are dropped before the model.
+  - Importing `recognition.server` loads no model.
+  - (A1, A3, A4, A5, A10, C4, C5, D11)
+
+**Requirements for the parts not built yet** (each one gets a test in `web/security-tests/` or `web/lib/app/*.test.ts` when it is built):
+
+| # | Requirement | Finding |
+|---|---|---|
+| RT1 | The demo and any hotel use run only through `server.mjs`, from a production build (`npm run build && npm run start:lan`), on an isolated network (hotspot or travel router), never on hotel or guest Wi-Fi. Any new route must call `guard.ts` (loopback-only routes) or an equivalent guest-token guard; a route with no guard is a bug. | B1, D10 |
+| RT2 | **HTTPS before any guest traffic crosses a shared network.** `server.mjs` gains an `https.createServer` path (mkcert certificate; key file outside git, `*.pem`/`*.key` ignored), then HSTS. Until then the guest token, captions and typed names cross the LAN in clear text, so plain HTTP is acceptable only on the isolated network of RT1. The recognizer's LAN mode already refuses plain HTTP without `--insecure-http`. | A5, D10 |
+| RT3 | The long-lived guest token never appears in a URL. For the SSE stream (EventSource cannot send headers) the guest first POSTs with `X-Session-Token` to get a **single-use ticket valid for 30 s**, and only that ticket goes in `?t=`. The pairing code in the QR (`?s=`) is single-use with a 5-minute expiry (section 9, row 9), and the guest page removes it from the address bar with `history.replaceState` right after joining. Nothing logs URLs (`server.mjs` does not; Next's request logging is off). | B8, D4 |
+| RT4 | **Confirm before speaking, end to end.** Nothing reaches `/api/tts` or the speaker until the guest taps "Say it" on their own device. NONE, or a top-1 confidence below 0.6, is never spoken (section 7 gate). `ingestSigns` uses the strict validator (row 11), and the consent gate (row 14) rejects signs unless the guest chose Sign. These steps block a third party who holds `BRIDGE_KEY` or the recognizer token from injecting signs that get spoken. | A8, D1, B5 |
+| RT5 | `/api/tts` moves to the planned `{ id }` contract: only fixed sentence ids are synthesised by a vendor, the cache is keyed by id, and NAME and free text never reach `/api/tts` (RT6). Until the contract changes, the interim limits above stay. Any cache that could hold guest-derived audio is cleared on `session_end` and the idle wipe. | D2, D3, B6 |
+| RT6 | The SpeakPlan: vendor TTS for fixed ids only; names and typed text use an on-device voice (`localService === true`) or are shown as text only, never a network voice. Test row 17's canary (`Zq7Canary`) must never appear in any outgoing `fetch` body. | D9, D10 |
+| RT7 | `/signs` stays a route, not a static folder. Once pairing exists, LAN requests to `/signs/*` need a valid guest session (cookie or `X-Session-Token`). No new personal field is added to served sign JSON. The team decides on consent and precision for the committed recordings (see `docs/requests.md`). | B2, C1, D7 |
+| RT8 | `/api/gloss` output and anything sent to the avatar are validated on the server: keys of `signs/index.json`, `FS:` followed by `^[A-Z0-9]{1,32}$`, or the two markers; at most 40 tokens (`LIMITS.glossMaxTokens`). Anything else falls back to captions only. Fingerspelling is a normal ASL path, but only for tokens that passed this allowlist. | D8 |
+| RT9 | `/api/guest/signs` is loopback only, needs `X-Bridge-Key` (at least 32 characters, constant-time compare, 503 when unset), takes an 8 KB body, and allows 10 requests a second. `live.py` already refuses to post anywhere but loopback. | A4, A8 |
+| RT10 | Any new child process uses an absolute executable and an allowlisted environment, as `/api/tts` now does. Add `PIPER_PYTHON=<absolute path to the venv python>` to `.env.example`. | B9, C3, D5 |
+| RT11 | Logs carry status codes and short error types only, never request bodies, vendor error bodies, URLs, names, transcripts or tokens. Repo-hygiene test (row 20) also greps for `console.*(` calls that pass `await res.text()` or a request object. | D6, B8 |
+| RT12 | Rate limits per session and per route for the guest routes (row 8). Every guest-route body goes through the capped reader in `access.ts` (`readCappedText`), never `req.json()`. | B4 |
+| RT13 | Before guest use: vendor terms read, DPAs and zero-retention options turned on (open question 10). Staff are briefed never to say the Wi-Fi password or card numbers aloud while the mic is open. The Web Speech fallback shows its disclosure every session. | D10 |
+| RT14 | Supply chain for the desk laptop: deploy only from a reviewed tag, install with `npm ci` (lockfile) and `pip install --require-hashes`, and protect the deploy branch (see `docs/requests.md`). | C6, C7 |
+
 ---
 
 ## 11. Fallbacks for teammate dependencies
