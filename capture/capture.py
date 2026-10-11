@@ -107,6 +107,9 @@ def open_camera(index, exit_on_failure=True):
     sys.exit("No working camera (check the camera permission for VS Code / your terminal).")
 
 
+CAMERA = {"ok": True}  # False while the webcam is lost and being reopened (read by the live recognizer's /health)
+
+
 class Recorder:
     def __init__(self, camera):
         self.camera = camera
@@ -127,26 +130,30 @@ class Recorder:
     def now_ms(self):
         return (time.monotonic() - self.t0) * 1000
 
-    REOPEN_FOR_SEC = 60
+    REOPEN_FOR_SEC = 60  # None = never give up (the live recognizer)
 
     def read(self):
         """Next webcam frame. Retries for 2 s (macOS cameras drop frames while warming up), then keeps
-        reopening the camera every 2 s for REOPEN_FOR_SEC (another app grabbed it, the Mac paused it)."""
+        reopening the camera every 2 s for REOPEN_FOR_SEC, or forever (another app grabbed it, the Mac locked or
+        slept, an iPhone camera came or left). CAMERA["ok"] is False meanwhile."""
         give_up = None
         while True:
             end = time.monotonic() + 2
             while time.monotonic() < end:
                 ok, img = self.cap.read()
                 if ok:
+                    CAMERA["ok"] = True
                     return img
                 time.sleep(0.05)
-            give_up = give_up or time.monotonic() + self.REOPEN_FOR_SEC
-            if time.monotonic() > give_up:
+            CAMERA["ok"] = False
+            if give_up is None and self.REOPEN_FOR_SEC is not None:
+                give_up = time.monotonic() + self.REOPEN_FOR_SEC
+            if give_up is not None and time.monotonic() > give_up:
                 sys.exit("Webcam stopped sending frames (close other apps using the camera, check the camera permission).")
             print("Webcam stopped sending frames, reopening it...")
             self.cap.release()
             while not self.open(exit_on_failure=False):
-                if time.monotonic() > give_up:
+                if give_up is not None and time.monotonic() > give_up:
                     sys.exit("No working camera (close other apps using the camera, check the camera permission).")
                 time.sleep(2)
 

@@ -106,7 +106,9 @@ def serve_control(port):
         def do_GET(self):
             if self.path.startswith("/preview.mjpg"):
                 return self._mjpeg()
-            self._reply(200 if self.path == "/health" else 404)
+            if self.path == "/health":   # 503 while the webcam is lost: the page shows "Camera offline"
+                return self._reply(200, b"ok") if capture_ui.CAMERA["ok"] else self._reply(503, b"camera offline")
+            self._reply(404)
 
         def _mjpeg(self):
             self.send_response(200)
@@ -294,6 +296,7 @@ def main(argv=None):
     predictor = load_predictor(a.checkpoint)
     poster = Poster(a.post, os.environ.get("BRIDGE_KEY")) if a.post else None
     rec = Recorder(a.camera)
+    rec.REOPEN_FOR_SEC = None  # the live recognizer never quits over the camera: it waits for it to come back
     seq = 0
     if a.control_port:          # feed the MJPEG preview from every frame the recorder reads
         camera_read = rec.read
