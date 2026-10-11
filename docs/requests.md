@@ -26,3 +26,40 @@ Proposal: add these lines to CLAUDE.md 6.2.
 | 7 | P2/P3 | Put a real recording in `fixtures/utterance_frames.json` (currently `[]`) | Needed to check that Python and TS normalization match |
 | 8 | Whoever trains | `recognition/models/model.pt` is gitignored: share the trained file directly. The server refuses old-format checkpoints and loads weights only | The demo laptop needs the real model; a tampered file cannot run code |
 | 9 | All | Pin versions in `requirements.txt` before the demo | Unpinned deps can change under us (mediapipe 1.x already broke `mp.solutions`) |
+
+## 2026-10-10, from P4 (red-team fix stage; details in `docs/app-plan.md` section 10a)
+
+### Red-team changes to teammate routes (please review)
+
+The P4 teammate wrote `web/app/api/english/route.ts` and `web/app/api/tts/route.ts`. The fixes are kept minimal, and every change is marked `SECURITY:` in the code. Synthesis, intents, the Claude prompt and the `{text}` contracts are unchanged.
+
+| File | Change | Finding |
+|---|---|---|
+| `english/route.ts` | `await req.json()` replaced by `guardLoopbackJsonPost()` (loopback via `server.mjs`, Host allowlist, same-origin, JSON only, 8 KB capped read, 10/min) | B1, B3, B4, D1 |
+| `english/route.ts` | `isPredictionList`: at most 8 signs, labels at most 32 characters, `conf` finite in [0, 1]. After `normalize`, every label must be one of the 22 in `LABELS` (otherwise 400) | B4, B5, D1 |
+| `english/route.ts` | Claude's reply must pass `cleanSentence()` (one plain sentence, at most 200 characters), otherwise the fallback sentence is used. The error is logged as `Claude API <status>` only, never the vendor body | B5, D1, D6 |
+| `tts/route.ts` | `guardLoopbackJsonPost()` (4 KB, 20/min); text = `cleanSentence(raw, 300)` (otherwise 400) | B1, B3, B6, D2 |
+| `tts/route.ts` | Only the 19 `INTENTS` sentences are cached. Other text is synthesised uncached, at most 2 at a time (503 when busy) | B6, D3 |
+| `tts/route.ts` | Piper is spawned with an absolute interpreter (`PIPER_PYTHON`, else `../.venv`, else `python` with a warning) and an allowlisted environment (`PATH`, `HOME`, `LANG`, `LC_ALL`, temp dirs) instead of `{...process.env}` | B9, C3, D5 |
+| `components/speakSigns.ts` | The browser fallback uses only an on-device voice (`localService`), or stays silent | D9 |
+| `public/signs` symlink | Replaced by `app/signs/[...path]/route.ts`. Same URLs; `signer` is removed; nothing outside `signs/` is served | B2, D7 |
+| `package.json` | `npm run dev` now runs `node server.mjs` (127.0.0.1 only); `dev:lan`, `start`, `start:lan`, `test:security`; `"type": "module"`; Node >= 22.18 | B1 |
+
+Still recommended for the teammate: turn on the Claude path in `/api/english` only behind `ENGLISH_FALLBACK=1` (plan section 7). Move `/api/tts` to `{ id }` (plan RT5).
+
+### Requests for paths P4 may not edit
+
+| # | To | What | Finding |
+|---|---|---|---|
+| R1 | All (CLAUDE.md 11) | Setup: `cd web && npm ci` (not `npm install`), then `npm run dev` (it now runs `server.mjs`). Never run plain `next dev` / `next start` for the app; they bind every interface, and the loopback routes answer 403. Add `PIPER_PYTHON=` (absolute venv python) and the recognizer's `RECOGNITION_ALLOW_UNPINNED` (development only) to the environment list. Note that `web/public/signs` is now a route | B1, C7, B9 |
+| R2 | Root `.env.example` | Add `PIPER_PYTHON=` (absolute path) and `BRIDGE_KEY=` (at least 32 characters) | B9, C3 |
+| R3 | P3 + whoever freezes | At H13, run `python -m recognition.pin_model recognition/models/model.pt` and commit `recognition/model_pin.py`. Until then the recognizer refuses the model unless `RECOGNITION_ALLOW_UNPINNED=1` | A1, C4 |
+| R4 | P2 (`capture/capture.py`) | Validate sign names against `^[A-Z0-9_-]+$` (no `/`, `..` or `\`) before they are used in a path, and validate `--user` the same way. Write an opaque signer id (for example `s1`), not a first name, into sign JSON | A9, C1 |
+| R5 | P2 (`capture/landmarks.py`) | Verify the downloaded `.task` against SHA-256 `e2dab61191e2dcd0a15f943d8e3ed1dce13c82dfa597b9dd39f562975a50c3f8` (the value now pinned in `recognition/mediapipe_adapter.py`); the URL is a mutable `latest` | A1, C5 |
+| R6 | P2 + all (`signs/`, `capture/reference/*.mp4` on `p2-avatar`) | Get written consent from every recorded team member before anything is public. Replace `signer` names with opaque ids, and consider lower coordinate precision. Remove the 12 full-face reference MP4s from the public repo (a history rewrite if consent is withdrawn) or keep them private. Add a `DATA_LICENSES` note: code MIT; recordings under their own terms; GISLR data, MediaPipe models and Tripo assets under theirs | C1, C11, D7 |
+| R7 | Repo owner (GitHub settings) | Protect `main` and the deploy branch (PR + 1 review, no force push), require 2FA, enable Dependabot, secret scanning and push protection, add CODEOWNERS, and deploy the desk laptop only from a reviewed tag. Consider making the repo private | C6 |
+| R8 | Each member | Set `user.email` to the GitHub noreply address and enable "Block command line pushes that expose my email" | C2 |
+| R9 | All (`requirements.txt`) | Pin versions with hashes (`pip-compile --generate-hashes`, `pip install --require-hashes`); drop `opencv-python` from the p4 file (it conflicts with contrib) | C7 |
+| R10 | All (root `.gitignore`) | Add `*.wav`, `*.jpg`, `*.jpeg`, `*.png` (allowlist real assets), `*.pem`, `*.key`, `*.crt`, `*.npy`, `*.parquet`, `*.onnx` (missing on p3), `**/.next/`, `*.tsbuildinfo`, `recognition/compare/reports/`; add a pre-commit hook for secrets (gitleaks), large files and media. `web/.gitignore` and `recognition/.gitignore` now cover their own folders | C8 |
+| R11 | Benchmark owner (`recognition/benchmark.py`) | Write data paths relative to the repo (the committed reports leaked `/private/tmp/claude-502/...`; they are redacted now). The HTTP latency step should pass `allow_unpinned=True` to `create_app` (or pin first), because unpinned models now get 503. Loading `Predictor(checkpoint)` directly also skips the pin, which is fine offline but should not be copied into live code | C9, A1 |
+| R12 | GISLR tooling (`recognition/tools/gislr_to_frames.py`) | Verify every `urlretrieve` download against a committed SHA-256 | C5 |
