@@ -4,15 +4,23 @@
 import { useEffect, useRef, useState } from "react";
 import { KeyTag, SimulatedBadge, TrafficLight } from "@/components/app/KeyTag";
 import { tagText } from "@/components/app/displayVocab";
+import { interpreterCardLines } from "@/lib/app/guestfeatures";
+import { staffLineLabel } from "@/lib/app/linelabels";
 import {
+  CAPTION_BACKEND_LABEL,
   FRAMING_GUIDANCE,
   FRAMING_STAFF_HINT,
   GUEST_REPLY_TEXT,
   LIMITS,
+  NUMBER_ABOUT_LABEL,
   VRI_UNSET_TEXT,
+  type GuestMode,
   type LogEntry,
   type StaffStatus,
 } from "@/lib/app/types";
+import AlertPanel from "./AlertPanel";
+import { speakLocal } from "./audio";
+import FactsPanel from "./FactsPanel";
 import { BottomTabs, Checklist, clock, type TabKey } from "./Panels";
 import TalkPanel from "./TalkPanel";
 import { useStaffDesk, type Desk } from "./useStaffDesk";
@@ -85,7 +93,15 @@ export default function StaffApp() {
         <div className={s.columns}>
           <TalkPanel desk={desk} />
           <Middle desk={desk} />
-          <Checklist desk={desk} />
+          <Checklist
+            desk={desk}
+            extra={
+              <>
+                <FactsPanel desk={desk} />
+                <AlertPanel desk={desk} />
+              </>
+            }
+          />
         </div>
       )}
       <BottomTabs desk={desk} tab={tab} setTab={setTab} open={drawerOpen} setOpen={setDrawerOpen} />
@@ -143,6 +159,9 @@ function Header({ desk }: { desk: Desk }) {
                 : "Reconnecting…"}
         </span>
         <div className={s.headerActions}>
+          <a className={s.courseLink} href="/staff/course" target="_blank" rel="noopener">
+            Staff course
+          </a>
           {hasSession ? (
             <button type="button" className={s.endButton} onClick={() => void staffAction({ type: "end_guest" })}>
               End guest
@@ -155,6 +174,12 @@ function Header({ desk }: { desk: Desk }) {
           <dt>Guest window</dt>
           <dd>{guestWhere}</dd>
         </div>
+        {hasSession && st && (
+          <div>
+            <dt>Guest</dt>
+            <dd>Mode: {GUEST_MODE_WORDS[st.guest.settings.guestMode]}</dd>
+          </div>
+        )}
         <div data-level={hasSession ? heardLevel : "none"}>
           <dt>Guest screen</dt>
           <dd>
@@ -216,6 +241,16 @@ function Header({ desk }: { desk: Desk }) {
   );
 }
 
+/** features-plan F12: the guest's way of talking, in neutral words (no per-guest advice text). */
+const GUEST_MODE_WORDS: Record<GuestMode, string> = {
+  choosing: "choosing",
+  sign: "signing",
+  type: "read and type",
+  tap: "tap pictures",
+  interpreter: "human interpreter",
+  text_only: "read only",
+};
+
 /** Large band when signing cannot work (DSH-11, C1-9), or a declared band while the simulator drives it. */
 function FallbackBand({ status }: { status: StaffStatus | null }) {
   const now = useNow();
@@ -265,7 +300,10 @@ function WarningStrip({ desk, onOpen }: { desk: Desk; onOpen: () => void }) {
 /* ------------------------------------------------------------------ */
 
 function Alerts({ desk }: { desk: Desk }) {
-  const { ui, ack, staffAction, readAloudTyped, dismissTyped, dismissReply } = desk;
+  const { ui, ack, staffAction, readAloudTyped, dismissTyped, dismissReply, dismissNumber } = desk;
+  const guestSettings = ui.status?.guest.settings;
+  const mayReadAloud = !guestSettings || (guestSettings.speakAloud && guestSettings.guestMode !== "text_only");
+  const cardLines = ui.interpreter?.card ? interpreterCardLines(ui.interpreter.card) : [];
   const now = useNow();
   return (
     <>
@@ -291,8 +329,40 @@ function Alerts({ desk }: { desk: Desk }) {
           <button type="button" className={s.bannerBtn} onClick={() => void ack("interpreter")}>
             I&apos;m on it
           </button>
+          {cardLines.length > 0 && (
+            <div className={s.interpreterCard}>
+              <p>
+                <strong>The guest agreed to share this card with the interpreter</strong> (read it out or copy it; the app sends it nowhere):
+              </p>
+              <ul>
+                {cardLines.map((l) => (
+                  <li key={l}>{l}</li>
+                ))}
+              </ul>
+              <button type="button" className={s.bannerBtn} onClick={() => void navigator.clipboard?.writeText(cardLines.join("\n")).catch(() => {})}>
+                Copy card
+              </button>
+            </div>
+          )}
         </div>
       )}
+      {ui.numbers.map((n) => (
+        <div key={n.logSeq} className={s.brassBanner} role="status">
+          <span>
+            <strong>Guest typed:</strong> <span className={s.bigNumber}>{n.value}</span> ({NUMBER_ABOUT_LABEL[n.about]})
+          </span>
+          <span className={s.row}>
+            {mayReadAloud && (
+              <button type="button" className={s.bannerBtnDark} onClick={() => void speakLocal(`${n.value} ${NUMBER_ABOUT_LABEL[n.about]}`)}>
+                Read aloud
+              </button>
+            )}
+            <button type="button" className={s.linkBtn} onClick={() => dismissNumber(n.logSeq)}>
+              Dismiss
+            </button>
+          </span>
+        </div>
+      ))}
       {ui.moreTime && (
         <div className={s.brassBanner} role="status">
           <span>Guest needs more time.</span>
@@ -438,9 +508,9 @@ function SessionControls({ desk }: { desk: Desk }) {
       <div className={s.sessionBox}>
         <p>The guest window is display-only. Ask the guest to point at a choice on the card, then record it:</p>
         <div className={s.row}>
-          {(["sign", "type", "interpreter", "text_only"] as const).map((c) => (
+          {(["sign", "type", "tap", "interpreter", "text_only"] as const).map((c) => (
             <button key={c} type="button" className={s.secondary} onClick={() => void staffAction({ type: "choice_for_guest", choice: c })}>
-              Guest chose {c === "text_only" ? "text only" : c}
+              Guest chose {GUEST_MODE_WORDS[c]}
             </button>
           ))}
         </div>
@@ -496,7 +566,37 @@ function LogLine({ e, desk }: { e: LogEntry; desk: Desk }) {
   const fromServer = e.kind === "guest" && e.spokenAt ? { at: e.spokenAt, how: "local" as const } : e.kind === "guest_typed" && e.readAloudAt ? { at: e.readAloudAt, how: "local" as const } : undefined;
   const spoken = desk.ui.spoken[e.seq] ?? fromServer;
   const voicing = desk.ui.voicing[e.seq] === true;
+  // features-plan F6: one machine-or-human label on every conversation line.
+  const label = staffLineLabel(e);
+  const tag = label ? <span className={s.lineLabel}>{label}</span> : null;
   switch (e.kind) {
+    case "live_caption":
+      return (
+        <li className={s.logStaff} data-retracted={e.retracted || undefined}>
+          <span className={s.logTime}>{clock(e.at)}</span>
+          <span className={s.logWho}>You</span>
+          <div className={s.logBody}>
+            <p className={s.logText}>{e.retracted ? <del>{e.text}</del> : e.text}</p>
+            <p className={s.hint}>
+              {tag} {CAPTION_BACKEND_LABEL[e.backend]}
+              {e.retracted && ", removed from the guest screen"}
+            </p>
+          </div>
+        </li>
+      );
+    case "guest_number":
+      return (
+        <li className={s.logGuest}>
+          <span className={s.logTime}>{clock(e.at)}</span>
+          <span className={s.logWho}>Guest typed</span>
+          <div className={s.logBody}>
+            <p className={s.logText}>
+              <span className={s.bigNumber}>{e.value}</span> ({NUMBER_ABOUT_LABEL[e.about]})
+            </p>
+            <p className={s.hint}>{tag} Never read aloud unless you tap Read aloud.</p>
+          </div>
+        </li>
+      );
     case "staff":
       return (
         <li className={s.logStaff}>
@@ -509,6 +609,7 @@ function LogLine({ e, desk }: { e: LogEntry; desk: Desk }) {
                 <KeyTag key={i} token={t} small />
               ))}
               {e.gloss.length === 0 && <span className={s.hint}>captions only</span>}
+              {tag}
               <span className={s.hint}>
                 {e.shownOnDeviceAt ? `shown on device ${clock(e.shownOnDeviceAt, true)}` : "not shown on device yet"}
                 {e.captionSource === "voice" && ", from speech recognition"}
@@ -537,8 +638,7 @@ function LogLine({ e, desk }: { e: LogEntry; desk: Desk }) {
                   <span className={s.score}>{sg.top[0] ? sg.top[0].conf.toFixed(2) : ""}</span>
                 </span>
               ))}
-              {e.source === "phrase" && <span className={s.hint}>picked from the phrase list</span>}
-              {e.confirmedBy === "staff_for_guest" && <span className={s.hint}>confirmed by staff after the guest pointed</span>}
+              {tag}
             </div>
             <p className={s.hint}>
               {plan.mode === "tts" &&
@@ -580,7 +680,7 @@ function LogLine({ e, desk }: { e: LogEntry; desk: Desk }) {
           <span className={s.logWho}>Guest typed</span>
           <div className={s.logBody}>
             <p className={s.logText}>{e.text}</p>
-            <p className={s.hint}>{spoken ? (spoken.how === "none" ? "no on-device voice: read it out" : `read aloud ${clock(spoken.at, true)}`) : "not read aloud"}</p>
+            <p className={s.hint}>{tag} {spoken ? (spoken.how === "none" ? "no on-device voice: read it out" : `read aloud ${clock(spoken.at, true)}`) : "not read aloud"}</p>
             <button type="button" className={s.small} onClick={() => void desk.readAloudTyped(e.seq)}>
               Read aloud
             </button>
@@ -591,7 +691,9 @@ function LogLine({ e, desk }: { e: LogEntry; desk: Desk }) {
       return (
         <li className={s.logNeutral}>
           <span className={s.logTime}>{clock(e.at)}</span>
-          <span>Guest tapped &ldquo;{GUEST_REPLY_TEXT[e.reply]}&rdquo;</span>
+          <span>
+            Guest tapped &ldquo;{GUEST_REPLY_TEXT[e.reply]}&rdquo; {tag}
+          </span>
         </li>
       );
     case "guest_setting":
