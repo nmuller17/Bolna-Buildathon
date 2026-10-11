@@ -748,3 +748,278 @@
     animation: none !important;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Builder B, 2026-10-11: BN-1 to BN-5 and the layout pass             */
+/* ------------------------------------------------------------------ */
+
+/* Caption size control (BN-3): scales only the desk's words and the sentence being confirmed. */
+.root[data-text-size="1"] .captionText,
+.root[data-text-size="1"] .proposalHeading {
+  font-size: clamp(2.4rem, 1.6rem + 3.6vw, 4.8rem);
+}
+
+.root[data-text-size="2"] .captionText,
+.root[data-text-size="2"] .proposalHeading {
+  font-size: clamp(2.9rem, 2rem + 4.4vw, 5.8rem);
+}
+
+.root[data-text-size="1"] .captionTextOld,
+.root[data-text-size="1"] .recordText {
+  font-size: 1.5rem;
+}
+
+.root[data-text-size="2"] .captionTextOld,
+.root[data-text-size="2"] .recordText {
+  font-size: 1.8rem;
+}
+
+.choiceIcon {
+  width: 34px;
+  height: 34px;
+  color: var(--brass);
+}
+
+.choice:disabled .choiceIcon {
+  color: var(--mist);
+}
+
+.honest {
+  margin: 0;
+  padding: 14px 16px 14px 34px;
+  border-left: 6px solid var(--brass);
+  background: var(--navy-2);
+  border-radius: 0 12px 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 70ch;
+}
+
+.timeWarningSub {
+  display: block;
+  font-weight: 500;
+  font-size: 1rem;
+}
+
+.avatarControls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 6px 16px;
+  border: 2px solid var(--navy-3);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--white);
+  font: inherit;
+  font-size: 1.05rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.chip:hover {
+  border-color: var(--brass);
+}
+
+.chip[aria-pressed="true"] {
+  background: var(--white);
+  color: var(--navy);
+  border-color: var(--white);
+}
+
+.chipIcon {
+  width: 1.2em;
+  height: 1.2em;
+}
+
+.liveBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.signRow {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.framingOk,
+.framingAlert {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.framingIcon {
+  flex: none;
+  width: 1.4em;
+  height: 1.4em;
+}
+
+.framingOk .framingIcon {
+  color: var(--g-go);
+}
+
+.echo {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border-radius: 16px;
+  border: 2px solid var(--g-go);
+  background: var(--navy);
+}
+
+/* BN-1: the sentence first, the signs beside it, then three equal buttons. */
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.confirmButtons {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.confirmButtons[data-count="2"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.confirmButtons > button {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.alarmButton {
+  flex: 1 1 12rem;
+  min-height: 64px;
+  padding: 10px 22px;
+  border: 3px solid var(--white);
+  border-radius: 14px;
+  background: var(--alarm);
+  color: var(--white);
+  font: inherit;
+  font-size: 1.2rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.pickList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+}
+
+.pointList {
+  margin: 0;
+  padding-left: 1.4em;
+  font-size: 1.3rem;
+}
+
+.phraseButton:disabled {
+  opacity: 0.55;
+}
+
+/* BN-5: the guest's own record of this conversation. */
+.record {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 18px;
+  border-top: 1px solid var(--navy-3);
+}
+
+.recordList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.recordItem {
+  display: grid;
+  grid-template-columns: 5.2rem minmax(0, 1fr);
+  gap: 2px 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--navy-3);
+}
+
+.recordMeta {
+  grid-row: span 2;
+  display: flex;
+  flex-direction: column;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--mist);
+  font-variant-numeric: tabular-nums;
+}
+
+.recordMeta time {
+  font-weight: 500;
+}
+
+.recordItem[data-who="you"] .recordMeta {
+  color: var(--brass);
+}
+
+.recordText {
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+.recordNote {
+  font-size: 0.95rem;
+  color: var(--mist);
+}
+
+@media (min-width: 900px) {
+  .record {
+    grid-column: 1 / -1;
+  }
+
+  .repairRow {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 420px) {
+  .confirmButtons {
+    gap: 8px;
+  }
+
+  .confirmButtons > button {
+    font-size: 1.1rem;
+  }
+}
+
+@media (max-width: 899px) {
+  .conversation[data-pending] .you {
+    order: -1;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--navy-3);
+  }
+}
+
+@media (min-width: 900px) {
+  /* The guest's own panel stays in view while the desk's side scrolls (plan 4.5, display layout). */
+  .you {
+    position: sticky;
+    top: 16px;
+    align-self: start;
+    max-height: calc(100dvh - 140px);
+    overflow-y: auto;
+  }
+}

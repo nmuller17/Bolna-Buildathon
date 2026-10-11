@@ -173,7 +173,8 @@ export function securityHeaders(dev: boolean, pathname = "/"): Record<string, st
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob:",
       "media-src 'self' blob:",
-      "connect-src 'self'",
+      // blob: lets P2's GLTF loader read the textures embedded in the avatar model (same-origin blobs only).
+      "connect-src 'self' blob:",
       "frame-ancestors 'none'",
       "base-uri 'none'",
       "form-action 'self'",

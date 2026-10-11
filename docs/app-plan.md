@@ -398,6 +398,17 @@ The end screen gives the reason from `END_REASON_GUEST` ("The desk ended the con
 
 On `session_end` the guest page clears its state, calls `POST /api/guest/leave`, and replaces its history entry with the ended screen so Back cannot show the conversation (AS-6, AS-7). On the guest TLS listener (Tier 1) `leave` answers with `Clear-Site-Data: "cache", "cookies", "storage"` and an expired cookie. On the staff listener (Mode 0) it only expires the `sb_g` cookie and **never** sends Clear-Site-Data, so nothing can clear the staff cookie (section 9.6). The staff screen clears the log and the per-guest counters and keeps only the wipe receipt. A guest who confirms "I'm finished" ends the session the same way, with reason `guest_left`, and staff see "The guest ended the conversation".
 
+### 4.7 Builder B screen notes (2026-10-11, talha/app-shell)
+
+These are how the screens apply `BIGTECH_TO_PRODUCT.md` BN-1 to BN-5 on top of sections 4.2 to 4.6.
+
+- **BN-1, confirm before speaking.** Every sentence the guest sends, whether recognised, picked from "Did you mean...?" or "Pick one", or chosen from the phrase list, goes through one confirmation: the exact sentence, the signs with their lights, and three equal buttons, "Say it", "Text only" and "Fix". "Text only" sends `voice: false`, so the server's speak plan is `none` (`guest_chose_text`) and the staff log says "do not read it aloud". When the guest turned reading aloud off, the buttons are "Send as text" and "Fix". "Did you mean...?" now leads to that confirmation after "Yes" instead of sending at once. "Fix" never re-runs recognition: it offers Choose another (when there were several), Type instead, Sign again and Ask for an interpreter. BN-2 line (d) sits under every sign-based confirmation.
+- **Skeleton snapshot.** It is drawn as dots and lines (shoulders, arms and hands, no face) in the staff Evidence tab only. The guest device never receives it (AS-1); the guest sees the signs and their lights.
+- **BN-2.** Lines (a) to (c) are on the guest's first screen, in `GUEST_HONEST_LINES`. The staff Privacy tab says "Vendor calls made by the SignBridge server" and "Session data wiped". "Face points passed to the classifier: 0" is not shown, because its BN-2 check has not run on this branch.
+- **BN-3.** Under the latest caption: "Show again", "Captions only" / "Show the avatar", and six replies to the desk (Please repeat that, Slower please, Please type it, Please show me on paper, I don't understand, Wait please). A three-step text size is in "More" (memory only).
+- **BN-5.** The guest page keeps "This conversation", every desk sentence and every sentence the guest sent, in memory only, with "You may photograph this screen". "End and delete my session" (in the record and in "More") asks first, then ends the session the same way as "I'm finished" did. Both screens say "This session will end soon"; the staff button is "Guest is still here: keep open". The server's reconnect snapshot still holds only the last caption.
+- **Layout.** On a phone a pending sentence moves above the captions; on a display the guest panel stays in view. The staff header is a row of labelled slats, open session warnings show as a strip with "Open Safety", and the details drawer can be hidden.
+
 ---
 
 ## 5. Data flows
