@@ -1,10 +1,14 @@
 {
   "name": "signbridge-web",
   "private": true,
+  "type": "module",
   "scripts": {
-    "dev": "next dev",
+    "dev": "node server.mjs",
+    "dev:lan": "node server.mjs --lan",
     "build": "next build",
-    "start": "next start"
+    "start": "node server.mjs --production",
+    "start:lan": "node server.mjs --production --lan",
+    "test:security": "node --test --test-concurrency=1 \"security-tests/*.test.mjs\""
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.1.0",
@@ -19,5 +23,8 @@
     "@types/react-dom": "^19.3.0",
     "@types/three": "^0.186.0",
     "typescript": "^5"
+  },
+  "engines": {
+    "node": ">=22.18"
   }
 }
