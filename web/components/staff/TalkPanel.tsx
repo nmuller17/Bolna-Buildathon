@@ -130,11 +130,15 @@ export default function TalkPanel({ desk }: { desk: Desk }) {
         Quick replies <span className={s.hint}>(one tap, no cloud service)</span>
       </h3>
       <div className={s.quickGrid} role="group" aria-labelledby="quick-title">
-        {QUICK_REPLIES.map((q) => (
-          <button key={q.key} type="button" className={s.quick} title={q.text} disabled={!active} onClick={() => void staffAction({ type: "say_quick", intent: q.key })}>
-            {q.short}
-          </button>
-        ))}
+        {QUICK_REPLIES.map((q) => {
+          // features-plan F1: with a typed room, the room quick reply says that room ("You're in room 517.").
+          const room = q.key === "room_number" ? ui.facts.facts.find((f) => f.key === "room")?.value : undefined;
+          return (
+            <button key={q.key} type="button" className={s.quick} title={room ? `You're in room ${room}.` : q.text} disabled={!active} onClick={() => void staffAction({ type: "say_quick", intent: q.key })}>
+              {room ? `Room ${room}` : q.short}
+            </button>
+          );
+        })}
       </div>
       {!active && <p className={s.hint}>Quick replies work once a guest window is connected.</p>}
       <div className={s.field}>
