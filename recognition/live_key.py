@@ -1,28 +1,73 @@
 """Live recognition triggered by a key, recorded exactly like the training takes.
 
-    python -m recognition.live_key --camera 1                    # free signing
-    python -m recognition.live_key --camera 1 --test             # the 22 classes in order, with a score
+    python -m recognition.live_key --camera 1                      # free: sentences of signs
+    python -m recognition.live_key --camera 1 --test               # the 22 classes, one by one, scored
+    python -m recognition.live_key --camera 1 --test-sentences     # the 20 guest sentences, scored
+    ... [--post http://127.0.0.1:3000/api/guest/signs]             # send the events to the app
 
-SPACE -> short countdown -> REC window (2 s, 3 s for FS-WIFI and PASSWORD in --test) -> the
-landmarks go through capture.Recorder.process (same code as capture/train_session.py) ->
-Recognizer -> the result is shown and printed. This is the most reliable live path: the model
-sees windows cut exactly like its training data.
-Keys: SPACE sign, S skip (test), Q quit.
+One sign: SPACE -> short countdown -> REC window (2 s, 3 s for FS-WIFI and PASSWORD when the
+sign is known) -> landmarks through capture.Recorder.process (same code as the training takes)
+-> model probabilities, NONE left out. A sentence: several signs, then ENTER (free mode) or
+automatically (test mode); recognition.intents.decode snaps it to the closest guest sentence
+of docs/vocabulary.md section 2, which fixes a sign the model got wrong.
+
+Events (JSON, with --post): {"type": "sign", "seq", "top"} after each sign;
+{"type": "utterance", "raw", "labels", "text", "snapped"} at the end of a sentence.
+Keys: SPACE sign, ENTER end the sentence, BACKSPACE drop the last sign, S skip (tests), Q quit.
 """
 import argparse
+import os
 import sys
 
 import cv2
+import numpy as np
 
-from capture.capture import GREEN, RED, Recorder, show
+from capture.capture import GREEN, RED, WHITE, Recorder, show
+from recognition import features
+from recognition.intents import GUEST_INTENTS, decode, without_none
 from recognition.labels import CLASSES
-from recognition.recognizer import REPEAT_BELOW, decide, load_predictor, validate
+from recognition.live import Poster
+from recognition.recognizer import load_predictor, validate
 
 LONG_SIGNS = {"FS-WIFI", "PASSWORD"}
+ENTER, BACKSPACE = (13, 10), (8, 127)
+
+
+def top3(p):
+    order = np.argsort(p)[::-1][:3]
+    return [{"label": CLASSES[i], "conf": round(float(p[i]), 3)} for i in order]
 
 
 def fmt(top):
-    return " | ".join(f"{p['label']} {p['conf']:.2f}" for p in top)
+    return " | ".join(f"{t['label']} {t['conf']:.2f}" for t in top)
+
+
+def wait_key(rec, lines):
+    """Live preview until SPACE, ENTER, BACKSPACE, S or Q. Returns 'space', 'enter', 'back', 's', 'q'."""
+    while True:
+        key = show(rec.read(), lines)
+        if key == ord(" "):
+            return "space"
+        if key in ENTER:
+            return "enter"
+        if key in BACKSPACE:
+            return "back"
+        if key in (ord("s"), ord("q")):
+            return chr(key)
+
+
+def sign_once(rec, predictor, title, target, a):
+    """Record one sign. Returns its probability vector (NONE removed), or None if Q was pressed."""
+    duration = 3.0 if target in LONG_SIGNS else a.duration
+    got = rec.take(target or "SIGN", title, a.countdown, duration)
+    if got is None:
+        return None, None
+    _, frames = rec.process(*got)
+    if not frames:
+        p = np.full(len(CLASSES), 1.0 / len(CLASSES))
+    else:
+        p = predictor.probs(features.to_seq(validate(frames)))
+    return without_none(p), got[0][-1]
 
 
 def main(argv=None):
@@ -30,49 +75,113 @@ def main(argv=None):
     ap.add_argument("--camera", type=int, help="camera index (default: first one that is not black)")
     ap.add_argument("--checkpoint", default="recognition/models/model.pt")
     ap.add_argument("--test", action="store_true", help="ask for the 22 classes in order and score them")
+    ap.add_argument("--test-sentences", action="store_true", help="ask for the 20 guest sentences and score them")
     ap.add_argument("--countdown", type=float, default=1.5)
     ap.add_argument("--duration", type=float, default=2.0)
+    ap.add_argument("--post", default=None, metavar="URL", help="POST every event as JSON to this URL")
     a = ap.parse_args(argv)
 
     predictor = load_predictor(a.checkpoint)
+    poster = Poster(a.post, os.environ.get("BRIDGE_KEY")) if a.post else None
     rec = Recorder(a.camera)
-    todo = list(CLASSES) if a.test else None
-    results, last = [], ""
+    seq = 0
+
+    def emit(ev):
+        if poster:
+            poster.send(ev)
+
+    def finish(sentence_probs):
+        r = decode(sentence_probs)
+        emit({"type": "utterance", "raw": r["raw"], "labels": r["labels"], "text": r["text"], "snapped": r["snapped"]})
+        return r
+
     try:
-        i = 0
-        while todo is None or i < len(todo):
-            target = todo[i] if todo else None
-            title = f"Next: {target}  ({i + 1}/{len(todo)})" if target else "Press SPACE, then sign"
-            key = rec.wait_start([title, last])
+        if a.test:                                   # one sign at a time, scored
+            results, last = [], ""
+            for i, target in enumerate(CLASSES):
+                title = f"Next: {target}  ({i + 1}/{len(CLASSES)})"
+                key = wait_key(rec, [title, last, "SPACE sign   S skip   Q quit"])
+                if key == "q":
+                    break
+                if key != "space":
+                    continue
+                p, img = sign_once(rec, predictor, title, target, a)
+                if p is None:
+                    break
+                top = top3(p)
+                ok = top[0]["label"] == target
+                last = f"{fmt(top[:2])}  {'OK' if ok else 'WRONG'}"
+                print(f"{target:12s} -> {fmt(top)}  {'OK' if ok else 'WRONG'}")
+                show(img, [title, last], GREEN if ok else RED)
+                cv2.waitKey(1000)
+                results.append((target, top[0]["label"], target in [t["label"] for t in top]))
+            if results:
+                print(f"\nscore: {sum(t == p for t, p, _ in results)}/{len(results)} right, "
+                      f"{sum(t3 for *_, t3 in results)}/{len(results)} in the top 3")
+            return
+
+        if a.test_sentences:                         # guided sentences, scored raw vs corrected
+            scores = []
+            for n, (labels, text) in enumerate(GUEST_INTENTS):
+                probs, quit_ = [], False
+                for j, target in enumerate(labels):
+                    title = f"Sentence {n + 1}/{len(GUEST_INTENTS)}: {' '.join(labels)}"
+                    key = wait_key(rec, [title, f"sign {j + 1}/{len(labels)}: {target}", "SPACE sign   S skip   Q quit"])
+                    if key == "q":
+                        quit_ = True
+                        break
+                    if key == "s":
+                        break
+                    p, _ = sign_once(rec, predictor, title, target, a)
+                    if p is None:
+                        quit_ = True
+                        break
+                    probs.append(p)
+                if quit_:
+                    break
+                if len(probs) != len(labels):
+                    continue
+                r = finish(probs)
+                raw_ok, cor_ok = r["raw"] == labels, r["labels"] == labels
+                print(f"{' '.join(labels):22s} raw {' '.join(r['raw']):22s} -> {' '.join(r['labels']):22s} "
+                      f"{'OK' if cor_ok else 'WRONG'}{'  (fixed)' if cor_ok and not raw_ok else ''}")
+                show(rec.read(), [f"{' '.join(labels)}", f"heard: {' '.join(r['raw'])}",
+                                  f"-> {r['text'] or ' '.join(r['labels'])}"], GREEN if cor_ok else RED)
+                cv2.waitKey(1800)
+                scores.append((raw_ok, cor_ok))
+            if scores:
+                print(f"\nsentences right: raw {sum(r for r, _ in scores)}/{len(scores)}, "
+                      f"corrected {sum(c for _, c in scores)}/{len(scores)}")
+            return
+
+        sentence, last = [], ""                      # free mode
+        while True:
+            heard = " ".join(CLASSES[int(np.argmax(p))] for p in sentence)
+            key = wait_key(rec, [f"sentence: {heard or '...'}", last,
+                                 "SPACE sign   ENTER end sentence   BACKSPACE undo   Q quit"])
             if key == "q":
                 break
-            if key == "s":
-                i += 1
-                continue
-            duration = 3.0 if target in LONG_SIGNS else a.duration
-            got = rec.take(target or "SIGN", "get ready", a.countdown, duration)
-            if got is None:
-                break
-            _, frames = rec.process(*got)
-            top = decide(validate(frames), predictor) if frames else [{"label": "NONE", "conf": 0.0}]
-            ok = target is None or top[0]["label"] == target
-            sure = top[0]["conf"] >= REPEAT_BELOW
-            verdict = ("OK" if ok and sure else "low confidence" if ok else "WRONG") if target else \
-                ("" if sure else "low confidence -> repeat")
-            last = f"{fmt(top[:2])}  {verdict}"
-            print(f"{(target or ''):12s} -> {fmt(top)}  {verdict}")
-            show(got[0][-1], [title, last], GREEN if (ok and sure) else RED)
-            cv2.waitKey(1200)
-            if target:
-                results.append((target, top[0]["label"], top[0]["conf"]))
-            i += 1
+            if key == "back" and sentence:
+                sentence.pop()
+            elif key == "enter" and sentence:
+                r = finish(sentence)
+                last = f"-> {r['text'] or ' '.join(r['labels'])}"
+                print(f"utterance: heard {' '.join(r['raw'])} -> {' '.join(r['labels'])}  {r['text'] or ''}")
+                sentence = []
+            elif key == "space":
+                p, _ = sign_once(rec, predictor, f"sentence: {heard}", None, a)
+                if p is None:
+                    break
+                sentence.append(p)
+                seq += 1
+                top = top3(p)
+                emit({"type": "sign", "seq": seq, "top": top})
+                print(f"  sign {seq}: {fmt(top)}")
+                last = fmt(top[:2])
     finally:
+        if poster:
+            poster.close()
         rec.close()
-    if results:
-        right = [r for r in results if r[0] == r[1]]
-        sure = [r for r in right if r[2] >= REPEAT_BELOW]
-        print(f"\nscore: {len(right)}/{len(results)} right, {len(sure)} right and above {REPEAT_BELOW}")
-        print("wrong:", ", ".join(f"{t}->{p}" for t, p, _ in results if t != p) or "none")
 
 
 if __name__ == "__main__":
