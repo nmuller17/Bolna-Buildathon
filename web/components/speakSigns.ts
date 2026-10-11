@@ -56,18 +56,22 @@ function speakWithBrowser(text: string): Promise<void> {
   });
 }
 
-/** Turns recognized signs into a spoken English sentence. Resolves with the sentence when speech ends. */
-export async function speakSigns(signs: Prediction[]): Promise<string> {
-  const res = await postJson("/api/english", { signs });
-  if (!res.ok) throw new Error(`/api/english failed: ${res.status}`);
-  const { text } = (await res.json()) as { text: string };
-  if (!text) return "";
-
+/** Speaks an English sentence: /api/tts audio, or the browser's voice if it is late or cannot play. Resolves when done. */
+export async function speakText(text: string): Promise<void> {
+  if (!text) return;
   try {
     await playWav(await fetchWav(text));
   } catch {
     await speakWithBrowser(text);
   }
+}
+
+/** Turns recognized signs into a spoken English sentence. Resolves with the sentence when speech ends. */
+export async function speakSigns(signs: Prediction[]): Promise<string> {
+  const res = await postJson("/api/english", { signs });
+  if (!res.ok) throw new Error(`/api/english failed: ${res.status}`);
+  const { text } = (await res.json()) as { text: string };
+  await speakText(text);
   return text;
 }
 

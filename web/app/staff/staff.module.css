@@ -262,19 +262,53 @@
   list-style: none;
 }
 
-.guestTurn {
-  display: flex;
-  flex-direction: column;
+/* Guest side: the sentence the guest signed, big, with its signs. */
+.guestCard {
+  border-color: rgba(143, 220, 192, 0.35);
 }
 
-.guestText {
-  font-size: 20px;
-  font-weight: 600;
+.guestSentence {
+  margin: 0 0 14px;
+  font-size: clamp(28px, 2.8vw, 40px);
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.raw {
+  margin: 10px 0 0;
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.signing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.signing .meta {
+  margin: 0;
+}
+
+.soundButton {
+  display: block;
+  width: 100%;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px dashed var(--gold);
+  background: transparent;
+  color: var(--gold-strong);
+  cursor: pointer;
 }
 
 .repeat {
+  margin: 0 0 14px;
   color: var(--alert);
-  font-size: 15px;
+  font-size: clamp(20px, 2vw, 28px);
+  font-weight: 600;
 }
 
 .turn {

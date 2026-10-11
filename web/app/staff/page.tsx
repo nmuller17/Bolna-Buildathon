@@ -1,20 +1,32 @@
 "use client";
-// Optional operator console (P4). The demo runs hands-free on /guest; this page adds push-to-talk (button or Space)
-// and a text field, and sends to /guest over the BroadcastChannel.
-// Flow: MediaRecorder (webm) -> /api/transcribe (Whisper, P1) -> /api/gloss (P1) -> staff_utterance on the channel.
-// Whisper failing falls back to the browser's speech recognition; a text field is there as a last resort.
-// The guest -> staff direction is already listened to (guest_utterance, repeat_request) and shown on the right.
+// Receptionist screen (P4), on the staff laptop.
+// Guest -> staff: what the guest signs (recognizer -> /api/guest/signs -> /api/guest/stream) shows big on the right
+// and is spoken aloud (/api/tts, browser voice as fallback). The first click on the page unlocks sound.
+// Staff -> guest runs hands-free on /guest; this page also offers push-to-talk (button or Space) and a text field,
+// sent to /guest over the BroadcastChannel (MediaRecorder -> /api/transcribe -> /api/gloss -> staff_utterance).
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { speakText, warmUpVoice } from "@/components/speakSigns";
 import { toSignedSentences, transcribe } from "@/components/speechToSigns";
+import { useGuestEvents, type GuestUtterance } from "@/components/useGuestEvents";
 import { usePushToTalk, type Recording } from "@/components/usePushToTalk";
 import { useSignbridgeChannel, type ChannelMessage, type ConversationTurn, type StaffState } from "@/lib/channel";
 import styles from "./staff.module.css";
 
-type Source = "whisper" | "browser" | "typed";
+type Source = "whisper" | "browser" | "typed" | "guest";
 type Sent = { text: string; gloss: string[]; source: Source; seconds: number };
-type GuestNote = { kind: "turn"; turn: ConversationTurn } | { kind: "repeat"; at: number };
 
-const SOURCE_LABEL: Record<Source, string> = { whisper: "Whisper", browser: "browser speech (Whisper unavailable)", typed: "typed" };
+const SOURCE_LABEL: Record<Source, string> = {
+  whisper: "Whisper",
+  browser: "browser speech (Whisper unavailable)",
+  typed: "typed",
+  guest: "the guest screen's microphone",
+};
+const GUEST_SOURCE: Record<GuestUtterance["source"], string> = {
+  recognizer: "known sentence",
+  english: "worded by /api/english",
+  words: "signs as words",
+};
+const STALE_SPEECH_S = 15; // a sentence that waited longer for the sound to be unlocked is not spoken late
 const BUTTON_LABEL: Record<StaffState, string> = { idle: "Hold to talk", listening: "Listening…", processing: "Translating…" };
 const STATUS_LABEL: Record<StaffState, string> = { idle: "Ready", listening: "Listening", processing: "Translating" };
 
@@ -38,22 +50,79 @@ export default function StaffPage() {
   const [error, setError] = useState("");
   const [typed, setTyped] = useState("");
   const [history, setHistory] = useState<ConversationTurn[]>([]);
-  const [guestNotes, setGuestNotes] = useState<GuestNote[]>([]);
+  const [soundOn, setSoundOn] = useState(false);
   const holding = useRef(false);
   const busy = useRef(false);
   const starting = useRef<Promise<void> | null>(null);
 
+  const soundRef = useRef(false);
+  const waiting = useRef<{ text: string; at: number } | null>(null); // latest sentence, until sound is unlocked
+  const speaking = useRef(Promise.resolve());
+
+  // CLAUDE.md 6.7 messages from another window. staff_utterance: what /guest heard and signed (hands-free).
+  // guest_utterance / repeat_request: older path, the recognizer now posts to /api/guest/signs.
   const onMessage = useCallback((message: ChannelMessage) => {
-    if (message.type === "guest_utterance") {
-      const turn: ConversationTurn = { from: "guest", text: message.text, signs: message.signs, at: Date.now() };
-      setGuestNotes((notes) => [{ kind: "turn", turn }, ...notes]);
-      setHistory((turns) => [turn, ...turns]);
-      // TODO (guest -> staff): say it aloud for the receptionist with speakSigns(message.signs) (web/components/speakSigns.ts).
+    if (message.type === "staff_utterance") {
+      setLast({ text: message.text, gloss: message.gloss, source: "guest", seconds: 0 });
+      setHistory((turns) => [{ from: "staff", text: message.text, gloss: message.gloss, at: Date.now() }, ...turns]);
+    } else if (message.type === "guest_utterance") {
+      setHistory((turns) => [{ from: "guest", text: message.text, signs: message.signs, at: Date.now() }, ...turns]);
     } else if (message.type === "repeat_request") {
-      setGuestNotes((notes) => [{ kind: "repeat", at: Date.now() }, ...notes]);
+      setHistory((turns) => [{ from: "guest", text: "(asked to sign again)", at: Date.now() }, ...turns]);
     }
   }, []);
   const send = useSignbridgeChannel(onMessage);
+
+  /** Speaks one sentence after the other; /guest mutes its microphone meanwhile (voice_output). */
+  const say = useCallback(
+    (text: string) => {
+      speaking.current = speaking.current.then(async () => {
+        send({ type: "voice_output", playing: true });
+        try {
+          await speakText(text);
+        } finally {
+          send({ type: "voice_output", playing: false });
+        }
+      });
+    },
+    [send],
+  );
+
+  const onGuestUtterance = useCallback(
+    (u: GuestUtterance) => {
+      const text = u.needsRepeat ? "(asked to sign again)" : u.text;
+      setHistory((turns) => [{ from: "guest", text, gloss: u.labels, at: Date.now() }, ...turns]);
+      if (u.needsRepeat || u.mock || !u.text) return; // never speak a guess
+      if (soundRef.current) say(u.text);
+      else waiting.current = { text: u.text, at: Date.now() / 1000 };
+    },
+    [say],
+  );
+  const guest = useGuestEvents(onGuestUtterance);
+
+  // Compiles /api/tts and pre-generates the known guest sentences with Piper, so the first one speaks without delay.
+  useEffect(() => {
+    void warmUpVoice();
+  }, []);
+
+  // Browsers only play sound after the page got a click or a key press.
+  useEffect(() => {
+    const unlock = () => {
+      if (soundRef.current) return;
+      soundRef.current = true;
+      setSoundOn(true);
+      const w = waiting.current;
+      waiting.current = null;
+      if (w && Date.now() / 1000 - w.at < STALE_SPEECH_S) say(w.text);
+    };
+    if ((navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation?.hasBeenActive) unlock();
+    window.addEventListener("pointerdown", unlock);
+    window.addEventListener("keydown", unlock);
+    return () => {
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("keydown", unlock);
+    };
+  }, [say]);
 
   const setStatus = useCallback(
     (next: StaffState) => {
@@ -202,7 +271,8 @@ export default function StaffPage() {
                 ))}
               </div>
               <p className={styles.meta}>
-                via {SOURCE_LABEL[last.source]} · {last.seconds.toFixed(1)} s
+                via {SOURCE_LABEL[last.source]}
+                {last.seconds > 0 && ` · ${last.seconds.toFixed(1)} s`}
               </p>
             </>
           ) : (
@@ -225,27 +295,49 @@ export default function StaffPage() {
       </section>
 
       <aside className={styles.side}>
-        <div className={styles.card}>
-          <h2 className={styles.cardTitle}>Guest messages</h2>
-          {guestNotes.length === 0 ? (
-            <p className={styles.empty}>Coming soon: messages signed by the guest.</p>
-          ) : (
-            <ul className={styles.list}>
-              {guestNotes.map((note, i) =>
-                note.kind === "turn" ? (
-                  <li key={i} className={styles.guestTurn}>
-                    <span className={styles.guestText}>{note.turn.text}</span>
-                    <span className={styles.meta}>
-                      {note.turn.signs?.map((s) => `${s.label} ${Math.round(s.conf * 100)}%`).join(" · ")} · {time(note.turn.at)}
-                    </span>
-                  </li>
-                ) : (
-                  <li key={i} className={styles.repeat}>
-                    Guest asked to sign again · {time(note.at)}
-                  </li>
-                ),
+        <div className={`${styles.card} ${styles.guestCard}`}>
+          <h2 className={styles.cardTitle}>Guest</h2>
+          {!soundOn && (
+            <button type="button" className={styles.soundButton}>
+              Click to turn the sound on
+            </button>
+          )}
+          {guest.signs.length > 0 && (
+            <div className={styles.signing}>
+              <span className={styles.meta}>Signing…</span>
+              {guest.signs.map((s) => (
+                <span key={s.seq} className={styles.token}>
+                  {s.top[0].label} {Math.round(s.top[0].conf * 100)}%
+                </span>
+              ))}
+            </div>
+          )}
+          {guest.utterance ? (
+            <>
+              {guest.utterance.needsRepeat ? (
+                <p className={styles.repeat}>The guest is asked to sign again.</p>
+              ) : (
+                <p className={styles.guestSentence}>{guest.utterance.text}</p>
               )}
-            </ul>
+              <div className={styles.gloss}>
+                {guest.utterance.labels.map((label, i) => (
+                  <span key={i} className={styles.token}>
+                    {label}
+                  </span>
+                ))}
+              </div>
+              {guest.utterance.raw.join(" ") !== guest.utterance.labels.join(" ") && (
+                <p className={styles.raw}>recognized: {guest.utterance.raw.join(" ")}</p>
+              )}
+              <p className={styles.meta}>
+                {GUEST_SOURCE[guest.utterance.source]} · {time(guest.utterance.at * 1000)}
+                {guest.utterance.mock && " · recognizer in mock mode, not spoken"}
+              </p>
+            </>
+          ) : (
+            <p className={styles.empty}>
+              {guest.connected ? "Waiting for the guest to sign." : "Connecting to the recognizer stream…"}
+            </p>
           )}
         </div>
 
