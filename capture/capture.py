@@ -86,9 +86,11 @@ def draw_raw(img, raw):
 # ---------- capture ----------
 
 def open_camera(index, exit_on_failure=True):
-    """Open the given camera, or the first one sending a non-black image
-    (an idle iPhone Continuity Camera shows up as a black camera on macOS)."""
-    for i in [index] if index is not None else range(4):
+    """Open the given camera first, then any other one sending a non-black image. The indexes move when an
+    iPhone (Continuity Camera) connects or leaves: the FaceTime camera can go from 1 to 0, and an idle iPhone
+    shows up as a black camera."""
+    order = [index] + [i for i in range(4) if i != index] if index is not None else list(range(4))
+    for i in order:
         cap = cv2.VideoCapture(i)
         if not cap.isOpened():
             continue
