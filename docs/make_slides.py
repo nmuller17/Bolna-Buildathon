@@ -72,13 +72,14 @@ BW = (W - 2 * M - 4 * GAP) / 5
 SUBTITLE = "One laptop · one screen facing the Deaf guest · the receptionist only talks and listens"
 
 
-def header(title):
+def header(title, subtitle=SUBTITLE, pill=True):
     rect(0, 0, W, H, WHITE)
     rect(0, H - 62, W, 62, NAVY)
     text(32, H - 38, title, 24, True, WHITE)
-    text(32, H - 55, SUBTITLE, 10.5, False, SUB)
-    rect(W - 300, H - 47, 268, 24, ORANGE, r=12)
-    text(W - 288, H - 39, "■  Intent classification (highlighted)", 10.5, True, WHITE)
+    text(32, H - 55, subtitle, 10.5, False, SUB)
+    if pill:
+        rect(W - 300, H - 47, 268, 24, ORANGE, r=12)
+        text(W - 288, H - 39, "■  Intent classification (highlighted)", 10.5, True, WHITE)
 
 
 def card_top(x, y, w, h, color, intent, bar=26, radius=8):
@@ -228,6 +229,61 @@ for i, (title, line) in enumerate([
     rect(x, 24, CW, 70, GREY_BG, LINE, 1, 8)
     text(x + 12, 24 + 70 - 18, title, 10, True, NAVY)
     wrapped(x + 12, 24 + 70 - 33, line, CW - 24, 8.4, False, INK)
+
+
+# ==== slide 3: appendix, why our own sign classifier ==============================================================
+new_slide()
+header("Appendix — why our own sign classifier?",
+       "We use open source where it is strong, and trained only the last layer on our hotel vocabulary", pill=False)
+
+# left: what we checked
+LX, LW = M, 600
+text(LX, 620, "WHAT WE CHECKED", 11.5, True, NAVY)
+checked = [
+    ("Open sign-language models", "recognize isolated signs from their own vocabulary, or fingerspelling (Kaggle "
+     "competitions); none translated hotel conversations reliably when we started"),
+    ("Google ASL dataset (Kaggle GISLR, 250 signs)", "covers only 7 of our 21 signs: yes, no, please, thank you, "
+     "where, time, room. Missing: reservation, elevator, towel, breakfast, checkout, password..."),
+    ("ASL Citizen", "license forbids redistribution; non-commercial research use only"),
+    ("WLASL", "videos scraped from third-party sites, many dead links, unclear license"),
+]
+y = 600
+for title, body in checked:
+    h = 92 if len(body) > 110 else 70
+    y -= h
+    rect(LX, y, LW, h - 10, GREY_BG, LINE, 1, 8)
+    text(LX + 16, y + h - 32, title, 12, True, NAVY)
+    wrapped(LX + 16, y + h - 50, body, LW - 32, 10.5, False, INK, 13.5)
+    y -= 6
+
+# right: what we built instead
+RX = LX + LW + 40
+RW = W - M - RX
+text(RX, 620, "WHAT WE BUILT INSTEAD", 11.5, True, GREEN)
+stats = [
+    ("21,736", "parameters: runs in milliseconds on the laptop CPU"),
+    ("1,320", "takes recorded by 5 team members (22 classes × 12)"),
+    ("≈ 90 %", "sentences right for a signer never seen"),
+    ("0", "video frames leave the laptop: only skeleton points, processed locally"),
+]
+y = 600
+for big, label in stats:
+    y -= 92
+    rect(RX, y, RW, 82, GREY_BG, LINE, 1, 10)
+    text(RX + 22, y + 30, big, 30, True, GREEN)
+    nx = RX + 22 + 150   # labels aligned in one column, on the number's baseline
+    wrapped(nx, y + 32, label, RX + RW - nx - 18, 12, False, INK, 15)
+    y -= 6
+
+# bottom: open source we use + next step
+rect(M, 40, W - 2 * M, 120, ORANGE_BG, ORANGE, 2, 10)
+text(M + 20, 132, "Open source we do use", 13, True, ORANGE)
+wrapped(M + 20, 112, "MediaPipe (Google) for hand, body and face tracking · PyTorch for training · Three.js for the "
+        "avatar · Next.js for the app · Whisper speech model (via the OpenAI API)", W - 2 * M - 40, 12, False, INK, 15)
+text(M + 20, 66, "Next step:", 12, True, ORANGE)
+wrapped(M + 20 + stringwidth("Next step:", 12, True) + 8, 66, "when an open continuous ASL-to-English model is "
+        "available, it can replace our classifier; tracking, sentence decoding, avatar and voice stay the same.",
+        W - 2 * M - 60 - stringwidth("Next step:", 12, True), 12, False, INK, 15)
 
 
 # ---- render ---------------------------------------------------------------------------------------------------------
