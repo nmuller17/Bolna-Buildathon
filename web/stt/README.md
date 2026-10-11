@@ -40,6 +40,8 @@ export LOCAL_STT_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(
 
 The 20 receptionist sentences, rendered with macOS `say` at 16 kHz and sent whole: decode median 1539 ms, worst 1736 ms. Growing prefixes every 0.7 s (the interim pattern, 27 requests): median 1531 ms, worst 1785 ms. Decode time hardly depends on the utterance length (the encoder pads to 30 s), so the first words reach the guest about 1.5 to 2.3 s after speech starts, and the final line about 2 to 3.5 s after speech ends. 19 of 20 transcripts matched word for word; the others differed in punctuation or spacing only ("keycard", "10 p.m."). These are synthetic voices in a quiet room, not a lobby: accuracy with real staff voices and lobby noise has not been measured.
 
+End to end through the real capture path (Playwright Chromium, fake microphone playing six of the sentences, production build, staff page AudioWorklet and energy gate, `/api/staff/stt`, the guest page), two runs: first words on the guest screen 3.0 to 3.2 s (median) after the voice started, worst 4.4 s; the final line 2.7 to 2.9 s (median) after the voice stopped, worst 3.9 s; local decode median 1.7 to 1.9 s per request. All 6 sentences arrived as final captions in both runs. This is slower than the 1 to 2 s target in the features plan: each request costs about 1.5 to 1.9 s of decoding on this CPU whatever its length, the first interim is sent 0.7 s after the voice starts, and a final waits for 0.6 s of silence and for any request still running. Say "captions appear a few seconds after you speak", not "instant".
+
 ## Tests
 
 ```bash
