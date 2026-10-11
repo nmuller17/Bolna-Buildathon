@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from recognition import framing, mediapipe_adapter as mpa
-from recognition.framing import CENTER, HANDS_OUT, MOVE_CAMERA_DOWN, NO_PERSON, OK, STEP_BACK
+from recognition.framing import CENTER, COME_CLOSER, HANDS_OUT, MOVE_CAMERA_DOWN, NO_PERSON, OK, STEP_BACK
 
 ASPECT = 16 / 9
 
@@ -46,6 +46,22 @@ def test_too_close_is_step_back():
 
 def test_head_cut_is_step_back():
     assert framing.check(result(body(dy=-0.25)), ASPECT) == STEP_BACK
+
+
+def test_face_cut_above_the_nose_is_step_back():
+    p = body(dy=-0.12)                   # nose inside the picture, eyes and forehead above it
+    assert p[0, 1] > framing.MARGIN and framing.check(result(p), ASPECT) == STEP_BACK
+    assert framing.check(result(p), ASPECT, waist="none") == STEP_BACK
+    assert framing.check(result(body(dy=-0.05)), ASPECT) == OK      # headroom left: still OK
+
+
+def test_small_person_is_come_closer():
+    assert framing.check(result(body(scale=0.5)), ASPECT) == COME_CLOSER    # shoulders 0.107 of the height
+    assert framing.check(result(body(scale=0.6)), ASPECT) == OK
+    assert framing.check(result(body(scale=0.5)), ASPECT, waist="none") == COME_CLOSER
+    assert framing.check(result(body(scale=1.1)), 9 / 16) == OK               # portrait: the shorter side counts
+    assert framing.check(result(body(scale=0.9)), 9 / 16) == COME_CLOSER
+    assert COME_CLOSER in framing.GUIDANCE
 
 
 def test_hips_below_the_picture_with_headroom_is_move_camera_down():
@@ -125,3 +141,14 @@ def test_real_image_ok_and_crops_not_ok():
     assert status(rgb) == OK
     assert status(rgb[: int(0.45 * h)]) != OK                    # cut at chest height: no waist
     assert status(rgb[int(0.25 * h):]) != OK                     # head cut off
+    full = mpa.detect_image(np.ascontiguousarray(rgb), REAL_TASK).pose_landmarks
+    full = full[0] if isinstance(full[0], list) else full
+    nose_px = full[0].y * h
+    sw_px = (((full[11].x - full[12].x) * w) ** 2 + ((full[11].y - full[12].y) * h) ** 2) ** 0.5
+    assert status(rgb[int(nose_px - 0.1 * sw_px):]) == STEP_BACK     # cut just above the nose: eyes out
+    s = min(1.0, 0.095 * 720 / sw_px)                                # shoulders about 0.095 of a 720p frame
+    small = cv2.resize(rgb, (int(w * s), int(h * s)))
+    canvas = np.full((720, 1280, 3), 128, np.uint8)
+    y, x = (720 - small.shape[0]) // 2, (1280 - small.shape[1]) // 2
+    canvas[y:y + small.shape[0], x:x + small.shape[1]] = small
+    assert status(canvas) == COME_CLOSER

@@ -16,7 +16,10 @@ OK; it is then cleaned with capture.clean.clean(frames, capture times in ms), ex
 capture.py cleans a training take, and Recognizer.predict gives a "sign" event at once. The end of an utterance
 gives an "utterance" event whose needs_repeat is recognizer.needs_repeat (the app's 0.6 / NONE
 rule); a sign rejected for framing stands in it as {"label": "NONE", "conf": 0.0}, so the
-utterance always asks for a repeat. A framing status held for FRAMING_HOLD_SEC gives a
+utterance always asks for a repeat. An utterance that reaches MAX_UTTERANCE_SIGNS signs is
+ended at once (the app accepts at most 8 per POST); the next signs start a new one. NO_PERSON
+within FAR_MEMORY_SEC of a COME_CLOSER frame is reported as COME_CLOSER (a person too far
+away for MediaPipe is still standing there). A framing status held for FRAMING_HOLD_SEC gives a
 "framing" event when it changes. status_event() gives a "status" event at most once per
 STATUS_EVERY_SEC.
 
@@ -39,6 +42,8 @@ from recognition.segmenter import CLOSE_SEC, UTTERANCE_SEC, Segmenter
 CLEAN_FPS = 30              # capture.clean.FPS
 CONTEXT_BEFORE_SEC = 0.5    # a 2 s take around a ~1 s sign leaves about this much hand-visible lead-in
 FRAMING_HOLD_SEC = 0.5
+FAR_MEMORY_SEC = 3.0
+MAX_UTTERANCE_SIGNS = 8     # web/lib/app/types.ts LIMITS.maxSigns
 STATUS_EVERY_SEC = 1.0
 FPS_WINDOW_SEC = 2.0
 TIMING_WINDOW = 300
@@ -108,6 +113,7 @@ class SignStream:
         self._hist = deque(maxlen=MAX_FRAMES + 120)   # (index, frame, t, status) of recent frames
         self._n = 0
         self._last_end = -1             # history index of the last frame given to a sign
+        self._far_t = None              # capture time of the last COME_CLOSER frame
 
     def out(self, t):
         return round(t + self.offset, 3)
@@ -124,7 +130,7 @@ class SignStream:
 
     def push(self, result, t):
         """One raw MediaPipe result captured at t -> list of events."""
-        self.status = framing.check(result, self.aspect, self.waist)
+        self.status = self._far(framing.check(result, self.aspect, self.waist), t)
         self.frame = self.adapter(result)
         self._times.append(t)
         while self._times and t - self._times[0] > FPS_WINDOW_SEC:
@@ -180,6 +186,15 @@ class SignStream:
         _, clean = mpa.capture_modules()
         return clean.clean(list(frames), [x * 1000 for x in times])[:MAX_FRAMES]
 
+    def _far(self, status, t):
+        if status == framing.COME_CLOSER:
+            self._far_t = t
+        elif status != framing.NO_PERSON:
+            self._far_t = None
+        elif self._far_t is not None and t - self._far_t <= FAR_MEMORY_SEC:
+            return framing.COME_CLOSER
+        return status
+
     def _framing(self, status, t):
         held, since = self._held
         if status != held:
@@ -197,7 +212,7 @@ class SignStream:
             self.seq += 1
             self.signs.append((self.seq, {"label": NONE, "conf": 0.0}))
             return [{"type": "framing", "status": framing.dominant(statuses), "since": self.out(ev.t_start),
-                     "rejected_seq": self.seq}]
+                     "rejected_seq": self.seq}] + self._full()
         frames = self.clean(frames, times)
         if not frames or self.rec is None:
             return []
@@ -213,7 +228,11 @@ class SignStream:
         self.seq += 1
         self.signs.append((self.seq, dict(top[0])))
         return [{"type": "sign", "seq": self.seq, "top": top, "t_sign_start": self.out(ev.t_start),
-                 "t_sign_end": self.out(ev.t_end), "t_closed": self.out(t_closed), "t_predicted": self.out(t_pred)}]
+                 "t_sign_end": self.out(ev.t_end), "t_closed": self.out(t_closed),
+                 "t_predicted": self.out(t_pred)}] + self._full()
+
+    def _full(self):
+        return self._utterance() if len(self.signs) >= MAX_UTTERANCE_SIGNS else []
 
     def _utterance(self):
         if not self.signs:
