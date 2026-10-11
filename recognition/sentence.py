@@ -24,8 +24,8 @@ LENGTH_WEIGHT = 0.0    # duration prior (per squared sign of difference); did no
 
 
 def window_probs(frames, predictor, win=WIN, step=STEP):
-    """Cleaned, normalized frames of a whole sentence -> list of probability vectors (NONE removed)."""
-    frames = validate(frames)
+    """Cleaned, normalized frames of a whole sentence -> list of probability vectors (NONE removed).
+    Each window is validated on its own: a long sentence may exceed the server's per-request MAX_FRAMES."""
     if len(frames) <= win:
         starts = [0]
     else:
@@ -34,7 +34,7 @@ def window_probs(frames, predictor, win=WIN, step=STEP):
             starts.append(len(frames) - win)
     out = []
     for s in starts:
-        p = predictor.probs(features.to_seq(frames[s:s + win]))
+        p = predictor.probs(features.to_seq(validate(frames[s:s + win])))
         out.append(without_none(p))
     return out
 

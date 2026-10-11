@@ -50,7 +50,7 @@ export const STAFF_INTENTS: IntentRule[] = [
   rule("call_taxi", ["TAXI", "ME", "CALL"], ["taxi", "cab", "uber", "car"]),
   rule("wait_please", ["WAIT", "PLEASE"], ["wait", "one moment", "hold on"]),
   rule("repeat_please", ["BROWS-UP", "SORRY", "AGAIN", "PLEASE"], ["repeat", "again", "say that again", "sorry"]),
-  rule("anything_else", ["BROWS-UP", "OTHER", "QUESTION"], ["anything else", "other question", "help you"]),
+  rule("anything_else", ["BROWS-UP", "OTHER", "QUESTION"], ["anything else", "other question"]),
   rule("enjoy_stay", ["ENJOY", "YOUR", "STAY"], ["enjoy", "good night", "have a nice"]),
 ];
 
@@ -67,7 +67,7 @@ export function mapStaffTextToIntent(text: string, known?: Set<string>): Classif
   let best: Classification | null = null;
   for (const intent of STAFF_INTENTS) {
     const hits = intent.patterns.filter((pattern) => pattern.test(normalized)).length;
-    if (!hits) continue;
+    if (!hits || !closeTo(intent.id, normalized)) continue;
 
     const confidence = Math.min(0.95, 0.62 + hits * 0.13);
     const gloss = applySlots(intent.id, intent.gloss, normalized);
@@ -117,17 +117,50 @@ const STOP_WORDS = new Set([
   "it", "its", "s", "re", "ll", "d", "m", "pm", "will", "can", "do", "does", "would", "could", "this", "that",
 ]);
 
-/** Gloss for a sentence that matches no intent: known signs as is, numbers as number signs,
- *  other words fingerspelled. `known` = keys of signs/index.json. */
+// Multi-word expressions with a sign of their own, joined before the sentence is split into words.
+const PHRASES: [RegExp, string][] = [
+  [/\bthank you\b/g, "thank-you"],
+  [/\bhow many\b/g, "how-many"],
+  [/\bcheck ?out\b/g, "leave"],
+  [/\bwi[- ]?fi\b/g, "wifi"],
+];
+
+// Words whose sign has another name in our vocabulary (docs/vocabulary.md), or is a fixed spelling.
+const SYNONYMS: Record<string, string[]> = {
+  i: ["ME"], // the pronoun: "I" is the letter sign
+  hi: ["HELLO"],
+  thanks: ["THANK-YOU"],
+  wifi: ["FS:WIFI"],
+  password: ["PRIVATE", "WORD"],
+  id: ["FS:ID"],
+  passport: ["FS:ID"],
+  lift: ["ELEVATOR"],
+  ok: ["FINE"],
+  okay: ["FINE"],
+};
+
+/** A sign of our vocabulary for this word: as is, by synonym, or the singular of a plural ("towels"). */
+function signFor(word: string, known: Set<string>): string[] | null {
+  if (SYNONYMS[word]) return SYNONYMS[word];
+  for (const candidate of [word, word.replace(/ies$/, "y"), word.replace(/e?s$/, "")]) {
+    const upper = candidate.toUpperCase();
+    if (candidate && known.has(upper) && !/^[A-Z]$/.test(upper)) return [upper];
+  }
+  return null;
+}
+
+/** Gloss for a sentence that matches no intent: known signs (with synonyms, phrases and plurals), numbers as
+ *  number signs, other words fingerspelled. `known` = keys of signs/index.json. */
 export function fallbackGlossFromText(text: string, known: Set<string> = new Set()): string[] {
-  return normalize(text)
+  const joined = PHRASES.reduce((t, [pattern, joinedWord]) => t.replace(pattern, joinedWord), normalize(text));
+  return joined
     .split(/\s+/)
     .filter((word) => word && !STOP_WORDS.has(word))
     .flatMap((word) => {
       if (/^\d+$/.test(word)) return numberTokens(word);
-      const upper = word.toUpperCase();
-      if (known.has(upper) && !/^[A-Z]$/.test(upper)) return [upper];
-      if (/^[a-z]+$/.test(word)) return [`FS:${upper}`];
+      const sign = signFor(word, known);
+      if (sign) return sign;
+      if (/^[a-z]+$/.test(word)) return [`FS:${word.toUpperCase()}`];
       return [];
     });
 }
@@ -136,6 +169,49 @@ export function fallbackGlossFromText(text: string, known: Set<string> = new Set
 export function numberTokens(n: string): string[] {
   const value = Number(n);
   return Number.isInteger(value) && value >= 0 && value <= 11 ? [String(value)] : n.split("");
+}
+
+// The receptionist sentence of docs/vocabulary.md section 1 behind each intent. A keyword alone is not enough:
+// "How many towels do you need?" is not "I'll send towels to your room." (closeTo).
+const EXAMPLES: Record<Exclude<StaffIntentId, "unknown">, string> = {
+  welcome: "Welcome! Hello, good morning, good evening.",
+  reservation_question: "Do you have a reservation? A booking? Booked?",
+  name_question: "What's your name, please?",
+  id_please: "Can I see your ID, passport, identification or license, please?",
+  nights_question: "How many nights are you staying?",
+  room_number: "You're in room 412. Your room number is 412.",
+  key_card: "Here is your key card, your room key.",
+  elevator_left: "The elevator, the lift, is on your left.",
+  breakfast_time: "Breakfast is from 7 to 10.",
+  wifi_password: "The Wi-Fi internet password is on your key card.",
+  checkout_time: "Checkout is at 11.",
+  late_checkout: "Late checkout is fine, until 1 PM.",
+  send_towels: "I'll send towels to your room.",
+  parking_downstairs: "Parking, the garage, is downstairs.",
+  restaurant_hours: "The restaurant, dining, is open until 10 PM.",
+  call_taxi: "I'll call a taxi, a cab, an Uber, a car for you.",
+  wait_please: "One moment, please. Wait, hold on.",
+  repeat_please: "Sorry, can you repeat that again? Say that again.",
+  anything_else: "Anything else? Any other question? Is there anything else I can help you with?",
+  enjoy_stay: "Enjoy your stay! Good night, have a nice day.",
+};
+
+const contentWords = (text: string) =>
+  normalize(text)
+    .split(/\s+/)
+    .filter((w) => w && !STOP_WORDS.has(w) && !/^\d+$/.test(w))
+    .map((w) => w.replace(/(?<=..)e?s$/, "")); // plurals: towels -> towel
+
+const EXAMPLE_WORDS = Object.fromEntries(
+  Object.entries(EXAMPLES).map(([id, sentence]) => [id, new Set(contentWords(sentence))]),
+) as Record<Exclude<StaffIntentId, "unknown">, Set<string>>;
+
+/** True when at least a third of the sentence's content words belong to the intent's example sentence. */
+function closeTo(id: Exclude<StaffIntentId, "unknown">, normalized: string): boolean {
+  const words = contentWords(normalized).map((w) => w.replace(/^keycard$/, "card"));
+  if (words.length === 0) return true;
+  const covered = words.filter((w) => EXAMPLE_WORDS[id].has(w)).length;
+  return covered * 3 >= words.length;
 }
 
 function rule(id: Exclude<StaffIntentId, "unknown">, gloss: string[], words: string[]): IntentRule {

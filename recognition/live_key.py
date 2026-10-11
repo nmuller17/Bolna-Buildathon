@@ -396,7 +396,11 @@ def main(argv=None):
                 context = key[2] if isinstance(key, tuple) and len(key) > 2 else None
                 emit({"type": "turn", "phase": "start", "expected": expected})
                 print(f"guest turn (continuous){'  expected: ' + ' | '.join(' '.join(e) for e in expected) if expected else ''}")
-                res = continuous_turn(rec, predictor, emit, expected, context)
+                try:
+                    res = continuous_turn(rec, predictor, emit, expected, context)
+                except Exception as err:  # a failed turn must never stop the recognizer (camera feed, next turns)
+                    print(f"turn failed: {err!r}")
+                    res = None
                 if res:
                     print(f"utterance: windows {' '.join(res['raw'])} -> {' '.join(res['labels'])}  {res['text'] or ''}")
                     emit({"type": "utterance", "raw": res["raw"], "labels": res["labels"], "text": res["text"],
