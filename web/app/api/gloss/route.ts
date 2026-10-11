@@ -4,10 +4,11 @@ import { fallbackGlossFromText, mapStaffTextToGloss } from "@/lib/voice/intents"
 
 export const runtime = "nodejs";
 
-// Keys of signs/index.json (served through the web/public/signs symlink): the signs the avatar can play.
+// Keys of signs/index.json (served by web/app/signs/[...path]/route.ts): the signs the avatar can play.
 let knownSigns: Promise<Set<string>> | null = null;
 function loadKnownSigns(): Promise<Set<string>> {
-  knownSigns ??= readFile(path.join(process.cwd(), "public", "signs", "index.json"), "utf8")
+  // Read from <repo>/signs: the web/public/signs symlink was replaced by the /signs route (security PR).
+  knownSigns ??= readFile(path.join(process.cwd(), "..", "signs", "index.json"), "utf8")
     .then((json) => new Set(Object.keys(JSON.parse(json) as Record<string, string>)))
     .catch(() => {
       knownSigns = null;
