@@ -919,6 +919,24 @@ Builder A owns the server and logic; builder B owns the screens. Both work again
 
 Builder A has about 6 hours and builder B about 6.5 hours, so the wall time with both busy is about 7 hours (steps 0, 1 and 2 run in parallel; 3 and 5 in parallel; 4 and 6 in parallel). That is still a long night. If time runs short, cut inside Tier 0 in this order: "Show again" and the "New" marker; the 4-second merge (say "sign the whole question in one go" instead); the latency panel's median column; "What can I sign?"; the evidence panel's timestamps (keep the light and score); the repair row's checklist link (keep the staff banner). **Never cut:** confirm before speaking, the consent gate, the app's own gate with proposal protection, Help, End guest with the idle wipe and the cap, the staff capability with separate Mode 0 origins, quick replies, phrases (the declared fallback), the simulator, the honest wording, and the privacy and benchmark panels' honesty (better a missing panel than a wrong number).
 
+### 12.1a Builder A status on talha/app-shell (2026-10-11)
+
+The Tier 0 server is built on the local branch `talha/app-shell` (never pushed by this workflow). Logic sits in pure modules with tests; each `route.ts` is a one-line wrapper.
+
+| Piece | Where | Notes |
+|---|---|---|
+| Store, bus and one sweeper on `globalThis`; config from the environment | `web/lib/app/runtime.ts` | `SB_PROFILE`, `MODE0_GUEST_INPUT`, `IDLE_WIPE_MS`, `SESSION_CAP_MS`, `SB_SIMULATE`, `VLM_FALLBACK`, `BRIDGE_KEY`, `VRI_*`, `EMERGENCY_NOTE`, `BENCHMARK_CLEARED_FILE` |
+| Staff capability | `web/lib/app/staffcap.ts`, `web/server.mjs` | One-time `#k=` link printed at start and on `kill -USR2 <pid>`; cookie `sb_staff` (HttpOnly, SameSite=Strict, Path=/; no `__Host-` prefix, because that needs Secure on plain http); a new claim replaces the old cookie |
+| Routes | `web/lib/app/routes.ts` | `/api/staff/claim`, `/api/staff/action`, `/api/staff/benchmark`, `/api/events?role=staff\|guest`, `/api/guest/join`, `/api/guest/action`, `/api/guest/leave`, `/api/guest/signs` (POST and GET), `/api/dev/simulate` |
+| Host rules | `routes.ts`, `guard.ts` | Staff routes and the P1 and Nath routes: Host `127.0.0.1:PORT`, staff cookie. Mode 0 guest routes: Host `localhost:PORT`, cookie `sb_g`. Bridge: loopback plus `X-Bridge-Key`; any request with an `Origin` is refused, so a browser page cannot post events |
+| Help first | `routes.ts` `guestAction` | `emergency` is dispatched before the content-type, origin, nonce, limiter and state checks; it still needs the SameSite=Strict guest cookie |
+| Session safety lines (Tier 0 subset) | `store.ts` | Reused code (second device), reused nonce and a confirm for a proposal that is gone (repeated request), per-kind rate (unusual rate), wrong bridge key and duplicate seq (recognizer event), and a guest cookie from a different browser (device changed: refused except Help; a speed bump, plan 10.1) |
+| TTS | `web/app/api/tts/route.ts` | Accepts `{ id }` (1 to 20, not NAME) next to `{ text }`; only a fixed table sentence ever goes to ElevenLabs; other text goes to local Piper with `PIPER_FALLBACK=1`, else 500 and the staff page uses an on-device voice; real ElevenLabs requests are counted on the privacy panel; vendor bodies and Piper stderr are never logged |
+| Removed | `server.mjs`, `package.json` | `--lan`, `firstLanIPv4`, `dev:lan`, `start:lan` (SRV-2a); `--lan` now exits with an error |
+| Tests | `web/lib/app/routes.test.ts`, `store.test.ts`, `web/security-tests/server.test.mjs` | `npm run test:unit` and `npm run test:security` (loopback only) |
+
+Still open from Tier 0 for builder A: nothing blocking. Tier 1 items (TLS guest listener, QR pairing with check code, nonce CSP, sign bundle) are not started.
+
 ### 12.2 Tier 1, engagement gate G1 (not tonight, on the isolated loaner)
 
 | Step | Builder | Work | Hours |

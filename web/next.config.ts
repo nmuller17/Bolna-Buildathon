@@ -10,15 +10,19 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   // Dev request logging prints full URLs, which would include pairing codes and guest tokens.
   logging: { incomingRequests: false },
-  // The guest device in LAN dev mode; web/server.mjs sets LAN_IP before Next starts.
-  ...(process.env.LAN_IP ? { allowedDevOrigins: [process.env.LAN_IP] } : {}),
+  // Server-sent events (/api/events) must not be buffered by gzip (docs/app-plan.md 10, SSE).
+  compress: false,
   async headers() {
     return [
       { source: "/:path*", headers: asList(securityHeaders(dev, "/")) },
       // Later entries override earlier ones for the same key: no microphone on the guest page.
       { source: "/guest/:path*", headers: asList(securityHeaders(dev, "/guest")) },
       { source: "/guest", headers: asList(securityHeaders(dev, "/guest")) },
-      { source: "/api/:path*", headers: [{ key: "Cache-Control", value: "no-store" }] },
+      // Every app API answer is no-store; /api/events sets its own "no-store, no-transform" (SSE).
+      { source: "/api/:path((?!events$).*)", headers: [{ key: "Cache-Control", value: "no-store" }] },
+      // SRV-8a: the two screens are never cached (they render per request and show a conversation).
+      { source: "/guest", headers: [{ key: "Cache-Control", value: "no-store" }] },
+      { source: "/staff", headers: [{ key: "Cache-Control", value: "no-store" }] },
     ];
   },
 };

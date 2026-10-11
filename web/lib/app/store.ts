@@ -197,6 +197,9 @@ type Session = {
   heartbeatWarned: boolean;
   device: StaffStatus["guest"]["device"];
   failedJoins: number;
+  /** SHA-256 (hex) of the guest window's User-Agent at join; a different one is a "device changed" signal. */
+  uaHash: string | null;
+  deviceChangedWarned: boolean;
 };
 
 /**
@@ -537,8 +540,8 @@ export class Store {
   }
 
   /** A guest stream opened. Null when the cookie does not belong to the current session (route answers 401). */
-  openGuestStream(token: string | null, send: (chunk: string) => boolean, close: () => void): number | null {
-    const s = this.guestSessionFor(token);
+  openGuestStream(token: string | null, send: (chunk: string) => boolean, close: () => void, ua?: string | null): number | null {
+    const s = this.guestSessionFor(token, ua);
     if (!s) return null;
     const id = this.bus.add({ role: "guest", sessionId: s.id, send, close, openedAt: this.now() });
     for (const msg of [this.hello(), this.guestSnapshot(s)] as GuestEvent[]) {
@@ -560,10 +563,34 @@ export class Store {
   }
 
   /** The session whose guest token hashes to the cookie value, or null. Constant-time compare. */
-  guestSessionFor(token: string | null): Session | null {
+  sessionForToken(token: string | null): Session | null {
     const s = this.session;
     if (!s || !s.tokenHash || !token || token.length > 200) return null;
     return sameHash(sha256(token), s.tokenHash) ? s : null;
+  }
+
+  /**
+   * The session for a guest cookie, checked against the browser it was issued to. `ua` is the SHA-256
+   * of the User-Agent (routes always pass it; unit tests may omit it). A valid cookie from a different
+   * browser is refused and raises "device changed" once on the staff screen (a hijacked cookie; Tier 1
+   * adds the address binding and the new check code). Binding to the User-Agent is a speed bump, not a
+   * protection (plan 10.1).
+   */
+  guestSessionFor(token: string | null, ua?: string | null): Session | null {
+    const s = this.sessionForToken(token);
+    if (!s) return null;
+    if (ua !== undefined && ua !== null && s.uaHash !== null && ua !== s.uaHash) {
+      this.noteDeviceChanged(s);
+      return null;
+    }
+    return s;
+  }
+
+  noteDeviceChanged(s: Session): void {
+    if (s.deviceChangedWarned) return;
+    s.deviceChangedWarned = true;
+    this.systemLine("A request with this guest's cookie came from a different browser; it was refused");
+    this.raiseWarning("device_changed", "A request with the guest window's cookie came from a different browser. Check the guest window; if in doubt, press End guest.");
   }
 
   /* ---------------- lifecycle ---------------- */
@@ -609,6 +636,8 @@ export class Store {
       heartbeatWarned: false,
       device: null,
       failedJoins: 0,
+      uaHash: null,
+      deviceChangedWarned: false,
     };
   }
 
@@ -645,6 +674,10 @@ export class Store {
     s.held = null;
     s.lastCaption = null;
     s.tokenHash = null;
+    s.uaHash = null;
+    s.device = null;
+    s.emergency = null;
+    s.checklist = initChecklist();
     this.session = null;
     this.lastWipe = receipt;
     this.thisGuest = emptyPrivacy(this.config.vendorKeysConfigured);
@@ -686,7 +719,7 @@ export class Store {
   }
 
   /** POST /api/guest/join on the loopback listener with Host localhost (Mode 0): confirmed at once. */
-  join(code: unknown, address: string): Result {
+  join(code: unknown, address: string, ua: string | null = null): Result {
     if (typeof code !== "string" || !/^[A-Za-z0-9_-]{16,64}$/.test(code)) return fail(400, "bad_request", "This link is not complete. Ask the front desk to connect this screen.");
     const s = this.session;
     const now = this.now();
@@ -697,6 +730,8 @@ export class Store {
       s.burnedCodes.push(...s.pairCodes.map((c) => c.hash));
       s.pairCodes = [];
       s.tokenHash = sha256(token);
+      s.uaHash = ua;
+      s.deviceChangedWarned = false;
       s.state = "ACTIVE";
       s.activeSince = now;
       s.lastActivityAt = now;
@@ -730,8 +765,8 @@ export class Store {
   }
 
   /** POST /api/guest/leave: "I'm finished" (or the page after session_end). Always expires the cookie. */
-  leave(token: string | null): Result {
-    const s = this.guestSessionFor(token);
+  leave(token: string | null, ua?: string | null): Result {
+    const s = this.guestSessionFor(token, ua);
     if (s) this.wipe("guest_left");
     return { ...ok(), guestCookie: null };
   }
@@ -955,9 +990,12 @@ export class Store {
   /* ---------------- guest actions ---------------- */
 
   /** Help: before any nonce, limiter or state check; never refused (C1-15, GST-2a). Merged with a count. */
-  emergency(token: string | null): Result {
-    const s = this.guestSessionFor(token);
+  emergency(token: string | null, ua?: string | null): Result {
+    // Help is accepted even from a changed browser (plan 4.3 step 7: Help works while paused); the
+    // change is still reported to staff.
+    const s = this.sessionForToken(token);
     if (!s) return fail(401, "unauthorized", "This screen is not connected. Wave or knock at the desk.");
+    if (ua !== undefined && ua !== null && s.uaHash !== null && ua !== s.uaHash) this.noteDeviceChanged(s);
     const now = this.now();
     if (s.emergency) s.emergency.count++;
     else s.emergency = { count: 1, since: now };
@@ -967,9 +1005,9 @@ export class Store {
     return ok();
   }
 
-  guestAction(token: string | null, a: GuestAction): Result {
-    if (a.type === "emergency") return this.emergency(token);
-    const s = this.guestSessionFor(token);
+  guestAction(token: string | null, a: GuestAction, ua?: string | null): Result {
+    if (a.type === "emergency") return this.emergency(token, ua);
+    const s = this.guestSessionFor(token, ua);
     if (!s) return fail(401, "unauthorized", "This screen is not connected. Ask the front desk to connect it.");
     const now = this.now();
     // Nonce: catches retries, not a compromised device (C1-21).
@@ -1010,11 +1048,11 @@ export class Store {
       case "stop_signing":
         return this.setMode(s, "choosing");
       case "guest_confirm":
-        return this.confirm(a.proposalId, a.candidateId, a.name, "guest");
+        return this.confirm(a.proposalId, a.candidateId, a.name, "guest", a.voice !== false);
       case "guest_fix":
         return this.fix(a.proposalId, a.action);
       case "guest_phrase":
-        return this.phrase(a.intentId, a.name);
+        return this.phrase(a.intentId, a.name, a.voice !== false);
       case "guest_typed":
         return this.typed(a.text);
       case "guest_reply":
@@ -1052,7 +1090,7 @@ export class Store {
     if (rec.kind === "proposal" && typeof rec.tEnd === "number") {
       recordLatency(this.latency, "utterance_to_proposal_shown", now - rec.tEnd * 1000);
     }
-    this.toStaff({ type: "delivered", eventSeq: seq, roundTripMs: kept ? rt : null });
+    this.toStaff({ type: "delivered", eventSeq: seq, roundTripMs: kept ? rt : null, captionId: rec.captionId ?? null });
     return ok();
   }
 
@@ -1138,9 +1176,11 @@ export class Store {
 
   /* ---------------- proposals and confirm-before-speaking ---------------- */
 
-  planSpeak(needsName: boolean, intentId: GuestIntentId, fixedText: string, testMode: boolean): SpeakPlan {
+  /** `voice` false = the guest's own "Text only" for this sentence (BN-1): shown at the desk, never voiced. */
+  planSpeak(needsName: boolean, intentId: GuestIntentId, fixedText: string, testMode: boolean, voice = true): SpeakPlan {
     const s = this.session as Session;
     if (testMode) return { mode: "none", why: "test_mode" };
+    if (!voice) return { mode: "none", why: "guest_chose_text" };
     if (s.guestMode === "text_only") return { mode: "none", why: "text_only" };
     if (!s.speakAloud) return { mode: "none", why: "read_aloud_off" };
     if (needsName) return { mode: "local_after_tap", tap: "speak_name" };
@@ -1153,15 +1193,27 @@ export class Store {
     return null;
   }
 
+  /**
+   * A confirm or fix for a proposal that is no longer pending and past its grace period (plan 6.6,
+   * "Repeated request"). A proposal the guest already answered is remembered in confirmedAt / closed,
+   * so a double tap is reported as a possible retry, gently.
+   */
+  staleProposal(_s: Session, _proposalId: string): void {
+    this.raiseWarning("repeated_request");
+  }
+
   clearProposal(s: Session, p: Pending): void {
     if (s.pending === p) s.pending = null;
     if (s.previous === p) s.previous = null;
   }
 
-  confirm(proposalId: string, candidateId: string, rawName: string | undefined, by: "guest" | "staff_for_guest"): Result {
+  confirm(proposalId: string, candidateId: string, rawName: string | undefined, by: "guest" | "staff_for_guest", voice = true): Result {
     const s = this.session as Session;
     const p = this.findProposal(s, proposalId);
-    if (!p) return fail(409, "conflict", "This suggestion is no longer waiting. Please sign again or type.");
+    if (!p) {
+      this.staleProposal(s, proposalId);
+      return fail(409, "conflict", "This suggestion is no longer waiting. Please sign again or type.");
+    }
     if (p.proposal.testMode) return fail(409, "conflict", "Test mode: these signs were invented by a test program and will not be spoken.");
     const cand = p.proposal.candidates.find((c) => c.candidateId === candidateId);
     if (!cand || cand.intentId === null) return fail(400, "bad_request", "Unknown choice.");
@@ -1183,11 +1235,12 @@ export class Store {
       by,
       simulated: p.proposal.simulated,
       testMode: p.proposal.testMode,
+      voice,
     });
   }
 
   /** A request picked from the phrase list, already confirmed on the guest screen (GST-10). */
-  phrase(intentId: GuestIntentId, rawName: string | undefined): Result {
+  phrase(intentId: GuestIntentId, rawName: string | undefined, voice = true): Result {
     const s = this.session as Session;
     const g = guestIntent(intentId);
     if (!g) return fail(400, "bad_request", "Unknown request.");
@@ -1197,18 +1250,18 @@ export class Store {
       if (!n.ok) return fail(400, "bad_request", n.message, { field: "name" });
       name = n.value;
     }
-    return this.finishUtterance(s, { proposalId: this.id("ph"), echoProposalId: null, signs: [], intentId, name, source: "phrase", by: "guest", simulated: false, testMode: false });
+    return this.finishUtterance(s, { proposalId: this.id("ph"), echoProposalId: null, signs: [], intentId, name, source: "phrase", by: "guest", simulated: false, testMode: false, voice });
   }
 
   finishUtterance(
     s: Session,
-    u: { proposalId: string; echoProposalId: string | null; signs: StaffSignView[]; intentId: GuestIntentId; name: string | null; source: CandidateSource; by: "guest" | "staff_for_guest"; simulated: boolean; testMode: boolean },
+    u: { proposalId: string; echoProposalId: string | null; signs: StaffSignView[]; intentId: GuestIntentId; name: string | null; source: CandidateSource; by: "guest" | "staff_for_guest"; simulated: boolean; testMode: boolean; voice?: boolean },
   ): Result {
     const g = guestIntent(u.intentId);
     if (!g) return fail(400, "bad_request", "Unknown request.");
     const at = this.now();
     const text = guestSentence(g, u.name);
-    const speak = this.planSpeak(g.needsName, g.id, g.text, u.testMode);
+    const speak = this.planSpeak(g.needsName, g.id, g.text, u.testMode, u.voice !== false);
     this.pushLog(s, {
       kind: "guest", seq: this.nextLogSeq(s), at, proposalId: u.proposalId, text, signs: u.signs, intentId: g.id, source: u.source,
       speak, spokenAt: null, confirmedBy: u.by, simulated: u.simulated,
@@ -1235,7 +1288,10 @@ export class Store {
   fix(proposalId: string, action: "sign_again" | "type" | "interpreter" | "not_this"): Result {
     const s = this.session as Session;
     const p = this.findProposal(s, proposalId);
-    if (!p) return fail(409, "conflict", "This suggestion is no longer waiting.");
+    if (!p) {
+      this.staleProposal(s, proposalId);
+      return fail(409, "conflict", "This suggestion is no longer waiting.");
+    }
     this.clearProposal(s, p);
     s.counters.fixed++;
     this.toStaff({ type: "guest_fix", proposalId, action });

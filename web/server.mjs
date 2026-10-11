@@ -1,65 +1,62 @@
-// SignBridge custom server (red-team fixes B1, B3, B4, B7, B8; docs/app-plan.md section 9).
+// SignBridge custom server (red-team fixes B1, B3, B4, B7, B8; docs/app-plan.md sections 2.2, 9.6, 10).
 //
-//   npm run dev        -> 127.0.0.1:3000 only (the front-desk laptop)
-//   npm run dev:lan    -> also LAN_IP:3000, for the guest device (use an isolated network)
-//   (flags: --lan = GUEST_LAN=1, --production = NODE_ENV=production; cross-platform, no shell env syntax)
-//   npm run build && npm run start[:lan]   -> the same in production mode (use this for the demo)
+//   npm run dev        -> 127.0.0.1:PORT only (development)
+//   npm run build && npm run start   -> the same in production mode (use this for the demo)
+//   (flag: --production = NODE_ENV=production; cross-platform, no shell env syntax)
+//
+// There is NO plain-HTTP LAN listener any more (decision record D3, SRV-2a): the --lan flag, the
+// automatic LAN address choice and the dev:lan / start:lan scripts are gone. The Mode 0 guest window is a
+// second browser window on this laptop at http://localhost:PORT/guest; the staff window is at
+// http://127.0.0.1:PORT/staff (two cookie sites, docs/app-plan.md 9.6). The guest HTTPS listener for
+// Mode C is Tier 1 (gate G1) and is not built here.
 //
 // Never run plain `next dev` / `next start` for the app: they bind every interface and skip the
 // checks below (loopback-only routes then fail closed with 403).
 //
 // Before Next sees a request this server:
 //   1. deletes every client-sent x-sb-* header;
-//   2. answers 403 unless the Host header is localhost/127.0.0.1/[::1]:PORT (or LAN_IP:PORT in LAN mode),
-//      which blocks DNS rebinding;
-//   3. decides loopback from the TCP socket (never from X-Forwarded-For) and, for a non-loopback
-//      client, allows only the guest paths in access.ts lanPathAllowed (default deny);
+//   2. answers 403 unless the Host header is localhost/127.0.0.1/[::1]:PORT, which blocks DNS rebinding;
+//   3. decides loopback from the TCP socket (never from X-Forwarded-For);
 //   4. answers 413 when Content-Length exceeds 8 KB (5 MB for /api/transcribe);
 //   5. passes x-sb-loopback and x-sb-proof (a per-start random secret) to the route guard.
 // It never logs URLs, headers or bodies.
 //
-// Environment: PORT (3000), GUEST_LAN=1 (LAN mode), LAN_IP (default: first non-internal IPv4),
-// NODE_ENV=production for `start`.
+// Staff capability (SRV-10, D6): at start it prints a one-time URL http://127.0.0.1:PORT/staff#k=<k> to
+// this terminal (never project it). `kill -USR2 <pid>` prints a new one; claiming it replaces the old
+// staff cookie and leaves the guest session alone.
+//
+// Environment: PORT (3000), NODE_ENV=production for `start`. App settings (SB_PROFILE, MODE0_GUEST_INPUT,
+// BRIDGE_KEY, SB_SIMULATE, ...) are read by web/lib/app/runtime.ts.
 import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createServer } from "node:http";
-import os from "node:os";
 import next from "next";
-import {
-  allowedHostsFor,
-  BODY_CAP_AUDIO,
-  BODY_CAP_DEFAULT,
-  hostAllowed,
-  isLoopbackAddress,
-  lanPathAllowed,
-  securityHeaders,
-} from "./lib/app/access.ts";
+import { allowedHostsFor, BODY_CAP_AUDIO, BODY_CAP_DEFAULT, hostAllowed, isLoopbackAddress, securityHeaders } from "./lib/app/access.ts";
+import { issueCapability } from "./lib/app/staffcap.ts";
+import { recordVendorTap } from "./lib/app/taps.ts";
 
+if (process.argv.includes("--lan")) {
+  console.error("The plain-HTTP --lan mode was removed (decision record D3). Use Mode 0 (guest window on localhost).");
+  process.exit(1);
+}
 if (process.argv.includes("--production")) process.env.NODE_ENV = "production";
-if (process.argv.includes("--lan")) process.env.GUEST_LAN = "1";
 process.env.NEXT_TELEMETRY_DISABLED = "1";
 const dev = process.env.NODE_ENV !== "production";
 const port = Number.parseInt(process.env.PORT || "3000", 10);
-const lan = process.env.GUEST_LAN === "1";
-
-function firstLanIPv4() {
-  for (const addrs of Object.values(os.networkInterfaces())) {
-    for (const a of addrs ?? []) if (a.family === "IPv4" && !a.internal) return a.address;
-  }
-  return null;
-}
-
-const lanIp = lan ? process.env.LAN_IP || firstLanIPv4() : null;
-if (lan && !lanIp) {
-  console.error("GUEST_LAN=1 but no LAN address found; set LAN_IP");
-  process.exit(1);
-}
+for (const k of ["GUEST_LAN", "LAN_IP"]) delete process.env[k];
 
 // Set before next() is created so next.config.ts and the route guard see them.
 process.env.SB_PROOF = randomBytes(32).toString("base64url");
-const allowedHosts = allowedHostsFor(port, lanIp);
+const allowedHosts = allowedHostsFor(port, null);
 process.env.SB_ALLOWED_HOSTS = allowedHosts.join(",");
-if (lanIp) process.env.LAN_IP = lanIp;
+process.env.SB_STAFF_HOST = `127.0.0.1:${port}`;
+process.env.PORT = String(port);
+
+function printStaffLink(why) {
+  const k = issueCapability();
+  console.log(`> ${why}: open this once in Chrome on this laptop (do not project this terminal):`);
+  console.log(`>   http://127.0.0.1:${port}/staff#k=${k}`);
+}
 
 function deny(res, status, error) {
   const body = JSON.stringify({ error });
@@ -82,8 +79,7 @@ function stripSbHeaders(req) {
 /** Returns [status, error] when the request must be refused, or null. Exported logic lives in access.ts. */
 function check(req) {
   if (!hostAllowed(req.headers.host, allowedHosts)) return [403, "host not allowed"];
-  const loopback = isLoopbackAddress(req.socket.remoteAddress);
-  if (!loopback && !lanPathAllowed(req.method || "GET", req.url || "/", dev)) return [403, "not available from this device"];
+  if (!isLoopbackAddress(req.socket.remoteAddress)) return [403, "not available from this device"];
   const pathname = (req.url || "/").split("?")[0];
   const cap = pathname === "/api/transcribe" ? BODY_CAP_AUDIO : BODY_CAP_DEFAULT;
   const declared = Number(req.headers["content-length"] ?? "0");
@@ -102,8 +98,16 @@ function onRequest(req, res) {
   stripSbHeaders(req);
   const refused = check(req);
   if (refused) return deny(res, refused[0], refused[1]);
-  req.headers["x-sb-loopback"] = isLoopbackAddress(req.socket.remoteAddress) ? "1" : "0";
+  req.headers["x-sb-loopback"] = "1";
   req.headers["x-sb-proof"] = process.env.SB_PROOF;
+  // Privacy panel (DSH-5): a speech-to-text call reached the vendor only when a key is set and P1's
+  // route answered 200; the audio size is what was sent. Only the byte count is kept.
+  if ((req.url || "").split("?")[0] === "/api/transcribe" && process.env.OPENAI_API_KEY) {
+    const bytes = Number(req.headers["content-length"] ?? "0");
+    res.on("finish", () => {
+      if (res.statusCode === 200) recordVendorTap("/api/transcribe", bytes);
+    });
+  }
   handle(req, res).catch(() => {
     if (!res.headersSent) deny(res, 500, "internal error");
     else res.destroy();
@@ -112,8 +116,7 @@ function onRequest(req, res) {
 
 function onUpgrade(req, socket, head) {
   stripSbHeaders(req);
-  const loopback = isLoopbackAddress(req.socket.remoteAddress);
-  if (!hostAllowed(req.headers.host, allowedHosts) || (!loopback && !lanPathAllowed("GET", req.url || "/", dev))) {
+  if (!hostAllowed(req.headers.host, allowedHosts) || !isLoopbackAddress(req.socket.remoteAddress)) {
     socket.destroy();
     return;
   }
@@ -122,17 +125,13 @@ function onUpgrade(req, socket, head) {
 
 const loopbackServer = createServer(onRequest);
 loopbackServer.on("upgrade", onUpgrade);
+// Event streams stay open; keep idle sockets from piling up without cutting a stream.
+loopbackServer.keepAliveTimeout = 5_000;
 loopbackServer.listen(port, "127.0.0.1", () => {
   console.log(`> SignBridge on http://127.0.0.1:${port} (${dev ? "development" : "production"}), loopback only`);
+  console.log(`> Guest window (Mode 0): opened from the staff screen on http://localhost:${port}/guest`);
+  printStaffLink("Staff link");
 });
 
-if (lanIp) {
-  // A second listener on the LAN address only (not 0.0.0.0), so other interfaces stay closed.
-  const lanServer = createServer(onRequest);
-  lanServer.on("upgrade", onUpgrade);
-  lanServer.listen(port, lanIp, () => {
-    console.warn(
-      `> Guest URL: http://${lanIp}:${port}/guest  (plain HTTP: use an isolated network, never hotel/guest Wi-Fi)`,
-    );
-  });
-}
+// SIGUSR2: a new one-time staff link without a restart (docs/app-plan.md 9.6). The guest session is untouched.
+process.on("SIGUSR2", () => printStaffLink("New staff link (SIGUSR2)"));

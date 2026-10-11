@@ -646,7 +646,7 @@ export const VRI_UNSET_TEXT = "Ask the desk to arrange a sign language interpret
 export type SpeakPlan =
   | { mode: "tts"; intentId: GuestIntentId; fixedText: string }
   | { mode: "local_after_tap"; tap: "speak_name" | "read_aloud" }
-  | { mode: "none"; why: "text_only" | "read_aloud_off" | "test_mode" | "no_local_voice" };
+  | { mode: "none"; why: "text_only" | "read_aloud_off" | "test_mode" | "no_local_voice" | "guest_chose_text" };
 
 /**
  * Top-1 view of a sign: the only recognition detail the guest device receives. No score (C2-4):
@@ -694,13 +694,16 @@ export type ProposalKind = "proposal" | "did_you_mean" | "did_you_mean_help" | "
 export type RepeatReason = "none_sign" | "framing" | "low_confidence" | "no_candidate";
 
 /** Guest repair replies under the latest caption (C2-11). Shown to staff; never spoken unless staff choose. */
-export type GuestReplyKind = "please_repeat" | "dont_understand" | "please_type" | "wait_please";
+export type GuestReplyKind = "please_repeat" | "dont_understand" | "please_type" | "wait_please" | "slower" | "show_on_paper";
 
 export const GUEST_REPLY_TEXT: Readonly<Record<GuestReplyKind, string>> = {
   please_repeat: "Please repeat that.",
   dont_understand: "I don't understand.",
   please_type: "Please type it.",
   wait_please: "Wait, please.",
+  // BN-3 (BIGTECH_TO_PRODUCT.md): two more requests aimed at staff, shown as prompts on the dashboard.
+  slower: "Slower, please.",
+  show_on_paper: "Please show me on paper.",
 };
 
 /* ------------------------------------------------------------------ */
@@ -723,6 +726,21 @@ export const GUEST_NOTICE_EXTRA = [
   "Video from the desk camera stays on the desk laptop. Nothing you send is read aloud until you choose to send it.",
   "The desk sees which signs the camera read, how certain the computer was, and, when the camera program provides one, a stick-figure drawing of your arms and hands (no face) for each sign. The desk also sees when a message has appeared on this screen. All of it is erased when the conversation ends.",
 ] as const;
+
+/**
+ * BN-2 (BIGTECH_TO_PRODUCT.md): honest guest-facing lines, each scoped to SignBridge. Line (c) names
+ * the Help button by its one name (C2-14). Line (d) sits next to "Say it". Remove a line, never reword
+ * it, if its BN-2 check fails.
+ */
+export const GUEST_HONEST_LINES = {
+  camera: "The camera picture stays on this laptop. Only body and hand points are used for recognition, and nothing is sent anywhere for recognition.",
+  keeps: "SignBridge keeps nothing after you finish.",
+  mistakes: "This tool can make mistakes. For anything urgent, press Get staff now or wave, and staff will come to you.",
+  face: "It cannot read facial expressions, so a headshake for 'not' can be missed. Check the sentence before you tap Say it.",
+} as const;
+
+/** BN-5: the guest keeps their own record in this screen's memory only. */
+export const GUEST_SCROLLBACK_HINT = "You may photograph this screen. It is erased when the conversation ends.";
 
 /** Sign choice card (C2-3): no claim that the system understands ASL. */
 export const SIGN_CARD_TEXT =
@@ -1128,7 +1146,13 @@ export type StaffStaffUtterance = {
 };
 
 /** The guest device acknowledged rendering a caption or a proposal. */
-export type StaffDelivered = { type: "delivered"; eventSeq: number; roundTripMs: number | null };
+export type StaffDelivered = {
+  type: "delivered";
+  eventSeq: number;
+  roundTripMs: number | null;
+  /** Builder B addition: the caption the guest device rendered, so the staff log can mark "shown on device". */
+  captionId?: string | null;
+};
 
 export type StaffLiveSign = { type: "live_sign"; sign: StaffSignView; source: SignsSource };
 
@@ -1235,10 +1259,11 @@ export type GuestAction = { n: string } & (
   | { type: "guest_choice"; choice: "sign" | "type" | "interpreter" | "text_only" }
   | { type: "stop_signing" }
   /** Also accepted for the previous proposal within LIMITS.proposalGraceMs after it was replaced (C1-5). */
-  | { type: "guest_confirm"; proposalId: string; candidateId: string; name?: string }
+  /** BN-1: `voice: false` is the guest's "Text only" (shown at the desk, never voiced); omitted or true is "Say it". */
+  | { type: "guest_confirm"; proposalId: string; candidateId: string; name?: string; voice?: boolean }
   | { type: "guest_fix"; proposalId: string; action: GuestFixAction }
   /** A request picked from the phrase list, confirmed on the guest screen first (C2-3). */
-  | { type: "guest_phrase"; intentId: GuestIntentId; name?: string }
+  | { type: "guest_phrase"; intentId: GuestIntentId; name?: string; voice?: boolean }
   | { type: "guest_typed"; text: string }
   /** Repair reply under a caption (C2-11). */
   | { type: "guest_reply"; reply: GuestReplyKind; captionId: string | null }

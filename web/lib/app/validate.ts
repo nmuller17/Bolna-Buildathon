@@ -365,7 +365,7 @@ const isId = (v: unknown): v is string => typeof v === "string" && ID_RE.test(v)
 const isIntentId = (v: unknown): v is GuestIntentId => isInt(v, 1, 20);
 const CHOICES = ["sign", "type", "interpreter", "text_only"] as const;
 const FIXES = ["sign_again", "type", "interpreter", "not_this"] as const;
-const REPLIES = ["please_repeat", "dont_understand", "please_type", "wait_please"] as const;
+const REPLIES = ["please_repeat", "dont_understand", "please_type", "wait_please", "slower", "show_on_paper"] as const;
 const PRESSURE = ["nominal", "fair", "serious", "critical"] as const;
 const inList = <T extends string>(list: readonly T[], v: unknown): v is T => typeof v === "string" && (list as readonly string[]).includes(v);
 
@@ -388,17 +388,26 @@ export function validateGuestAction(raw: unknown): Valid<GuestAction> | Invalid 
     case "heartbeat":
       return exactKeys(raw, ["n", "type"]) ? ok({ n: raw.n, type: t }) : bad(`bad ${t}`);
     case "guest_confirm":
-      if (!exactKeys(raw, ["n", "type", "proposalId", "candidateId"], ["name"]) || !isId(raw.proposalId) || !isId(raw.candidateId)) return bad("bad guest_confirm");
+      if (!exactKeys(raw, ["n", "type", "proposalId", "candidateId"], ["name", "voice"]) || !isId(raw.proposalId) || !isId(raw.candidateId)) return bad("bad guest_confirm");
       if (has(raw, "name") && typeof raw.name !== "string") return bad(NAME_RULE_MESSAGE, "name");
-      return ok({ n: raw.n, type: t, proposalId: raw.proposalId, candidateId: raw.candidateId, ...(typeof raw.name === "string" ? { name: raw.name } : {}) });
+      if (has(raw, "voice") && typeof raw.voice !== "boolean") return bad("bad guest_confirm");
+      return ok({
+        n: raw.n,
+        type: t,
+        proposalId: raw.proposalId,
+        candidateId: raw.candidateId,
+        ...(typeof raw.name === "string" ? { name: raw.name } : {}),
+        ...(typeof raw.voice === "boolean" ? { voice: raw.voice } : {}),
+      });
     case "guest_fix":
       return exactKeys(raw, ["n", "type", "proposalId", "action"]) && isId(raw.proposalId) && inList(FIXES, raw.action)
         ? ok({ n: raw.n, type: t, proposalId: raw.proposalId, action: raw.action })
         : bad("bad guest_fix");
     case "guest_phrase":
-      if (!exactKeys(raw, ["n", "type", "intentId"], ["name"]) || !isIntentId(raw.intentId)) return bad("bad guest_phrase");
+      if (!exactKeys(raw, ["n", "type", "intentId"], ["name", "voice"]) || !isIntentId(raw.intentId)) return bad("bad guest_phrase");
       if (has(raw, "name") && typeof raw.name !== "string") return bad(NAME_RULE_MESSAGE, "name");
-      return ok({ n: raw.n, type: t, intentId: raw.intentId, ...(typeof raw.name === "string" ? { name: raw.name } : {}) });
+      if (has(raw, "voice") && typeof raw.voice !== "boolean") return bad("bad guest_phrase");
+      return ok({ n: raw.n, type: t, intentId: raw.intentId, ...(typeof raw.name === "string" ? { name: raw.name } : {}), ...(typeof raw.voice === "boolean" ? { voice: raw.voice } : {}) });
     case "guest_typed":
       if (!exactKeys(raw, ["n", "type", "text"])) return bad("bad guest_typed");
       if (typeof raw.text !== "string") return bad("Please type a message first", "text");
