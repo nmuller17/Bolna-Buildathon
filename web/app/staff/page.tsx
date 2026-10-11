@@ -100,7 +100,7 @@ export default function StaffPage() {
   );
   const guest = useGuestEvents(onGuestUtterance);
 
-  // Compiles /api/tts and pre-generates the known guest sentences with Piper, so the first one speaks without delay.
+  // Warms /api/tts up (compiled route, ElevenLabs connection), so the first guest sentence speaks without delay.
   useEffect(() => {
     void warmUpVoice();
   }, []);

@@ -75,7 +75,7 @@ export async function speakSigns(signs: Prediction[]): Promise<string> {
   return text;
 }
 
-/** Makes the server pre-generate the known guest sentences with Piper, the offline fallback (~7 s in the background). Call once on page load. */
+/** Warms /api/tts up (route compiled, ElevenLabs connection open) so the first real sentence speaks without delay. Call once on page load. */
 export async function warmUpVoice(): Promise<void> {
   try {
     await postJson("/api/tts", { text: "Yes." }); // any request starts the warm-up
