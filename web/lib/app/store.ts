@@ -279,6 +279,7 @@ const SETTING_TEXT: Record<GuestMode, string> = {
   choosing: "Guest is choosing how to talk",
   sign: "Guest chose to sign",
   type: "Guest chose to type",
+  tap: "Guest chose to tap pictures",
   interpreter: "Guest asked for a human interpreter",
   text_only: "Guest chose text only",
 };
@@ -880,6 +881,10 @@ export class Store {
         case "note_vendor":
           this.noteVendorCall({ destination: a.destination, purpose: "Browser speech recognition used by the receptionist (staff voice only)", route: "staff page", guestData: false, observedBy: "staff_browser" }, 0);
           return ok();
+        default:
+          // docs/features-plan.md: caption_backend, live_caption, retract_caption, set_fact, clear_fact,
+          // resend_facts, send_alert and cancel_alert are typed but not built yet (Builder S).
+          return fail(404, "not_found", "This feature is not built yet.");
       }
     })();
     // Every successful staff action is activity (AS-16), except a report from the staff page itself.
@@ -1201,7 +1206,7 @@ export class Store {
     if (changed) this.sendStatus();
   }
 
-  choose(choice: "sign" | "type" | "interpreter" | "text_only"): Result {
+  choose(choice: "sign" | "type" | "tap" | "interpreter" | "text_only"): Result {
     const s = this.session as Session;
     if (choice === "sign" && !this.signingAvailable) {
       return fail(409, "conflict", "Signing is not available right now. Please type or ask for an interpreter.");

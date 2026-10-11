@@ -582,8 +582,12 @@ export type CaptionSource = "quick_reply" | "voice" | "typed";
 /** How the gloss for a staff sentence was produced. "none" = captions only. */
 export type GlossSource = "fixed_intent" | "p1_gloss" | "p1_local_match" | "none";
 
-/** What the guest chose on the first screen. "type" also offers the 20 requests as phrase buttons (C2-3). */
-export type GuestMode = "choosing" | "sign" | "type" | "interpreter" | "text_only";
+/**
+ * What the guest chose on the first screen. "type" also offers the 20 requests as phrase buttons (C2-3).
+ * "tap" = the picture request board (docs/features-plan.md F2): the same 20 fixed guest intents as large
+ * pictures with two-word labels, through the same confirm step (BN-1).
+ */
+export type GuestMode = "choosing" | "sign" | "type" | "tap" | "interpreter" | "text_only";
 
 /** Staff alert kinds. "more_time" = the guest asked for more time on an idle or cap warning (Tier 1, C2-10). */
 export type AlertKind = "emergency" | "interpreter" | "typed" | "more_time";
@@ -695,7 +699,16 @@ export type ProposalKind = "proposal" | "did_you_mean" | "did_you_mean_help" | "
 export type RepeatReason = "none_sign" | "framing" | "low_confidence" | "no_candidate";
 
 /** Guest repair replies under the latest caption (C2-11). Shown to staff; never spoken unless staff choose. */
-export type GuestReplyKind = "please_repeat" | "dont_understand" | "please_type" | "wait_please" | "slower" | "show_on_paper";
+export type GuestReplyKind =
+  | "please_repeat"
+  | "dont_understand"
+  | "please_type"
+  | "wait_please"
+  | "slower"
+  | "show_on_paper"
+  /** FEATURE_STRATEGY feature 3 (features-plan F5): two more repair requests. */
+  | "say_another_way"
+  | "write_number";
 
 export const GUEST_REPLY_TEXT: Readonly<Record<GuestReplyKind, string>> = {
   please_repeat: "Please repeat that.",
@@ -705,6 +718,8 @@ export const GUEST_REPLY_TEXT: Readonly<Record<GuestReplyKind, string>> = {
   // BN-3 (BIGTECH_TO_PRODUCT.md): two more requests aimed at staff, shown as prompts on the dashboard.
   slower: "Slower, please.",
   show_on_paper: "Please show me on paper.",
+  say_another_way: "Please say it another way.",
+  write_number: "Please write the number.",
 };
 
 /* ------------------------------------------------------------------ */
@@ -917,6 +932,8 @@ export type GuestSessionEnd = {
   reason: SessionEndReason;
   /** A proposal or a confirm in flight was discarded (C2-18). The page adds its own unsent-draft check. */
   pendingLost: boolean;
+  /** features-plan F17: what this conversation used and that it was erased; built from real counters. */
+  receipt?: GuestPrivacyReceipt;
 };
 
 export type GuestEvent =
@@ -938,7 +955,14 @@ export type GuestEvent =
   | GuestWarningCleared
   | GuestSessionPaused
   | GuestSigningAvailable
-  | GuestSessionEnd;
+  | GuestSessionEnd
+  // features-plan.md additions (2026-10-11):
+  | GuestLiveCaption
+  | GuestCaptionBackendEvent
+  | GuestFact
+  | GuestFactCleared
+  | GuestDeskAlert
+  | GuestDeskAlertCleared;
 
 /* ------------------------------------------------------------------ */
 /* Staff panels: privacy, latency, safety, device health, benchmark    */
@@ -1142,6 +1166,10 @@ export type StaffStatus = {
     /** Builder B addition: /api/tts can make audio (ElevenLabs key, or PIPER_FALLBACK=1). Optional for older servers. */
     ttsAvailable?: boolean;
   };
+  /** features-plan F3: live caption backends and which one is live. Optional until Builder S fills it. */
+  captions?: CaptionStatus;
+  /** features-plan F16: anonymous equal-access counts since the server started (memory only). */
+  equalAccess?: EqualAccessCounters;
 };
 
 /** One line of the in-memory conversation log on the staff screen. */
@@ -1222,6 +1250,8 @@ export type StaffGuestUtterance = {
   source: CandidateSource;
   speak: SpeakPlan;
   confirmedBy: "guest" | "staff_for_guest";
+  /** features-plan F2/F6: how a non-recognised sentence was picked (staff label "Tapped on board"). */
+  via?: PhraseVia;
 };
 
 export type StaffGuestFix = { type: "guest_fix"; proposalId: string; action: GuestFixAction };
@@ -1230,7 +1260,8 @@ export type StaffGuestTyped = { type: "guest_typed"; text: string };
 export type StaffGuestReply = { type: "guest_reply"; reply: GuestReplyKind; captionId: string | null };
 /** A neutral log line, never a safety warning (C2-7). */
 export type StaffGuestChoice = { type: "guest_choice"; guestMode: GuestMode; speakAloud: boolean; showAvatar: boolean };
-export type StaffInterpreterRequest = { type: "interpreter_request"; vri: VriInfo };
+/** `context` only when the guest ticked "Share this card with the interpreter" (features-plan F11). */
+export type StaffInterpreterRequest = { type: "interpreter_request"; vri: VriInfo; context?: InterpreterContextCard | null };
 /** Help pressed; `count` merges repeats until staff acknowledge; the banner says "Help pressed N times: go now". */
 export type StaffEmergency = { type: "emergency"; count: number };
 /** Tier 1: the guest asked for more time on an idle or cap warning; banner "Guest needs more time: Keep open". */
@@ -1276,7 +1307,12 @@ export type StaffEvent =
   | StaffSessionPaused
   | StaffVlmProposal
   | StaffSessionEnd
-  | StaffStatusEvent;
+  | StaffStatusEvent
+  // features-plan.md additions (2026-10-11):
+  | StaffLiveCaption
+  | StaffFacts
+  | StaffGuestNumber
+  | StaffDeskAlertState;
 
 export type Role = "guest" | "staff";
 
@@ -1298,7 +1334,7 @@ export type GuestFixAction = "sign_again" | "type" | "interpreter" | "not_this";
  * check (C1-15). Limits are keyed per session and action kind: plan 9.5.
  */
 export type GuestAction = { n: string } & (
-  | { type: "guest_choice"; choice: "sign" | "type" | "interpreter" | "text_only" }
+  | { type: "guest_choice"; choice: "sign" | "type" | "tap" | "interpreter" | "text_only" }
   | { type: "stop_signing" }
   /** live_key.py through the app server: "record" one sign, "undo" the last one, "end" the sentence. */
   | { type: "sign_control"; cmd: SignControlCmd }
@@ -1307,11 +1343,16 @@ export type GuestAction = { n: string } & (
   | { type: "guest_confirm"; proposalId: string; candidateId: string; name?: string; voice?: boolean }
   | { type: "guest_fix"; proposalId: string; action: GuestFixAction }
   /** A request picked from the phrase list, confirmed on the guest screen first (C2-3). */
-  | { type: "guest_phrase"; intentId: GuestIntentId; name?: string; voice?: boolean }
+  | { type: "guest_phrase"; intentId: GuestIntentId; name?: string; voice?: boolean; via?: PhraseVia }
   | { type: "guest_typed"; text: string }
   /** Repair reply under a caption (C2-11). */
   | { type: "guest_reply"; reply: GuestReplyKind; captionId: string | null }
-  | { type: "interpreter_request" }
+  /** features-plan F11: `context` is sent only after the guest ticked the consent box on their own screen. */
+  | { type: "interpreter_request"; context?: InterpreterContextConsent }
+  /** features-plan F7: a number typed on the guest number pad (digits only); shown to staff, never spoken without a staff tap. */
+  | { type: "guest_number"; about: NumberAbout; value: string }
+  /** features-plan F9: the guest saw a desk alert and tapped "OK". */
+  | { type: "ack_alert"; id: string }
   /** Never refused with 429 or 409; accepted before confirmation and while paused. */
   | { type: "emergency" }
   | { type: "prefs"; speakAloud?: boolean; showAvatar?: boolean }
@@ -1355,12 +1396,27 @@ export type StaffAction =
   | { type: "confirm_for_guest"; proposalId: string; candidateId: string }
   | { type: "reject_for_guest"; proposalId: string }
   /** Mode 0 display-only: the receptionist records the guest's choice after the guest points at it. */
-  | { type: "choice_for_guest"; choice: "sign" | "type" | "interpreter" | "text_only" }
+  | { type: "choice_for_guest"; choice: "sign" | "type" | "tap" | "interpreter" | "text_only" }
   | { type: "checklist_seen"; item: CheckinItemKey }
   | { type: "dismiss_warning"; id: string }
   | { type: "device_health"; state: PressureState }
   /** The staff browser used the Web Speech fallback after its disclosure; counted on the privacy panel. */
-  | { type: "note_vendor"; destination: "browser speech service" };
+  | { type: "note_vendor"; destination: "browser speech service" }
+  // features-plan.md additions (2026-10-11):
+  /** Choose the live-caption backend. Cloud backends are refused in the engagement profile (D8). */
+  | { type: "caption_backend"; backend: CaptionBackend }
+  /** Browser speech (Web Speech API) runs in the staff page; its text comes in here. Local STT does not use this. */
+  | { type: "live_caption"; utteranceId: string; text: string; final: boolean; backend: BrowserCaptionBackend }
+  /** Staff withdraw a live caption that was wrong ("Remove from guest screen"). */
+  | { type: "retract_caption"; utteranceId: string }
+  /** Facts typed by staff (never from speech recognition), shown as tiles and on the take-home card. */
+  | { type: "set_fact"; key: FactKey; value: string }
+  | { type: "clear_fact"; key: FactKey }
+  /** Re-sends every fact event after a guest reconnect (the snapshot keeps AS-1: last caption only). */
+  | { type: "resend_facts" }
+  /** Generic visual alert to the guest device, from the fixed code list only. */
+  | { type: "send_alert"; code: DeskAlertCode }
+  | { type: "cancel_alert"; id: string };
 
 /* ------------------------------------------------------------------ */
 /* Responses                                                           */
@@ -1430,3 +1486,447 @@ export type MountAvatar = (container: HTMLElement, options?: { style?: AvatarSty
 export type PlayGloss = (gloss: string[], options?: { onToken?: (index: number) => void }) => Promise<void>;
 /** P2 request (plan 8, Tier 1): lookup.ts preloadSigns(bundle) so the guest listener needs no per-gloss fetch. */
 export type SignBundle = { index: Record<string, string>; files: Record<string, unknown>; padding: string };
+
+/* ================================================================== */
+/* Features plan (docs/features-plan.md, 2026-10-11)                   */
+/* ================================================================== */
+// Shared types for Builder G (guest side) and Builder S (staff and server). Feature ids F1..F17
+// are the rows of docs/features-plan.md section 2. Everything here keeps the existing rules:
+// AS-1 (guest messages carry no scores, keys, counters or other guests), AS-3 (no browser storage
+// on the guest page: every guest preference below lives in page memory only), D8 (the whole app
+// works with no vendor key), BN-1 (nothing is spoken without the guest's tap).
+
+/** Limits for the features-plan additions (kept apart from LIMITS so existing code is untouched). */
+export const FEATURE_LIMITS = {
+  /** Local STT: 16 kHz mono signed 16-bit PCM. One utterance is cut at this length and finalised. */
+  sttSampleRate: 16_000,
+  sttUtteranceMaxMs: 15_000,
+  /** Body cap for POST /api/staff/stt (30 s of 16 kHz s16le, with room for the cut above). */
+  sttBodyMaxBytes: 960_000,
+  /** While the receptionist speaks, the growing utterance is re-sent this often for interim words. */
+  sttInterimEveryMs: 700,
+  /** Silence that ends an utterance (energy gate in the staff page; faster-whisper's VAD trims inside). */
+  sttSilenceEndMs: 600,
+  /** The app server waits at most this long for the local STT process, then drops that request. */
+  sttTimeoutMs: 8_000,
+  /** At most this many requests queued in the local STT process; more get 503 "busy" (interim only). */
+  sttQueueMax: 2,
+  /** Live caption text cap (characters) and how many live_caption events per second the server forwards. */
+  liveCaptionMaxChars: 300,
+  liveCaptionsPerSecond: 5,
+  /** Live captions the guest page keeps in memory (the final ones also join the BN-5 record). */
+  guestLiveCaptionsKept: 6,
+  /** Fact values typed by staff. */
+  factValueMax: 60,
+  /** Desk alerts: at most this many open at once, and per minute. */
+  alertsOpenMax: 3,
+  alertsPerMinute: 6,
+  /** Guest number pad: digits only, at most this many. */
+  guestNumberMaxDigits: 6,
+  /** Equal-access counters: any count below this is shown as "fewer than 5" (no small cells). */
+  equalAccessMinShown: 5,
+} as const;
+
+/* ---------------- F3: live captions of the receptionist's speech ---------------- */
+
+/**
+ * Which speech-to-text produced a live caption. Always shown next to the caption on both screens
+ * (the "captions badge"), so a cloud path is never presented as local.
+ * - "local": faster-whisper (Systran/faster-whisper-small.en, int8, CPU) in web/stt/local_stt.py on
+ *   127.0.0.1, HF_HUB_OFFLINE=1. Audio never leaves the laptop.
+ * - "cloud_openai": P1's POST /api/transcribe (OpenAI), only when OPENAI_API_KEY is set; utterance-at-a-time.
+ * - "browser_google" / "browser_apple" / "browser_other": the browser's own speech recognition
+ *   (Web Speech API) in the staff page. The browser sends the audio to its maker. Explicit opt-in.
+ * - "typed": no speech recognition; staff type or use quick replies (always available).
+ */
+export type CaptionBackend = "local" | "cloud_openai" | "browser_google" | "browser_apple" | "browser_other" | "typed";
+export type BrowserCaptionBackend = "browser_google" | "browser_apple" | "browser_other";
+
+/** The badge text, word for word (tests check it). */
+export const CAPTION_BACKEND_LABEL: Readonly<Record<CaptionBackend, string>> = {
+  local: "On this laptop",
+  cloud_openai: "Cloud: OpenAI speech-to-text",
+  browser_google: "Cloud: Google (Chrome speech recognition)",
+  browser_apple: "Cloud: Apple (Safari speech recognition)",
+  browser_other: "Cloud: this browser's speech service",
+  typed: "Typed",
+};
+
+/** True for every backend that sends audio off the laptop. */
+export const CAPTION_BACKEND_IS_CLOUD: Readonly<Record<CaptionBackend, boolean>> = {
+  local: false,
+  cloud_openai: true,
+  browser_google: true,
+  browser_apple: true,
+  browser_other: true,
+  typed: false,
+};
+
+/**
+ * Staff-side disclosure shown before browser speech can be switched on, and kept on screen while it
+ * runs. "{vendor}" is "Google" (Chrome, Edge), "Apple" (Safari) or "the browser maker".
+ */
+export const BROWSER_SPEECH_DISCLOSURE =
+  "Browser speech recognition sends the sound from this microphone to {vendor} to turn it into text. It is not processed on this laptop. Use it only if the local captions are not running.";
+/** Guest-side line under live captions while a cloud backend is live (the badge names it). */
+export const CLOUD_CAPTION_GUEST_NOTE = "The desk's speech is turned into text by an outside service, named above.";
+/** Guest-side line under live captions while the local backend is live. */
+export const LOCAL_CAPTION_GUEST_NOTE = "The desk's speech is turned into text on the desk laptop. Nothing is sent outside.";
+/** Under every live caption, with the grey words explained (FEATURE_STRATEGY feature 12). */
+export const LIVE_CAPTION_NOTE = "Machine captions. Grey words may be wrong; tap \"Please type it\" if unsure.";
+
+/** One word of a live caption. `unsure` = the recogniser's word probability was low (shown grey, dotted). */
+export type LiveCaptionWord = { w: string; unsure: boolean };
+
+/**
+ * A live caption of the receptionist's speech, word by word. Interim revisions replace each other
+ * (same utteranceId, higher rev); `final: true` closes the utterance. The text has passed the
+ * hygiene step (NFKC, control characters removed, card-number-like digit runs replaced by
+ * "[number hidden]"). Live captions never drive the avatar and never tick a checklist item, and a
+ * number heard here never becomes a fact tile (F1).
+ */
+export type GuestLiveCaption = {
+  type: "live_caption";
+  utteranceId: string;
+  rev: number;
+  final: boolean;
+  text: string;
+  words: LiveCaptionWord[];
+  backend: CaptionBackend;
+  /** Staff removed this caption ("Remove from guest screen"): the guest page strikes it out with "Removed by the desk". */
+  retracted?: boolean;
+};
+
+/** The badge changed (staff switched backend, or the local process went down and captions fell back to typed). */
+export type GuestCaptionBackendEvent = { type: "caption_backend"; backend: CaptionBackend | null };
+
+/** Staff mirror of a live caption: exactly what the guest sees, plus how long recognition took. */
+export type StaffLiveCaption = Omit<GuestLiveCaption, "type"> & {
+  type: "live_caption";
+  /** Recognition time for this revision in ms (local STT decode time, or null for browser/cloud). */
+  decodeMs: number | null;
+  /** Time from the end of speech to the final caption reaching the server, when measurable. */
+  speechEndToFinalMs: number | null;
+};
+
+/** Status of the caption backends, in StaffStatus.captions. */
+export type CaptionStatus = {
+  /** The backend live right now; null = live captions off. */
+  live: CaptionBackend | null;
+  /** Local STT process: "up" (GET /health answered and the model is loaded), "down", or "off" (no LOCAL_STT_PORT). */
+  local: "up" | "down" | "off";
+  /** P1 /api/transcribe has a key (and the profile allows cloud). */
+  cloudOpenaiAvailable: boolean;
+  /** The profile allows the browser speech opt-in (false in "engagement", D8). */
+  browserAllowed: boolean;
+  /** Median and last local decode time in ms over the last 20 requests, or null (measured, never invented). */
+  localDecodeMs: { median: number | null; last: number | null };
+};
+
+/** Body of POST /api/staff/stt is raw PCM; these headers carry the rest (validated, short). */
+export type SttRequestHeaders = {
+  "x-sb-utterance": string;
+  /** "0" interim, "1" final. */
+  "x-sb-final": "0" | "1";
+  /** ms since epoch when the staff page detected the end of speech (final only), for the latency panel. */
+  "x-sb-speech-end"?: string;
+};
+
+/** What web/stt/local_stt.py answers on POST /transcribe (loopback, X-STT-Key). */
+export type LocalSttResponse = {
+  text: string;
+  words: { w: string; p: number }[];
+  audioMs: number;
+  decodeMs: number;
+};
+
+/** Word probability below this is shown as unsure (grey, dotted underline). */
+export const STT_UNSURE_BELOW = 0.5;
+
+/* ---------------- F1/F4: facts on screen and the take-home card ---------------- */
+
+/** Facts the guest keeps. Values always come from staff typing or the property settings, never from speech recognition. */
+export type FactKey =
+  | "room"
+  | "wifi_network"
+  | "wifi_password"
+  | "breakfast"
+  | "checkout"
+  | "late_checkout"
+  | "restaurant"
+  | "parking"
+  | "hotel_text";
+
+export const FACT_KEYS: readonly FactKey[] = [
+  "room",
+  "wifi_network",
+  "wifi_password",
+  "breakfast",
+  "checkout",
+  "late_checkout",
+  "restaurant",
+  "parking",
+  "hotel_text",
+];
+
+/** Tile and card labels. */
+export const FACT_LABEL: Readonly<Record<FactKey, string>> = {
+  room: "Room",
+  wifi_network: "Wi-Fi network",
+  wifi_password: "Wi-Fi password",
+  breakfast: "Breakfast",
+  checkout: "Checkout",
+  late_checkout: "Late checkout",
+  restaurant: "Restaurant",
+  parking: "Parking",
+  hotel_text: "Text the front desk",
+};
+
+/**
+ * Sensitive facts: never spoken by the app, never sent to any vendor, never in a log line. The staff
+ * screen suggests "Your room number is on your screen" instead of saying it in the lobby.
+ */
+export const FACT_SENSITIVE: Readonly<Record<FactKey, boolean>> = {
+  room: true,
+  wifi_network: false,
+  wifi_password: true,
+  breakfast: false,
+  checkout: false,
+  late_checkout: false,
+  restaurant: false,
+  parking: false,
+  hotel_text: false,
+};
+
+/** Which quick reply also pins which fact (Builder S: say_quick pins the fact when it has a value). */
+export const FACT_FOR_QUICK_REPLY: Readonly<Partial<Record<StaffIntentKey, FactKey>>> = {
+  room_number: "room",
+  wifi_password: "wifi_password",
+  breakfast_time: "breakfast",
+  checkout_time: "checkout",
+  late_checkout: "late_checkout",
+  restaurant_hours: "restaurant",
+  parking_downstairs: "parking",
+};
+
+/** "staff_typed" for per-guest values; "property" for the values set once for the hotel (env or the staff Facts panel). */
+export type FactSource = "staff_typed" | "property";
+
+export type Fact = { key: FactKey; value: string; source: FactSource; at: number };
+
+/** A fact tile appeared or changed on the guest screen. Not in the guest snapshot (AS-1): see "resend_facts". */
+export type GuestFact = { type: "fact"; fact: Fact };
+export type GuestFactCleared = { type: "fact_cleared"; key: FactKey };
+
+/** Staff copy of the current fact set (this guest only), sent on every change and in the reconnect flow. */
+export type StaffFacts = { type: "facts"; facts: Fact[]; property: Partial<Record<FactKey, string>> };
+
+/** Take-home card wording (guest device only; built in the browser, QR holds the text itself, not a link). */
+export const TAKE_HOME_TITLE = "Your hotel card";
+export const TAKE_HOME_NOTE =
+  "This card is made on this screen. The QR code holds the text itself, not a link. Scan it or photograph the screen. The hotel does not keep a copy, and the card is erased when the conversation ends.";
+export const TAKE_HOME_SHOW = "Show my card";
+
+/* ---------------- F2: picture request board ---------------- */
+
+/** How a fixed sentence was chosen without recognition. Staff labels: "Tapped on board", "Picked from the list", "Typed, matched to a request". */
+export type PhraseVia = "board" | "phrase_list" | "typed_match";
+
+export const PHRASE_VIA_STAFF_LABEL: Readonly<Record<PhraseVia, string>> = {
+  board: "Tapped on board",
+  phrase_list: "Picked from the list",
+  typed_match: "Typed, matched to a request",
+};
+
+/** Icon names for the board; the guest component draws each as an inline SVG (no image files, no network). */
+export type BoardIcon =
+  | "yes" | "no" | "reservation" | "name" | "thanks" | "elevator" | "wifi" | "breakfast_time" | "breakfast_place"
+  | "towels" | "checkout_time" | "late_checkout" | "parking" | "taxi" | "help" | "room_where" | "room_problem"
+  | "restaurant_where" | "restaurant_time" | "done";
+
+/**
+ * The board: every one of the 20 guest intents (vocabulary.md section 2) as a picture with a short
+ * label. No tile names a condition (no "I have hearing loss" tile; FEATURE_STRATEGY feature 2).
+ * Order: most-asked hotel requests first; YES / NO / Thank you / That's all last.
+ */
+export const BOARD_TILES: readonly { intentId: GuestIntentId; label: string; icon: BoardIcon }[] = [
+  { intentId: 10, label: "More towels", icon: "towels" },
+  { intentId: 7, label: "Wi-Fi password", icon: "wifi" },
+  { intentId: 8, label: "Breakfast time", icon: "breakfast_time" },
+  { intentId: 9, label: "Breakfast where", icon: "breakfast_place" },
+  { intentId: 11, label: "Checkout time", icon: "checkout_time" },
+  { intentId: 12, label: "Late checkout", icon: "late_checkout" },
+  { intentId: 14, label: "Call a taxi", icon: "taxi" },
+  { intentId: 16, label: "Find my room", icon: "room_where" },
+  { intentId: 17, label: "Room problem", icon: "room_problem" },
+  { intentId: 6, label: "Elevator", icon: "elevator" },
+  { intentId: 13, label: "Parking", icon: "parking" },
+  { intentId: 18, label: "Restaurant where", icon: "restaurant_where" },
+  { intentId: 19, label: "Restaurant hours", icon: "restaurant_time" },
+  { intentId: 3, label: "I have a booking", icon: "reservation" },
+  { intentId: 4, label: "My name", icon: "name" },
+  { intentId: 15, label: "Help, please", icon: "help" },
+  { intentId: 1, label: "Yes", icon: "yes" },
+  { intentId: 2, label: "No", icon: "no" },
+  { intentId: 5, label: "Thank you", icon: "thanks" },
+  { intentId: 20, label: "That's all", icon: "done" },
+];
+
+/* ---------------- F7: typed numbers ---------------- */
+
+export type NumberAbout = "nights" | "room" | "people" | "other";
+
+/** Staff-screen wording for a typed number ("Guest typed: 3 (nights)"). */
+export const NUMBER_ABOUT_LABEL: Readonly<Record<NumberAbout, string>> = {
+  nights: "nights",
+  room: "room number",
+  people: "people",
+  other: "number",
+};
+
+export type StaffGuestNumber = { type: "guest_number"; about: NumberAbout; value: string; logSeq: number };
+
+/* ---------------- F9: visual alerts from the desk to the guest device ---------------- */
+
+/**
+ * Generic codes only: no names, rooms or free text, so nothing personal travels in an alert. An
+ * "emergency" code is deliberately NOT in the list (FEATURE_STRATEGY section 4: no emergency claims;
+ * a screen may be asleep). Pager hardware is roadmap.
+ */
+export type DeskAlertCode = "come_to_desk" | "taxi_here" | "room_ready" | "look_at_desk";
+
+export const DESK_ALERT_TEXT: Readonly<Record<DeskAlertCode, string>> = {
+  come_to_desk: "Please come to the front desk.",
+  taxi_here: "Your taxi is here.",
+  room_ready: "Your room is ready.",
+  look_at_desk: "Please look at the front desk.",
+};
+
+/** The guest device shows the alert full-width (no sound), flashes once unless reduced motion is on, and vibrates where the browser allows. */
+export type GuestDeskAlert = { type: "desk_alert"; id: string; code: DeskAlertCode };
+export type GuestDeskAlertCleared = { type: "desk_alert_cleared"; id: string };
+
+/** Staff panel state: open alerts and whether the guest tapped OK. */
+export type StaffDeskAlertState = { type: "desk_alerts"; alerts: { id: string; code: DeskAlertCode; sentAt: number; seenAt: number | null }[] };
+
+/* ---------------- F10/F12: guest preferences (page memory only, AS-3) ---------------- */
+
+/**
+ * Held in the guest page's React state only: never localStorage, sessionStorage, IndexedDB, Cache
+ * API, cookies or a service worker (AS-3). Gone when the conversation ends or the page reloads.
+ * Only the subset the desk must know (mode, read-aloud, avatar on/off) is sent, via the existing
+ * guest_choice and prefs actions.
+ */
+export type GuestPrefs = {
+  textSize: 0 | 1 | 2;
+  avatarSize: "small" | "medium" | "large";
+  captionsOnly: boolean;
+  alertFlash: boolean;
+  alertVibrate: boolean;
+  /** Show the interpreter choice first on later screens. */
+  interpreterFirst: boolean;
+  signLanguage: SignLanguage;
+};
+
+/* ---------------- F13: sign-language choice ---------------- */
+
+/** ISO 639-3 codes. Only ASL is recognised; the others route to typing or an interpreter. */
+export type SignLanguage = "ase" | "bfi" | "fsl" | "asf" | "isg" | "other";
+
+export const SIGN_LANGUAGES: readonly { code: SignLanguage; name: string; recognised: boolean }[] = [
+  { code: "ase", name: "American Sign Language (ASL)", recognised: true },
+  { code: "bfi", name: "British Sign Language (BSL)", recognised: false },
+  { code: "fsl", name: "French Sign Language (LSF)", recognised: false },
+  { code: "asf", name: "Auslan", recognised: false },
+  { code: "isg", name: "Irish Sign Language (ISL)", recognised: false },
+  { code: "other", name: "Another sign language", recognised: false },
+];
+
+/** Shown when the guest picks any sign language other than ASL (FEATURE_STRATEGY Next 4, test 2). */
+export const SIGN_LANGUAGE_NOT_YET = "Sign recognition is only for ASL today. You can type, tap pictures, or ask for an interpreter.";
+
+/* ---------------- F11: interpreter hand-off with an optional context card ---------------- */
+
+/**
+ * What the guest agreed to share, ticked on their own screen after seeing the exact card text.
+ * Nothing is sent to any provider by the app: staff read or copy the card when they call the
+ * hotel's interpreting service.
+ */
+export type InterpreterContextConsent = {
+  /** Include the sign language the guest picked. */
+  language: SignLanguage | null;
+  /** Include the topics so far (names of checklist topics, e.g. "room, Wi-Fi"), never names or numbers. */
+  topics: boolean;
+};
+
+export type InterpreterContextCard = {
+  language: string | null;
+  topics: string[];
+  /** The guest's open request, if any, as its fixed sentence (never typed text, never a name). */
+  openRequest: string | null;
+};
+
+/* ---------------- F6: machine-or-human label on every line ---------------- */
+
+/** One label per line, on the guest record and the staff log (FEATURE_STRATEGY feature 6). */
+export type LineSourceLabel =
+  | "Staff quick reply"
+  | "Typed by staff"
+  | "Staff speech, reviewed by staff"
+  | "Staff speech, machine captions"
+  | "Avatar (machine)"
+  | "Signs recognised, confirmed by guest"
+  | "Typed by guest"
+  | "Tapped on board"
+  | "Interpreter";
+
+/* ---------------- F16: anonymous equal-access counters ---------------- */
+
+/**
+ * Counts only, since the server started, in memory only (reset on restart, never written to disk).
+ * No timings, no per-session rows, no device or guest details. Any count below
+ * FEATURE_LIMITS.equalAccessMinShown is shown as "fewer than 5".
+ */
+export type EqualAccessCounters = {
+  sessions: number;
+  modeChosen: Record<Exclude<GuestMode, "choosing">, number>;
+  sentBy: { signs: number; board: number; phraseList: number; typed: number; typedMatch: number };
+  repairReplies: number;
+  interpreterRequests: number;
+  factsShown: number;
+  cardsShown: number;
+  alertsSent: number;
+  captionUtterances: Record<CaptionBackend, number>;
+};
+
+/* ---------------- F17: privacy receipt on the guest end screen ---------------- */
+
+/**
+ * Built by the server from real counters at session end. Guest-facing; no counts of anything
+ * personal. `vendors` lists destinations that received data during this conversation (empty in the
+ * offline configuration), each in plain words.
+ */
+export type GuestPrivacyReceipt = {
+  /** Ways the guest used, e.g. ["Signs", "Pictures", "Typing"]. */
+  used: string[];
+  captionBackends: CaptionBackend[];
+  /** "on_device" = the laptop's own voice; "cloud" = a vendor voice for fixed sentences; "none". */
+  voice: "none" | "on_device" | "cloud";
+  vendors: string[];
+  erasedAt: number;
+  itemsErased: number;
+};
+
+/* ---------------- Text hygiene (lib/app/hygiene.ts, Builder S) ---------------- */
+
+/** What the hygiene step replaced; counted on the privacy panel, never the values themselves. */
+export type RedactionKind = "card_number" | "long_digits" | "email" | "secret_phrase" | "token_shape";
+
+/** Replacement text shown in captions and logs. */
+export const REDACTED_TEXT: Readonly<Record<RedactionKind, string>> = {
+  card_number: "[number hidden]",
+  long_digits: "[number hidden]",
+  email: "[email hidden]",
+  secret_phrase: "[hidden]",
+  token_shape: "[hidden]",
+};
