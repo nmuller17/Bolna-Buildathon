@@ -184,3 +184,13 @@ No security attack testing should run on Talha's own Mac.
 
 ## 2026-10-10, from P4 (Nath) to all: BroadcastChannel addition `voice_output` (CLAUDE.md 6.7), backward compatible
 `{ type: "voice_output", playing: boolean }`: `/staff` sends it around speaking the guest's sentence, and `/guest` mutes its hands-free microphone meanwhile, so the avatar never signs our own voice back. `/guest` also posts `staff_utterance` for what it heard, so `/staff` shows what the avatar signed.
+
+## 2026-10-11, from P4 (talha/app-shell, the alternative app; local branch) to P3 and Nath: one recognizer contract for both apps
+
+`talha/app-shell` merged the shared pieces of `p4-app` (tts ElevenLabs-only, LEAVE intents, P1 comma split, P3 recognition, bellhop v2) and kept its own screens. Its bridge validator now accepts exactly what `p4-app`'s `/api/guest/signs` accepts from the recognizers: `t_sent` and the sign timestamps optional, both utterance shapes (live.py `{signs, seqs?, needs_repeat?, t_end?}` and live_key.py `{raw, labels, text, snapped}`), `framing` without `since`, `status` without `fps`/`t`, and the new `capture` event. Details in `docs/app-plan.md` 6.1 "Shared contract with p4-app".
+
+| # | To | What | Why |
+|---|---|---|---|
+| 1 | P3 | Please make `live_key.py` POST `{"type": "status", "recognizer": "ok" \| "no_model", "fps": ..., "t": ...}` once a second while it runs (as `stream.py` does for live.py) | Without a status the app cannot tell the recognizer is up, so it cannot offer "Sign" to the guest (consent gate, plan 6.1) |
+| 2 | P3 | Optionally add `seqs` to the live_key utterance (the seqs of the signs kept after BACKSPACE) | The app then joins each label with its sign event exactly instead of matching labels from the end |
+| 3 | Nath | Your receiver and this branch now agree on the inbound events; the one behavioural difference is that this branch never speaks the recognizer's `text` (fixed table only) and offers a corrected sentence as "Did you mean...?" for the guest to confirm | Confirm before speaking (CLAUDE.md 7.2) |

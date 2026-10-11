@@ -199,7 +199,11 @@ type Session = {
   failedJoins: number;
 };
 
-type RunTrack = { run: string; fromRecognizer: boolean; lastSeq: number; seen: Set<number>; rejected: Set<number> };
+/**
+ * Per recognizer run. `sentence` = seqs of the sign events since the last utterance, for joining an
+ * utterance that carries no seqs (live_key.py, live_window.py; shared contract 2026-10-11).
+ */
+type RunTrack = { run: string; fromRecognizer: boolean; lastSeq: number; seen: Set<number>; rejected: Set<number>; sentence: number[] };
 
 function emptyPrivacy(keys: string[]): PrivacyCounters {
   return {
@@ -290,6 +294,8 @@ export class Store {
     framingNotOkSince: null as number | null,
     restarts: 0,
     run: null as string | null,
+    /** live_key.py recording phase (shared contract 2026-10-11); not shown on a screen yet. */
+    capture: null as { phase: "countdown" | "processing"; at: number; countdown: number | null; duration: number | null } | null,
   };
   runs: Record<SignsSource, RunTrack | null> = { recognizer: null, simulated: null };
   signingAvailable = false;

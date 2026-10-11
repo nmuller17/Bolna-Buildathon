@@ -14,9 +14,9 @@ import {
   STAFF_INTENT_KEYS,
   CHECKIN_ITEMS,
   type BridgeFraming,
+  type BridgeCapture,
   type BridgeSign,
   type BridgeStatus,
-  type BridgeUtterance,
   type BridgeVlmSuggestion,
   type FramingStatus,
   type GuestAction,
@@ -82,8 +82,34 @@ export const FRAMING_STATUSES: readonly FramingStatus[] = [
 
 /** Validated bridge events. `top` is re-sorted best first; labels are aliased. */
 export type ValidSign = Omit<BridgeSign, "top"> & { top: Prediction[] };
-export type ValidUtterance = Omit<BridgeUtterance, "signs"> & { signs: Prediction[] };
-export type ValidBridgeEvent = ValidSign | ValidUtterance | BridgeFraming | BridgeStatus | (Omit<BridgeVlmSuggestion, "label"> & { label: SignLabel });
+
+/**
+ * Both utterance shapes of the shared contract, normalized (see BridgeUtterance in types.ts).
+ * - "stream" (live.py, live_window.py): `signs` = top-1 with its score; `seqs` when sent.
+ * - "sentence" (live_key.py): `signs` = the raw labels with NO score (conf is unknown, so it is null
+ *   here and the app joins each label with its `sign` event); `corrected` = the recognizer's snapped
+ *   labels when they differ from the raw ones. The recognizer's `text` is checked and dropped.
+ */
+export type ValidUtterance = {
+  type: "utterance";
+  shape: "stream" | "sentence";
+  labels: SignLabel[];
+  /** Score of each label from the utterance itself: the stream shape only. */
+  confs: number[] | null;
+  seqs: number[] | null;
+  corrected: SignLabel[] | null;
+  needs_repeat: boolean;
+  t_end: number | null;
+  t_sent?: number;
+  run?: string;
+};
+export type ValidBridgeEvent =
+  | ValidSign
+  | ValidUtterance
+  | BridgeFraming
+  | BridgeStatus
+  | BridgeCapture
+  | (Omit<BridgeVlmSuggestion, "label"> & { label: SignLabel });
 
 export type BridgeValidation =
   | { ok: true; event: ValidBridgeEvent }
@@ -91,6 +117,21 @@ export type BridgeValidation =
 
 const RUN_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const SEQ_MAX = 1_000_000_000;
+
+/** 1..max labels, each one of the 22 after the alias map. */
+function labelList(raw: unknown, max: number): SignLabel[] | null {
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > max) return null;
+  const out: SignLabel[] = [];
+  for (const l of raw) {
+    const v = normalizeLabel(l);
+    if (!v) return null;
+    out.push(v);
+  }
+  return out;
+}
+
+const optNum = (o: Record<string, unknown>, k: string) => !has(o, k) || o[k] === null || o[k] === undefined || isNum(o[k]);
+const numOrUndef = (v: unknown): number | undefined => (isNum(v) ? v : undefined);
 
 function point(raw: unknown): Point2 | null {
   if (!Array.isArray(raw) || raw.length !== 2 || !isNum(raw[0]) || !isNum(raw[1])) return null;
@@ -129,15 +170,20 @@ export function validateBridgeEvent(raw: unknown): BridgeValidation {
   const refused = REFUSED_BODY_KEYS.filter((k) => has(raw, k));
   if (refused.length) return fail(`refused body keys: ${refused.join(", ")} (no video, frames, face or pose points)`, refused);
   const type = raw.type;
-  if (!isNum(raw.t_sent) || raw.t_sent <= 0) return fail("t_sent must be a Unix time in seconds");
+  // Shared contract: t_sent is optional (no recognizer sends it yet); when present it must be a real time.
+  if (has(raw, "t_sent") && (!isNum(raw.t_sent) || raw.t_sent <= 0)) return fail("t_sent must be a Unix time in seconds");
   if (has(raw, "run") && (typeof raw.run !== "string" || !RUN_RE.test(raw.run))) return fail("run must be 1 to 64 letters, digits, _ or -");
-  const common = { t_sent: raw.t_sent, ...(typeof raw.run === "string" ? { run: raw.run } : {}) };
+  const common = {
+    ...(isNum(raw.t_sent) ? { t_sent: raw.t_sent } : {}),
+    ...(typeof raw.run === "string" ? { run: raw.run } : {}),
+  };
 
   if (type === "sign") {
     if (!isInt(raw.seq, 1, SEQ_MAX)) return fail("seq must be a positive integer");
     const top = predictions(raw.top, 1, LIMITS.maxTop);
     if (!top) return fail("top must hold 1 to 5 predictions with a known label and a score in [0, 1]");
-    for (const k of ["t_sign_start", "t_sign_end", "t_closed", "t_predicted"]) if (!isNum(raw[k])) return fail(`${k} must be a number`);
+    const times = ["t_sign_start", "t_sign_end", "t_closed", "t_predicted"] as const;
+    for (const k of times) if (!optNum(raw, k)) return fail(`${k} must be a number when present`);
     let skeleton: SkeletonSnapshot | undefined;
     if (has(raw, "skeleton") && raw.skeleton !== null && raw.skeleton !== undefined) {
       const s = validateSkeleton(raw.skeleton);
@@ -145,40 +191,92 @@ export function validateBridgeEvent(raw: unknown): BridgeValidation {
       skeleton = s;
     }
     top.sort((a, b) => b.conf - a.conf);
+    const event: ValidSign = { type: "sign", seq: raw.seq, top, ...(skeleton ? { skeleton } : {}), ...common };
+    for (const k of times) {
+      const v = numOrUndef(raw[k]);
+      if (v !== undefined) event[k] = v;
+    }
+    return { ok: true, event };
+  }
+  if (type === "utterance") {
+    if (has(raw, "needs_repeat") && raw.needs_repeat !== null && typeof raw.needs_repeat !== "boolean") return fail("needs_repeat must be true or false");
+    if (!optNum(raw, "t_end")) return fail("t_end must be a number when present");
+    const needs_repeat = raw.needs_repeat === true;
+    const t_end = numOrUndef(raw.t_end) ?? null;
+    /** Optional seqs: null when absent, false when malformed. */
+    const parseSeqs = (n: number): number[] | null | false => {
+      if (!has(raw, "seqs") || raw.seqs === null || raw.seqs === undefined) return null;
+      if (!Array.isArray(raw.seqs) || raw.seqs.length !== n || !raw.seqs.every((s) => isInt(s, 1, SEQ_MAX))) return false;
+      return raw.seqs as number[];
+    };
+    const SEQS_MSG = "seqs must list one positive integer per sign";
+
+    if (has(raw, "labels")) {
+      // live_key.py: { raw, labels, text, snapped }
+      const labels = labelList(raw.labels, LIMITS.maxSigns);
+      if (!labels) return fail("labels must hold 1 to 8 known sign labels");
+      const rawLabels = has(raw, "raw") && raw.raw !== null && raw.raw !== undefined ? labelList(raw.raw, LIMITS.maxSigns) : labels;
+      if (!rawLabels) return fail("raw must hold 1 to 8 known sign labels");
+      if (has(raw, "text") && raw.text !== null && raw.text !== undefined && (typeof raw.text !== "string" || raw.text.length > LIMITS.staffTextMax)) {
+        return fail("text must be a string of at most 300 characters, or null");
+      }
+      if (has(raw, "snapped") && raw.snapped !== null && raw.snapped !== undefined && typeof raw.snapped !== "boolean") return fail("snapped must be true or false");
+      const seqs = parseSeqs(rawLabels.length);
+      if (seqs === false) return fail(SEQS_MSG);
+      const differs = labels.length !== rawLabels.length || labels.some((l, i) => l !== rawLabels[i]);
+      return {
+        ok: true,
+        event: { type: "utterance", shape: "sentence", labels: rawLabels, confs: null, seqs, corrected: differs ? labels : null, needs_repeat, t_end, ...common },
+      };
+    }
+
+    // live.py / live_window.py: { signs: [{label, conf}], seqs?, needs_repeat?, t_end? }
+    const signs = predictions(raw.signs, LIMITS.minSigns, LIMITS.maxSigns);
+    if (!signs) return fail("signs must hold 1 to 8 predictions with a known label and a score in [0, 1] (or send labels)");
+    const seqs = parseSeqs(signs.length);
+    if (seqs === false) return fail(SEQS_MSG);
     return {
       ok: true,
       event: {
-        type: "sign", seq: raw.seq, top,
-        t_sign_start: raw.t_sign_start as number, t_sign_end: raw.t_sign_end as number,
-        t_closed: raw.t_closed as number, t_predicted: raw.t_predicted as number,
-        ...(skeleton ? { skeleton } : {}), ...common,
+        type: "utterance", shape: "stream", labels: signs.map((p) => p.label), confs: signs.map((p) => p.conf),
+        seqs, corrected: null, needs_repeat, t_end, ...common,
       },
     };
   }
-  if (type === "utterance") {
-    const signs = predictions(raw.signs, LIMITS.minSigns, LIMITS.maxSigns);
-    if (!signs) return fail("signs must hold 1 to 8 predictions with a known label and a score in [0, 1]");
-    if (!Array.isArray(raw.seqs) || raw.seqs.length !== signs.length || !raw.seqs.every((s) => isInt(s, 1, SEQ_MAX))) {
-      return fail("seqs must list one positive integer per sign");
-    }
-    if (typeof raw.needs_repeat !== "boolean") return fail("needs_repeat must be true or false");
-    if (!isNum(raw.t_end)) return fail("t_end must be a number");
-    return { ok: true, event: { type: "utterance", signs, seqs: raw.seqs as number[], needs_repeat: raw.needs_repeat, t_end: raw.t_end, ...common } };
-  }
   if (type === "framing") {
     if (typeof raw.status !== "string" || !FRAMING_STATUSES.includes(raw.status as FramingStatus)) return fail("unknown framing status");
-    if (!isNum(raw.since)) return fail("since must be a number");
+    if (!optNum(raw, "since")) return fail("since must be a number when present");
     if (has(raw, "rejected_seq") && !isInt(raw.rejected_seq, 1, SEQ_MAX)) return fail("rejected_seq must be a positive integer");
+    const since = numOrUndef(raw.since);
     return {
       ok: true,
-      event: { type: "framing", status: raw.status as FramingStatus, since: raw.since, ...(has(raw, "rejected_seq") ? { rejected_seq: raw.rejected_seq as number } : {}), ...common },
+      event: {
+        type: "framing", status: raw.status as FramingStatus,
+        ...(since !== undefined ? { since } : {}),
+        ...(has(raw, "rejected_seq") ? { rejected_seq: raw.rejected_seq as number } : {}),
+        ...common,
+      },
     };
   }
   if (type === "status") {
-    if (!isNum(raw.fps) || raw.fps < 0 || raw.fps > 1000) return fail("fps must be a number from 0 to 1000");
+    if (has(raw, "fps") && raw.fps !== null && (!isNum(raw.fps) || raw.fps < 0 || raw.fps > 1000)) return fail("fps must be a number from 0 to 1000");
     if (raw.recognizer !== "ok" && raw.recognizer !== "mock" && raw.recognizer !== "no_model") return fail("recognizer must be ok, mock or no_model");
-    if (!isNum(raw.t)) return fail("t must be a number");
-    return { ok: true, event: { type: "status", fps: raw.fps, recognizer: raw.recognizer, t: raw.t, ...common } };
+    if (!optNum(raw, "t")) return fail("t must be a number when present");
+    const fps = numOrUndef(raw.fps);
+    const t = numOrUndef(raw.t);
+    return { ok: true, event: { type: "status", recognizer: raw.recognizer, ...(fps !== undefined ? { fps } : {}), ...(t !== undefined ? { t } : {}), ...common } };
+  }
+  if (type === "capture") {
+    if (raw.phase !== "countdown" && raw.phase !== "processing") return fail("phase must be countdown or processing");
+    for (const k of ["countdown", "duration"]) {
+      if (!optNum(raw, k) || (isNum(raw[k]) && ((raw[k] as number) < 0 || (raw[k] as number) > 60))) return fail(`${k} must be 0 to 60 seconds when present`);
+    }
+    const countdown = numOrUndef(raw.countdown);
+    const duration = numOrUndef(raw.duration);
+    return {
+      ok: true,
+      event: { type: "capture", phase: raw.phase, ...(countdown !== undefined ? { countdown } : {}), ...(duration !== undefined ? { duration } : {}), ...common },
+    };
   }
   if (type === "vlm_suggestion") {
     const label = normalizeLabel(raw.label);
