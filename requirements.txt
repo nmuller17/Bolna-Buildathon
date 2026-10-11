@@ -1,5 +1,5 @@
-mediapipe
-opencv-python
+mediapipe==1.1.0          # pinned: same HolisticLandmarker model as the browser; no Intel-Mac wheel
+opencv-contrib-python     # not opencv-python: mediapipe depends on contrib, both ship cv2 and conflict
 numpy
 torch
 fastapi

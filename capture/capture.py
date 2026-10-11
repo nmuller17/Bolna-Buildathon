@@ -57,9 +57,14 @@ def parse_args():
 
 # ---------- display ----------
 
-def show(img, lines, color=WHITE):
-    """Show a mirrored copy of img with text lines at the top."""
+def show(img, lines, color=WHITE, inset=None):
+    """Show a mirrored copy of img with text lines at the top and an optional inset image bottom-right."""
     view = cv2.flip(img, 1)
+    if inset is not None:
+        ih, iw = inset.shape[:2]
+        h, w = view.shape[:2]
+        view[h - ih - 20: h - 20, w - iw - 20: w - 20] = inset
+        cv2.rectangle(view, (w - iw - 22, h - ih - 22), (w - 18, h - 18), WHITE, 2)
     for i, text in enumerate(lines):
         y = 50 + i * 45
         cv2.putText(view, text, (20, y), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 6, cv2.LINE_AA)
@@ -100,25 +105,35 @@ def open_camera(index):
 
 class Recorder:
     def __init__(self, camera):
-        self.cap = open_camera(camera)
+        self.camera = camera
+        self.open()
+        self.landmarker = create_landmarker()
+        self.t0 = time.monotonic()
+
+    def open(self):
+        self.cap = open_camera(self.camera)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         self.cap.set(cv2.CAP_PROP_FPS, 30)
-        self.landmarker = create_landmarker()
-        self.t0 = time.monotonic()
 
     def now_ms(self):
         return (time.monotonic() - self.t0) * 1000
 
     def read(self):
-        """Next webcam frame. Retries for 2 s: macOS cameras can drop frames while warming up."""
-        end = time.monotonic() + 2
-        while time.monotonic() < end:
-            ok, img = self.cap.read()
-            if ok:
-                return img
-            time.sleep(0.05)
-        sys.exit("Webcam stopped sending frames (check the camera permission for VS Code / your terminal).")
+        """Next webcam frame. Retries for 2 s (macOS cameras drop frames while warming up),
+        then reopens the camera once, e.g. after another app grabbed it."""
+        for attempt in range(2):
+            end = time.monotonic() + 2
+            while time.monotonic() < end:
+                ok, img = self.cap.read()
+                if ok:
+                    return img
+                time.sleep(0.05)
+            if attempt == 0:
+                print("Webcam stopped sending frames, reopening it...")
+                self.cap.release()
+                self.open()
+        sys.exit("Webcam stopped sending frames (close other apps using the camera, check the camera permission).")
 
     def wait_start(self, lines):
         """Live preview until SPACE (start), S (skip) or Q (quit)."""
