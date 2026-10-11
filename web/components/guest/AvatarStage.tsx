@@ -2,6 +2,8 @@
 // P4 (builder B): the guest's avatar area, through P2's public API only (mountAvatar, playGloss with
 // onToken, and AvatarCaptions). Captions come first on the page; this sits under them.
 // Without WebGL (or with the avatar switched off) it shows the gloss as key tags (CAP-4a).
+// If the browser drops the WebGL context mid-session (GPU reset, memory pressure), the avatar box is
+// hidden, the key tags take over and the guest can try the avatar again; captions never stop.
 import { useEffect, useRef, useState } from "react";
 import AvatarCaptions from "@/components/AvatarCaptions";
 import { KeyTag } from "@/components/app/KeyTag";
@@ -25,6 +27,9 @@ export default function AvatarStage({ caption, playKey, showAvatar, interactive 
   const [webgl, setWebgl] = useState<boolean | null>(null);
   const [active, setActive] = useState<number | null>(null);
   const [showNames, setShowNames] = useState(false);
+  /** True after the browser dropped the avatar's WebGL context; bumping mountKey mounts a fresh one. */
+  const [lost, setLost] = useState(false);
+  const [mountKey, setMountKey] = useState(0);
   const gloss = caption?.gloss ?? [];
 
   // Mount P2's avatar only when it is wanted; three.js loads lazily, on the client only.
@@ -32,6 +37,16 @@ export default function AvatarStage({ caption, playKey, showAvatar, interactive 
     if (!showAvatar) return;
     let unmount: (() => void) | null = null;
     let cancelled = false;
+    let detach: (() => void) | null = null;
+    const onLost = () => {
+      if (cancelled) return;
+      setLost(true);
+      setWebgl(false);
+    };
+    // The browser gave the context back: mount a fresh scene rather than trust the old one.
+    const onRestored = () => {
+      if (!cancelled) setMountKey((k) => k + 1);
+    };
     import("@/lib/avatar/player")
       .then((player) => {
         if (cancelled || !boxRef.current) return;
@@ -39,14 +54,30 @@ export default function AvatarStage({ caption, playKey, showAvatar, interactive 
         const mount = player.mountAvatar(boxRef.current);
         unmount = mount.unmount;
         setWebgl(mount.webgl);
+        const canvas = boxRef.current.querySelector("canvas");
+        if (canvas) {
+          canvas.addEventListener("webglcontextlost", onLost);
+          canvas.addEventListener("webglcontextrestored", onRestored);
+          detach = () => {
+            canvas.removeEventListener("webglcontextlost", onLost);
+            canvas.removeEventListener("webglcontextrestored", onRestored);
+          };
+        }
       })
       .catch(() => setWebgl(false));
     return () => {
       cancelled = true;
+      detach?.();
       playerRef.current = null;
       unmount?.();
     };
-  }, [showAvatar]);
+  }, [showAvatar, mountKey]);
+
+  const retryAvatar = () => {
+    setLost(false);
+    setWebgl(null);
+    setMountKey((k) => k + 1);
+  };
 
   // Play the caption's gloss; a newer call interrupts the older one inside playGloss.
   useEffect(() => {
@@ -84,6 +115,16 @@ export default function AvatarStage({ caption, playKey, showAvatar, interactive 
         </div>
       )}
       {caption && !hasGloss && <p className={s.small}>This sentence is shown as text only.</p>}
+      {showAvatar && lost && (
+        <p className={s.small} role="status">
+          The signing avatar stopped on this screen. The signs are shown as words instead.{" "}
+          {interactive && (
+            <button type="button" className={s.linkButton} onClick={retryAvatar}>
+              Try the avatar again
+            </button>
+          )}
+        </p>
+      )}
       {caption && showAvatar && webgl !== false && hasGloss && <p className={s.disclaimer}>{AVATAR_DISCLAIMER}</p>}
       {caption && !cardsOnly && hasGloss && interactive && (
         <div className={s.signNames}>

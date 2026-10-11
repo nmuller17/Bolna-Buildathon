@@ -166,6 +166,13 @@ function Header({ u }: { u: Ui }) {
       <p className={s.brand}>SignBridge front desk</p>
       {ui.pairedWith && <p className={s.muted}>Paired with {ui.pairedWith}</p>}
       {!displayOnly && ui.settings.guestMode !== "choosing" && <MoreMenu u={u} />}
+      {ui.link === "down" && (
+        // Robustness: a dropped or frozen connection is shown, never hidden behind an old caption.
+        <p className={s.linkDown} role="status">
+          <span className={s.linkDot} aria-hidden="true" />
+          Reconnecting to the front desk… This screen may be out of date. If you need help now, wave to the desk.
+        </p>
+      )}
     </header>
   );
 }
@@ -209,6 +216,9 @@ function LiveRegions({ ui }: { ui: GuestUi }) {
     if (ui.interpreter === "sent") setPolite(INTERPRETER_SENT);
     if (ui.interpreter === "acked") setPolite(INTERPRETER_ACKED);
   }, [ui.interpreter]);
+  useEffect(() => {
+    if (ui.link === "down") setPolite("Reconnecting to the front desk. This screen may be out of date.");
+  }, [ui.link]);
   useEffect(() => {
     if (ui.help.state === "sent") setAssertive("Staff has been alerted.");
     if (ui.help.state === "acked") setAssertive("Staff is coming.");
@@ -471,7 +481,11 @@ function Conversation({ u }: { u: Ui }) {
   // Key-triggered signing: the Record button is used every few seconds, so it also comes first.
   const keySigning = ui.hello?.signTrigger === "key" && ui.settings.guestMode === "sign" && ui.signingAvailable;
   // A repeat request or camera guidance also needs the guest now; on a phone it would sit below the fold.
-  const needsGuest = ui.repeat !== null || (ui.settings.guestMode === "sign" && ui.framing !== null && ui.framing !== "OK");
+  // So does "Signing is not available" while the guest is in sign mode (camera program stopped).
+  const needsGuest =
+    ui.repeat !== null ||
+    (ui.settings.guestMode === "sign" && !ui.signingAvailable) ||
+    (ui.settings.guestMode === "sign" && ui.framing !== null && ui.framing !== "OK");
   return (
     // While a sentence waits for the guest, a phone shows it first, within thumb reach (plan 4.5).
     <div className={s.conversation} data-pending={((ui.pending !== null || keySigning || needsGuest) && !displayOnly) || undefined}>

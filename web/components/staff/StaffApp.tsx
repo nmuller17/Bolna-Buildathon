@@ -104,7 +104,8 @@ function Header({ desk }: { desk: Desk }) {
   const modeBadge = st
     ? `${st.mode === "mode0" ? "Mode 0" : st.mode === "modeC" ? "Mode C" : "Mode W"}, ${st.profile}${st.mode === "mode0" ? (st.mode0GuestInput ? ", guest input on" : ", display only") : ""}`
     : "connecting";
-  const heardAgo = st?.guest.lastHeardAt ? now - st.guest.lastHeardAt : null;
+  // Clamped: the status can arrive a moment "from the future" relative to this page's 1 s clock tick.
+  const heardAgo = st?.guest.lastHeardAt ? Math.max(0, now - st.guest.lastHeardAt) : null;
   const heardLevel = heardAgo === null ? "none" : heardAgo > LIMITS.heartbeatRedMs ? "red" : heardAgo > LIMITS.heartbeatAmberMs ? "amber" : "ok";
   const idleLeft = st?.session.idleWipeAt ? st.session.idleWipeAt - now : null;
   const capLeft = st?.session.capAt ? st.session.capAt - now : null;
@@ -122,6 +123,8 @@ function Header({ desk }: { desk: Desk }) {
         : `${rec.mode ?? rec.state}${keyTrigger ? ", live_key (tap to record)" : ""}`
     : "unknown";
   const simulated = rec?.source === "simulated";
+  // While the stream is down these values are the last ones received, not live: say so.
+  const lastKnown = ui.conn !== "open" && st !== null;
 
   return (
     <header className={s.header}>
@@ -131,7 +134,13 @@ function Header({ desk }: { desk: Desk }) {
         </p>
         <span className={s.modeBadge}>{modeBadge}</span>
         <span className={s.connBadge} data-state={ui.conn}>
-          {ui.conn === "open" ? "Connected to the desk server" : ui.conn === "unauthorized" ? "Not signed in" : "Reconnecting…"}
+          {ui.conn === "open"
+            ? "Connected to the desk server"
+            : ui.conn === "unauthorized"
+              ? "Not signed in"
+              : ui.conn === "stale"
+                ? "Desk server not answering…"
+                : "Reconnecting…"}
         </span>
         <div className={s.headerActions}>
           {hasSession ? (
@@ -141,7 +150,7 @@ function Header({ desk }: { desk: Desk }) {
           ) : null}
         </div>
       </div>
-      <dl className={s.slats}>
+      <dl className={s.slats} data-last-known={lastKnown || undefined}>
         <div>
           <dt>Guest window</dt>
           <dd>{guestWhere}</dd>
@@ -149,6 +158,7 @@ function Header({ desk }: { desk: Desk }) {
         <div data-level={hasSession ? heardLevel : "none"}>
           <dt>Guest screen</dt>
           <dd>
+            {lastKnown && "last known: "}
             {heardAgo === null ? "not heard yet" : `heard ${Math.round(heardAgo / 1000)} s ago`}
             {heardLevel === "red" && ", check on the guest"}
             {st && st.guest.streams > 1 && ` (${st.guest.streams} streams)`}
@@ -174,8 +184,9 @@ function Header({ desk }: { desk: Desk }) {
         <div data-level={!rec || rec.state === "down" || rec.mode !== "ok" ? "amber" : "ok"}>
           <dt>Recognizer</dt>
           <dd>
+            {lastKnown && "last known: "}
             {simulated ? "simulator" : recWords}
-            {rec?.fps && !simulated ? `, ${Math.round(rec.fps)} fps` : ""}
+            {rec?.fps && !simulated && rec.state === "up" && !(keyTrigger && rec.controlUp === false) ? `, ${Math.round(rec.fps)} fps` : ""}
           </dd>
         </div>
         <div data-level={rec?.framing && rec.framing !== "OK" ? "amber" : "ok"}>
@@ -481,7 +492,10 @@ function Pending({ desk }: { desk: Desk }) {
 }
 
 function LogLine({ e, desk }: { e: LogEntry; desk: Desk }) {
-  const spoken = desk.ui.spoken[e.seq];
+  // After a reload this page's own record is empty: the server's log still says when a line was voiced.
+  const fromServer = e.kind === "guest" && e.spokenAt ? { at: e.spokenAt, how: "local" as const } : e.kind === "guest_typed" && e.readAloudAt ? { at: e.readAloudAt, how: "local" as const } : undefined;
+  const spoken = desk.ui.spoken[e.seq] ?? fromServer;
+  const voicing = desk.ui.voicing[e.seq] === true;
   switch (e.kind) {
     case "staff":
       return (
@@ -527,7 +541,14 @@ function LogLine({ e, desk }: { e: LogEntry; desk: Desk }) {
               {e.confirmedBy === "staff_for_guest" && <span className={s.hint}>confirmed by staff after the guest pointed</span>}
             </div>
             <p className={s.hint}>
-              {plan.mode === "tts" && (spoken ? (spoken.how === "none" ? "could not be voiced: read it out" : `read aloud ${clock(spoken.at, true)}`) : "reading aloud…")}
+              {plan.mode === "tts" &&
+                (spoken
+                  ? spoken.how === "none"
+                    ? "could not be voiced: read it out"
+                    : `read aloud ${clock(spoken.at, true)}`
+                  : voicing
+                    ? "reading aloud…"
+                    : "not read aloud yet (this screen was away)")}
               {plan.mode === "none" &&
                 (plan.why === "test_mode"
                   ? "test mode: never spoken"
@@ -541,6 +562,11 @@ function LogLine({ e, desk }: { e: LogEntry; desk: Desk }) {
             {plan.mode === "local_after_tap" && (
               <button type="button" className={s.small} onClick={() => void desk.voiceLine(e)}>
                 {plan.tap === "speak_name" ? "Speak name" : "Read aloud"}
+              </button>
+            )}
+            {plan.mode === "tts" && !voicing && (!spoken || spoken.how === "none") && (
+              <button type="button" className={s.small} onClick={() => void desk.voiceLine(e)}>
+                Read aloud now
               </button>
             )}
           </div>

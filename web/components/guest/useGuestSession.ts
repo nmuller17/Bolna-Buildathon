@@ -2,7 +2,8 @@
 // P4 (builder B): guest screen state. Joins with the pairing code from the URL fragment, keeps one
 // event stream open, and turns guest events into what the screen shows (docs/app-plan.md 4.4-4.6).
 //
-// Memory only: no localStorage, sessionStorage, IndexedDB, Cache API or service worker (SES-11).
+// Memory only: no localStorage, sessionStorage, IndexedDB, Cache API or service worker (SES-11). The
+// web-app manifest on /guest (SES-11 as amended 2026-10-11) stores nothing.
 // The caption area shows the last three staff sentences. BN-5 adds the guest's own record: every
 // staff sentence and every sentence the guest sent, kept in this page's memory only and erased at the
 // end. The server's reconnect snapshot still holds only the last caption (AS-1).
@@ -72,6 +73,11 @@ export type GuestUi = {
   end: { reason: SessionEndReason; pendingLost: boolean } | null;
   /** The guest's own screen confirms every mode or setting change (C2-7). */
   notice: { text: string; at: number } | null;
+  /**
+   * The event stream to the desk: "down" after 1.5 s without a working stream (dropped, refused, or the
+   * server sends nothing), so the screen can say it may be out of date. Back to "ok" on the next byte.
+   */
+  link: "ok" | "down";
 };
 
 const DEFAULT_SETTINGS: GuestSettings = { type: "settings", guestMode: "choosing", speakAloud: true, showAvatar: true };
@@ -97,11 +103,13 @@ const INITIAL: GuestUi = {
   pairedWith: null,
   end: null,
   notice: null,
+  link: "ok",
 };
 
 type Act =
   | { t: "env"; env: BusEnvelope<GuestEvent> }
   | { t: "conn"; conn: GuestConn }
+  | { t: "link"; link: GuestUi["link"] }
   | { t: "hello"; hello: GuestHello }
   | { t: "help_sent" }
   | { t: "help_failed" }
@@ -148,6 +156,8 @@ function reduce(ui: GuestUi, a: Act): GuestUi {
     case "conn":
       if (ui.conn === "ended") return ui;
       return { ...ui, conn: a.conn };
+    case "link":
+      return ui.link === a.link ? ui : { ...ui, link: a.link };
     case "hello":
       return { ...ui, hello: a.hello, signingAvailable: a.hello.signingAvailable, conn: ui.conn === "ended" ? ui.conn : "live" };
     case "help_sent":
@@ -316,7 +326,10 @@ export function useGuestSession() {
       }
       dispatch({ t: "env", env });
       // Render acknowledgement for captions and proposals: feeds the checklist and latency (plan 5.1 S9).
-      if (env.msg.type === "staff_utterance" || env.msg.type === "guest_proposal") {
+      // A reconnect snapshot that carries the last caption is acknowledged too: a caption sent while
+      // this screen had no stream reaches it only through the snapshot, and the desk must learn that
+      // it is now shown (otherwise it keeps saying "not shown on device yet").
+      if (env.msg.type === "staff_utterance" || env.msg.type === "guest_proposal" || (env.msg.type === "snapshot" && env.msg.lastCaption)) {
         const seq = env.seq;
         requestAnimationFrame(() => void sendGuestAction({ type: "ack", seq }));
       }
@@ -327,6 +340,20 @@ export function useGuestSession() {
   // Join (code from the fragment, removed before any request), then the stream.
   useEffect(() => {
     let cancelled = false;
+    let downTimer: ReturnType<typeof setTimeout> | null = null;
+    const linkOk = () => {
+      if (downTimer) clearTimeout(downTimer);
+      downTimer = null;
+      dispatch({ t: "link", link: "ok" });
+    };
+    const linkTrouble = () => {
+      // A normal reconnect takes well under 1.5 s; only a longer gap is shown, so the line never flickers.
+      if (downTimer) return;
+      downTimer = setTimeout(() => {
+        downTimer = null;
+        if (!endedRef.current) dispatch({ t: "link", link: "down" });
+      }, 1_500);
+    };
     const startStream = () => {
       if (cancelled) return;
       streamRef.current = openEventStream<GuestEvent>(
@@ -334,12 +361,17 @@ export function useGuestSession() {
         {
           onMessage: onEnvelope,
           onState: (state) => {
+            if (state === "open") linkOk();
+            else if (state === "stale" || state === "retrying" || state === "connecting") linkTrouble();
             if (state !== "unauthorized" || endedRef.current) return;
+            linkOk();
             // A 401 that was not preceded by session_end (plan 9.4).
             dispatch({ t: "conn", conn: uiRef.current.hello ? "lost" : "no_session" });
           },
         },
-        { watchdogMs: LIMITS.guestWatchdogMs, retryMs: LIMITS.sseRetryMs },
+        // The server pings guest streams every 2 s: 3 s of silence is reported, 5 s reconnects. Retries back
+        // off only to 2.5 s: the guest's screen must come back quickly once the desk answers again.
+        { watchdogMs: LIMITS.guestWatchdogMs, staleMs: 3_000, retryMs: 1_000, maxRetryMs: 2_500 },
       );
     };
 
@@ -359,6 +391,7 @@ export function useGuestSession() {
     });
     return () => {
       cancelled = true;
+      if (downTimer) clearTimeout(downTimer);
       streamRef.current?.close();
     };
   }, [onEnvelope]);

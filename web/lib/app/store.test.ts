@@ -159,6 +159,28 @@ test("DSH-2/GST-11: an item is shared only on the guest device's ack; a repair r
   assert.equal(item().state, "needs_retry");
 });
 
+test("robust 6a: a caption sent while the guest stream was down is marked shown once the reconnect snapshot is acked", () => {
+  const { store, act, token } = setup();
+  // No guest stream is open: the caption is queued nowhere and reaches the screen only via the snapshot.
+  const r = store.staffAction({ type: "say_quick", intent: "key_card" });
+  const captionId = r.body.captionId as string;
+  const line = () => store.session!.log.find((e) => e.kind === "staff" && e.id === captionId) as { shownOnDeviceAt: number | null };
+  const item = () => store.session!.checklist.find((c) => c.key === "key_card")!;
+  assert.equal(line().shownOnDeviceAt, null);
+  const frames: string[] = [];
+  const id = store.openGuestStream(token, (c) => (frames.push(c), true), () => {}, "ua");
+  assert.ok(id !== null);
+  const snap = frames.map((f) => JSON.parse(f.split("data: ")[1])).find((env) => env.msg.type === "snapshot");
+  assert.equal(snap.msg.lastCaption.id, captionId);
+  act({ type: "ack", seq: snap.seq });
+  assert.notEqual(line().shownOnDeviceAt, null, "the desk log now says shown on device");
+  assert.equal(item().state, "shared", "the co-pilot item is shared, not 'sent, not shown'");
+  // A second reconnect does not register the already-shown caption again.
+  const before = store.session!.sent.size;
+  store.openGuestStream(token, () => true, () => {}, "ua");
+  assert.equal(store.session!.sent.size, before);
+});
+
 test("GST-10/SPK-5: a phrase pick gives the same speak plan as a recognised proposal; text only and read-aloud off give none", () => {
   const { store, act } = setup();
   act({ type: "guest_choice", choice: "type" });

@@ -11,7 +11,11 @@
 // Cookies travel on their own (same-origin fetch); no token is ever put in a URL, a header or storage.
 import type { BusEnvelope, GuestAction, Role } from "./app/types";
 
-export type StreamState = "connecting" | "open" | "retrying" | "unauthorized" | "closed";
+/**
+ * "stale" = the stream is still open but no byte (event or ping) arrived for `staleMs`: the server may
+ * be frozen or the network is gone. The next byte turns it back to "open".
+ */
+export type StreamState = "connecting" | "open" | "stale" | "retrying" | "unauthorized" | "closed";
 
 export type StreamHandlers<M> = {
   onMessage: (env: BusEnvelope<M>) => void;
@@ -21,8 +25,12 @@ export type StreamHandlers<M> = {
 export type StreamOptions = {
   /** Reconnect when no byte (event or ping) arrived for this long. Guest 5 s (LIMITS.guestWatchdogMs). */
   watchdogMs: number;
-  /** Delay before reconnecting after a drop (the server's `retry:` value wins when it sends one). */
+  /** First delay before reconnecting after a drop (the server's `retry:` value wins when it sends one). */
   retryMs?: number;
+  /** Longest delay between reconnect tries: each failed try waits 1.5x longer, up to this (default 5 s). */
+  maxRetryMs?: number;
+  /** Report "stale" when no byte arrived for this long while open (default: never). */
+  staleMs?: number;
 };
 
 /**
@@ -35,7 +43,12 @@ export function openEventStream<M>(role: Role, handlers: StreamHandlers<M>, opti
   let controller: AbortController | null = null;
   let watchdog: ReturnType<typeof setTimeout> | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let staleTimer: ReturnType<typeof setTimeout> | null = null;
   let retryMs = options.retryMs ?? 2_000;
+  const maxRetryMs = Math.max(options.maxRetryMs ?? 5_000, retryMs);
+  /** Failed tries since the last successful open (resets on open). */
+  let failures = 0;
+  let stale = false;
 
   const setState = (s: StreamState, status?: number) => handlers.onState?.(s, status);
 
@@ -44,10 +57,34 @@ export function openEventStream<M>(role: Role, handlers: StreamHandlers<M>, opti
     watchdog = setTimeout(() => controller?.abort(), options.watchdogMs);
   };
 
+  /** Called on every byte while open: clears a "stale" report and restarts the stale timer. */
+  const armStale = () => {
+    if (stale) {
+      stale = false;
+      setState("open");
+    }
+    if (!options.staleMs) return;
+    if (staleTimer) clearTimeout(staleTimer);
+    staleTimer = setTimeout(() => {
+      if (closed) return;
+      stale = true;
+      setState("stale");
+    }, options.staleMs);
+  };
+  const clearStale = () => {
+    if (staleTimer) clearTimeout(staleTimer);
+    staleTimer = null;
+    stale = false;
+  };
+
   const scheduleRetry = () => {
     if (closed) return;
     setState("retrying");
-    retryTimer = setTimeout(connect, retryMs);
+    // Backoff with jitter: 1x, 1.5x, 2.25x ... of the first delay, capped, so a dead server is not
+    // hammered while a short drop still recovers within a couple of seconds.
+    const delay = Math.min(maxRetryMs, retryMs * 1.5 ** failures) * (0.8 + Math.random() * 0.4);
+    failures++;
+    retryTimer = setTimeout(connect, Math.round(delay));
   };
 
   const handleBlock = (block: string) => {
@@ -85,7 +122,10 @@ export function openEventStream<M>(role: Role, handlers: StreamHandlers<M>, opti
         return;
       }
       if (!res.ok || !res.body) throw new Error(String(res.status));
+      failures = 0;
+      stale = false;
       setState("open");
+      armStale();
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = "";
@@ -93,6 +133,7 @@ export function openEventStream<M>(role: Role, handlers: StreamHandlers<M>, opti
         const { done, value } = await reader.read();
         if (done) break;
         armWatchdog();
+        armStale();
         buf += decoder.decode(value, { stream: true }).replace(/\r\n?/g, "\n");
         let cut: number;
         while ((cut = buf.indexOf("\n\n")) !== -1) {
@@ -104,6 +145,7 @@ export function openEventStream<M>(role: Role, handlers: StreamHandlers<M>, opti
       // Network drop, abort by the watchdog, or a non-200 that is not an auth failure.
     }
     if (watchdog) clearTimeout(watchdog);
+    clearStale();
     scheduleRetry();
   }
 
@@ -113,6 +155,7 @@ export function openEventStream<M>(role: Role, handlers: StreamHandlers<M>, opti
       closed = true;
       if (watchdog) clearTimeout(watchdog);
       if (retryTimer) clearTimeout(retryTimer);
+      clearStale();
       controller?.abort();
       setState("closed");
     },
