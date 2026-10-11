@@ -5,6 +5,7 @@
 import { useRef, useState } from "react";
 import { QUICK_REPLIES } from "@/components/app/displayVocab";
 import { LIMITS } from "@/lib/app/types";
+import CaptionPanel from "./CaptionPanel";
 import type { Desk } from "./useStaffDesk";
 import s from "./staff.module.css";
 
@@ -97,6 +98,8 @@ export default function TalkPanel({ desk }: { desk: Desk }) {
       <h2 id="talk-title" className={s.colTitle}>
         Talk to the guest
       </h2>
+      <CaptionPanel desk={desk} />
+      <h3 className={s.subTitle}>Speak, check, then send</h3>
       <button
         type="button"
         className={s.holdButton}

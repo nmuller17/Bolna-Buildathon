@@ -9,6 +9,12 @@ import type {
   BusEnvelope,
   CapturePhase,
   CheckinItemStatus,
+  Fact,
+  FactKey,
+  InterpreterContextCard,
+  NumberAbout,
+  StaffDeskAlertState,
+  StaffLiveCaption,
   GuestMode,
   GuestProposal,
   GuestReplyKind,
@@ -58,7 +64,16 @@ export type StaffUi = {
   warnings: SafetyWarning[];
   pending: (GuestProposal & { simulatedSource?: boolean }) | null;
   emergency: { count: number; at: number } | null;
-  interpreter: { vri: VriInfo; at: number } | null;
+  /** `card`: the context card the guest agreed to share (features-plan F11), or null. */
+  interpreter: { vri: VriInfo; at: number; card: InterpreterContextCard | null } | null;
+  /** features-plan F3: live caption lines (staff mirror), newest last. */
+  liveCaptions: StaffLiveCaption[];
+  /** features-plan F1: this guest's facts and the hotel's values. */
+  facts: { facts: Fact[]; property: Partial<Record<FactKey, string>> };
+  /** features-plan F9: alerts sent to the guest screen and whether the guest tapped OK. */
+  deskAlerts: StaffDeskAlertState["alerts"];
+  /** features-plan F7: numbers the guest typed, shown big until dismissed. */
+  numbers: { about: NumberAbout; value: string; logSeq: number; at: number }[];
   typed: { text: string; logSeq: number; at: number }[];
   replies: { reply: GuestReplyKind; at: number; key: number }[];
   moreTime: { on: "idle" | "cap"; at: number } | null;
@@ -91,6 +106,10 @@ const INITIAL: StaffUi = {
   pending: null,
   emergency: null,
   interpreter: null,
+  liveCaptions: [],
+  facts: { facts: [], property: {} },
+  deskAlerts: [],
+  numbers: [],
   typed: [],
   replies: [],
   moreTime: null,
@@ -110,6 +129,7 @@ type Act =
   | { t: "voicing"; seq: number }
   | { t: "dismiss_typed"; logSeq: number }
   | { t: "dismiss_reply"; key: number }
+  | { t: "dismiss_number"; logSeq: number }
   | { t: "ack"; about: AlertKind };
 
 const MODE_WORDS: Record<GuestMode, string> = {
@@ -155,6 +175,8 @@ function reduce(ui: StaffUi, a: Act): StaffUi {
       return { ...ui, typed: ui.typed.filter((t) => t.logSeq !== a.logSeq) };
     case "dismiss_reply":
       return { ...ui, replies: ui.replies.filter((r) => r.key !== a.key) };
+    case "dismiss_number":
+      return { ...ui, numbers: ui.numbers.filter((n) => n.logSeq !== a.logSeq) };
     case "ack":
       if (a.about === "emergency") return { ...ui, emergency: null };
       if (a.about === "interpreter") return { ...ui, interpreter: null };
@@ -177,6 +199,9 @@ function reduce(ui: StaffUi, a: Act): StaffUi {
         evidence: msg.evidence.map((sign) => ({ sign, simulated: false })),
         warnings: msg.warnings,
         pending: msg.pending,
+        facts: msg.facts ?? ui.facts,
+        deskAlerts: msg.deskAlerts ?? [],
+        interpreter: ui.interpreter && msg.interpreterCard !== undefined ? { ...ui.interpreter, card: msg.interpreterCard } : ui.interpreter,
       };
     case "status": {
       const prev = ui.status;
@@ -292,6 +317,7 @@ function reduce(ui: StaffUi, a: Act): StaffUi {
             spokenAt: null,
             confirmedBy: msg.confirmedBy,
             simulated,
+            ...(msg.via ? { via: msg.via } : {}),
           },
         ],
       };
@@ -320,7 +346,31 @@ function reduce(ui: StaffUi, a: Act): StaffUi {
     case "guest_choice":
       return { ...ui, log: [...ui.log, { kind: "guest_setting", seq, at, text: choiceLine(ui.status?.guest.settings, msg) }] };
     case "interpreter_request":
-      return { ...ui, interpreter: { vri: msg.vri, at } };
+      return { ...ui, interpreter: { vri: msg.vri, at: ui.interpreter?.at ?? at, card: msg.context ?? ui.interpreter?.card ?? null } };
+    // features-plan additions (builder S)
+    case "live_caption": {
+      const i = ui.liveCaptions.findIndex((c) => c.utteranceId === msg.utteranceId);
+      const prev = i >= 0 ? ui.liveCaptions[i] : null;
+      if (prev && msg.rev <= prev.rev) return ui;
+      const liveCaptions = i >= 0 ? ui.liveCaptions.map((c, k) => (k === i ? msg : c)) : [...ui.liveCaptions, msg].slice(-8);
+      let log = ui.log;
+      if (msg.retracted) {
+        log = log.map((e) => (e.kind === "live_caption" && e.utteranceId === msg.utteranceId ? { ...e, retracted: true } : e));
+      } else if (msg.final && !log.some((e) => e.kind === "live_caption" && e.utteranceId === msg.utteranceId)) {
+        log = [...log, { kind: "live_caption", seq, at, utteranceId: msg.utteranceId, text: msg.text, backend: msg.backend, retracted: false }];
+      }
+      return { ...ui, liveCaptions, log, idleWarnUntil: msg.final ? null : ui.idleWarnUntil };
+    }
+    case "facts":
+      return { ...ui, facts: { facts: msg.facts, property: msg.property } };
+    case "desk_alerts":
+      return { ...ui, deskAlerts: msg.alerts };
+    case "guest_number":
+      return {
+        ...ui,
+        numbers: [...ui.numbers, { about: msg.about, value: msg.value, logSeq: msg.logSeq, at }].slice(-3),
+        log: [...ui.log, { kind: "guest_number", seq, at, about: msg.about, value: msg.value }],
+      };
     case "emergency":
       return { ...ui, emergency: { count: msg.count, at: ui.emergency?.at ?? at } };
     case "more_time":
@@ -352,6 +402,10 @@ function reduce(ui: StaffUi, a: Act): StaffUi {
         pending: null,
         emergency: null,
         interpreter: null,
+        liveCaptions: [],
+        facts: { facts: [], property: ui.facts.property },
+        deskAlerts: [],
+        numbers: [],
         typed: [],
         replies: [],
         moreTime: null,
@@ -575,6 +629,7 @@ export function useStaffDesk() {
     ack,
     dismissTyped: (logSeq: number) => dispatch({ t: "dismiss_typed", logSeq }),
     dismissReply: (key: number) => dispatch({ t: "dismiss_reply", key }),
+    dismissNumber: (logSeq: number) => dispatch({ t: "dismiss_number", logSeq }),
     setError: (lastError: string | null) => dispatch({ t: "set", patch: { lastError } }),
   };
 }

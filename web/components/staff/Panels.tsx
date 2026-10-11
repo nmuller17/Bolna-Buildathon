@@ -5,8 +5,10 @@
 import { useEffect, useRef, useState } from "react";
 import { KeyTag, SimulatedBadge, TrafficLight } from "@/components/app/KeyTag";
 import { GUEST_PHRASES } from "@/components/app/displayVocab";
+import { equalAccessRows } from "@/lib/app/counters";
 import { postJson } from "@/lib/channel";
 import {
+  CAPTION_BACKEND_LABEL,
   CHECKIN_ITEMS,
   CHECKLIST_NOTE,
   EVIDENCE_NOTE,
@@ -35,7 +37,7 @@ const clockMs = (unixSeconds: number | null) => {
 /* Check-in co-pilot (DSH-2)                                           */
 /* ------------------------------------------------------------------ */
 
-export function Checklist({ desk }: { desk: Desk }) {
+export function Checklist({ desk, extra }: { desk: Desk; extra?: React.ReactNode }) {
   const { ui, staffAction } = desk;
   const byKey = new Map<string, CheckinItemStatus>(ui.checklist.map((c) => [c.key, c]));
   return (
@@ -74,6 +76,7 @@ export function Checklist({ desk }: { desk: Desk }) {
         })}
       </ul>
       <p className={s.hint}>Gentle reminders only; nothing here blocks the conversation.</p>
+      {extra}
     </section>
   );
 }
@@ -284,7 +287,43 @@ function Latency({ desk }: { desk: Desk }) {
         </tbody>
       </table>
       {stages.length === 0 && <p className={s.hint}>no data yet</p>}
+      <CaptionLatency desk={desk} />
     </div>
+  );
+}
+
+/** features-plan F3: live caption timings, measured on this laptop (never invented). */
+function CaptionLatency({ desk }: { desk: Desk }) {
+  const c = desk.ui.status?.captions;
+  if (!c) return null;
+  return (
+    <>
+      <h3 className={s.subTitle}>Live captions ({c.live ? CAPTION_BACKEND_LABEL[c.live] : "off"})</h3>
+      <table className={s.table}>
+        <thead>
+          <tr>
+            <th scope="col">Stage</th>
+            <th scope="col">Last</th>
+            <th scope="col">Median</th>
+            <th scope="col">Measured by</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">Recognition on this laptop (per request)</th>
+            <td>{ms(c.localDecodeMs.last)}</td>
+            <td>{ms(c.localDecodeMs.median)}</td>
+            <td>the local speech-to-text process</td>
+          </tr>
+          <tr>
+            <th scope="row">End of speech to final caption at the server</th>
+            <td>{ms(c.speechEndToFinalMs?.last ?? null)}</td>
+            <td>{ms(c.speechEndToFinalMs?.median ?? null)}</td>
+            <td>this laptop (staff page clock)</td>
+          </tr>
+        </tbody>
+      </table>
+    </>
   );
 }
 
@@ -322,6 +361,14 @@ function PrivacyColumn({ title, c }: { title: string; c: PrivacyCounters }) {
         <dd>{c.skeletonsHeld}</dd>
         <dt>Fixed sentences sent to the voice</dt>
         <dd>{c.ttsFixedSentences}</dd>
+        <dt>Hidden by the text check (kinds only, never the values)</dt>
+        <dd>
+          {c.redactions && Object.keys(c.redactions).length
+            ? Object.entries(c.redactions)
+                .map(([k, n]) => `${k.replace(/_/g, " ")}: ${n}`)
+                .join("; ")
+            : "nothing hidden"}
+        </dd>
       </dl>
     </div>
   );
@@ -343,6 +390,27 @@ function Privacy({ desk }: { desk: Desk }) {
         <dd>{p.lastWipe ? `yes, ${clock(p.lastWipe.at, true)}: ${p.lastWipe.itemsErased} items erased` : "no wipe yet"}</dd>
       </dl>
       <p className={s.diskNote}>{PRIVACY_DISK_NOTE}</p>
+      <EqualAccess desk={desk} />
+    </div>
+  );
+}
+
+/** features-plan F16: anonymous counts since the server started; small counts never shown exactly. */
+function EqualAccess({ desk }: { desk: Desk }) {
+  const c = desk.ui.status?.equalAccess;
+  if (!c) return null;
+  return (
+    <div>
+      <h3 className={s.subTitle}>Equal access since the server started</h3>
+      <p className={s.hint}>Counts only, in memory, reset on restart. No times, no guests, no devices. Counts under 5 are shown as &ldquo;fewer than 5&rdquo;.</p>
+      <dl className={s.dl}>
+        {equalAccessRows(c).map((r) => (
+          <div key={r.label}>
+            <dt>{r.label}</dt>
+            <dd>{r.value}</dd>
+          </div>
+        ))}
+      </dl>
     </div>
   );
 }
