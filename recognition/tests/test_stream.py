@@ -7,7 +7,7 @@ from types import SimpleNamespace as NS
 import numpy as np
 import pytest
 
-from recognition import features, framing, mediapipe_adapter as mpa
+from recognition import features, framing, mediapipe_adapter as mpa, stream
 from recognition.model import SignGRU, save_checkpoint
 from recognition.recognizer import Recognizer, needs_repeat, validate
 from recognition.segmenter import Segmenter
@@ -253,9 +253,9 @@ def test_needs_repeat_uses_the_shared_rule():
 def test_badly_framed_sign_is_not_classified_and_forces_a_repeat():
     rng = np.random.default_rng(9)
     seq = motion(20, False, rng, sign_at=99) + motion(110, False, rng, sign_at=5)
-    for r in seq:                                    # hips below the picture the whole time
+    for r in seq:                                    # hips below the picture the whole time (head to hips fits)
         for i in (23, 24):
-            r.pose_landmarks[i].y = 1.05
+            r.pose_landmarks[i].y = 0.99
     spy = Spy()
     _, events = run_live(seq, [i / 30 for i in range(len(seq))], spy)
     assert spy.got == []
@@ -402,3 +402,41 @@ def test_lead_in_is_at_most_context_before_sec():
     wrist_y = [f["rh"][0][1] if f["rh"] else None for f in spy.got[0]]
     resting = next(i for i, y in enumerate(wrist_y) if y < 1.7)       # hands at the waist: about 1.76 below
     assert 0 < resting <= stream_mod.CONTEXT_BEFORE_SEC * 30 + segmenter.PREROLL + 1
+
+
+def test_utterance_is_ended_at_max_signs():
+    rng = np.random.default_rng(12)
+    seq = motion(20, False, rng, sign_at=99)
+    for _ in range(stream.MAX_UTTERANCE_SIGNS + 1):
+        seq += motion(55, False, rng, sign_at=5)     # 0.5 s hands down between signs: no utterance end
+    spy = Spy()
+    _, events = run_live(seq, [i / 30 for i in range(len(seq))], spy)
+    assert len(spy.got) == stream.MAX_UTTERANCE_SIGNS + 1
+    utts = [e for e in events if e["type"] == "utterance"]
+    assert [len(u["signs"]) for u in utts] == [stream.MAX_UTTERANCE_SIGNS, 1]
+    assert utts[0]["seqs"] == list(range(1, stream.MAX_UTTERANCE_SIGNS + 1)) and utts[1]["seqs"] == [9]
+    kinds = [e["type"] for e in events if e["type"] != "framing"]
+    assert kinds.index("utterance") == stream.MAX_UTTERANCE_SIGNS           # sent right after the 8th sign
+
+
+def test_no_person_after_a_small_person_is_come_closer():
+    rng = np.random.default_rng(13)
+
+    def small():
+        r = holistic(None, None, rng)
+        for p in r.pose_landmarks:
+            p.x, p.y = 0.5 + (p.x - 0.5) * 0.35, 0.5 + (p.y - 0.5) * 0.35
+        return r
+    seq = [small() for _ in range(30)] + [None] * 60 + [None] * 60
+    st = SignStream(Spy(), (W, H))
+    statuses = []
+    for i, r in enumerate(seq):
+        st.push(r, i / 30)
+        statuses.append(st.status)
+    assert statuses[0] == framing.COME_CLOSER
+    assert set(statuses[30:30 + 90]) == {framing.COME_CLOSER}                 # within FAR_MEMORY_SEC
+    assert statuses[-1] == framing.NO_PERSON
+    st = SignStream(Spy(), (W, H))
+    for i, r in enumerate([holistic(None, None, rng)] * 5 + [None] * 5):
+        st.push(r, i / 30)
+    assert st.status == framing.NO_PERSON                                    # a normal-size person left
