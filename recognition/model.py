@@ -1,6 +1,10 @@
 """GRU sign classifier (22 classes, CLAUDE.md 8.2), a non-deep baseline, checkpoints, predictor.
 
-Both models take [B, T, D] features and return logits, and both can be saved and served."""
+Checkpoint kinds:
+- "gru", "baseline": take [B, T, D] features (recognition.features, layout v2) and return logits;
+- "ffislr": the face-free GISLR 1st-place network (recognition/ffislr.py, MIT, see NOTICE), which takes
+  its own input (ffislr.prepare: face dropped first) plus a frame mask.
+All three can be saved and served; the Predictor hides the difference."""
 import time
 
 import numpy as np
@@ -108,13 +112,23 @@ def softmax(logits, temperature=1.0):
     return e / e.sum(axis=-1, keepdims=True)
 
 
+KINDS = ("gru", "baseline", "ffislr")
+
+
 def save_checkpoint(path, model, temperature=1.0, T=features.T_DEFAULT, meta=None):
+    from recognition import ffislr
+    if isinstance(model, ffislr.ISLR1st):
+        ffislr.assert_face_blind(model)
+        kind, version, dim, T = "ffislr", ffislr.INPUT_VERSION, ffislr.IN_DIM, None
+    else:
+        kind = "baseline" if isinstance(model, Baseline) else "gru"
+        version, dim = features.FEATURE_VERSION, features.FEATURE_DIM
     torch.save({
-        "kind": "baseline" if isinstance(model, Baseline) else "gru",
+        "kind": kind,
         "state_dict": model.state_dict(),
         "classes": list(CLASSES),
-        "feature_version": features.FEATURE_VERSION,
-        "feature_dim": features.FEATURE_DIM,
+        "feature_version": version,
+        "feature_dim": dim,
         "T": T,
         "temperature": float(temperature),
         "meta": meta or {},
@@ -127,10 +141,19 @@ def load_checkpoint(path):
     weights_only=True: a checkpoint is tensors and plain metadata, never code (a pickled .pt
     shared over chat could otherwise run anything at server start)."""
     ck = torch.load(path, map_location="cpu", weights_only=True)
-    if ck.get("kind") not in ("gru", "baseline"):
+    if ck.get("kind") not in KINDS:
         raise ValueError("checkpoint has no model kind (made by an older train.py); retrain it")
     if ck["classes"] != list(CLASSES):
         raise ValueError(f"checkpoint classes differ from recognition/labels.py: {ck['classes']}")
+    if ck["kind"] == "ffislr":
+        from recognition import ffislr
+        if ck["feature_version"] != ffislr.INPUT_VERSION or ck["feature_dim"] != ffislr.IN_DIM:
+            raise ValueError(f"ffislr checkpoint input {ck['feature_version']} != {ffislr.INPUT_VERSION}; retrain it")
+        model = ffislr.new_model(len(ck["classes"]))
+        model.load_state_dict(ck["state_dict"])
+        ffislr.assert_face_blind(model)  # refuse a checkpoint whose stem reads lip/eye columns
+        model.eval()
+        return model, ck
     if ck["feature_version"] != features.FEATURE_VERSION:
         raise ValueError(f"checkpoint feature layout {ck['feature_version']} != {features.FEATURE_VERSION}; retrain it")
     cls = Baseline if ck["kind"] == "baseline" else SignGRU
@@ -145,13 +168,24 @@ class Predictor:
 
     def __init__(self, path):
         self.model, self.ck = load_checkpoint(path)
+        self.kind = self.ck["kind"]
         self.T, self.temperature = self.ck["T"], self.ck["temperature"]
 
-    def probs(self, frames):
-        x = torch.from_numpy(features.prepare(frames, self.T))[None]
+    def _inputs(self, frames_list):
+        """Model arguments for a batch of Frame[] / Seq segments (raw capture coordinates)."""
+        if self.kind == "ffislr":
+            from recognition import ffislr
+            return ffislr.pad_batch([ffislr.prepare(f) for f in frames_list])  # face dropped inside prepare
+        return (torch.from_numpy(np.stack([features.prepare(f, self.T) for f in frames_list])),)
+
+    def logits_batch(self, frames_list):
+        """[N, n_classes] uncalibrated logits for N segments."""
+        args = self._inputs(frames_list)
         with torch.inference_mode():
-            logits = self.model(x).numpy()[0]
-        return softmax(logits, self.temperature)
+            return self.model(*args).numpy()
+
+    def probs(self, frames):
+        return softmax(self.logits_batch([frames])[0], self.temperature)
 
     def top(self, frames, k=3):
         p = self.probs(frames)
@@ -160,13 +194,13 @@ class Predictor:
 
     def time_forward(self, frames, n=200):
         """Model forward latency (ms) on one prepared segment: returns list of n timings."""
-        x = torch.from_numpy(features.prepare(frames, self.T))[None]
+        args = self._inputs([frames])
         out = []
         with torch.inference_mode():
             for _ in range(10):
-                self.model(x)
+                self.model(*args)
             for _ in range(n):
                 t0 = time.perf_counter()
-                self.model(x)
+                self.model(*args)
                 out.append((time.perf_counter() - t0) * 1000)
         return out

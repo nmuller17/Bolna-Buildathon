@@ -293,9 +293,13 @@ def main(argv=None):
         roots = [args.test_data]
         seqs, labels, signers, _ = load_dataset(roots)
         pred = Predictor(args.checkpoint)
-        X = torch.from_numpy(to_arrays(seqs, pred.T))
-        with torch.inference_mode():
-            lg = pred.model(X).numpy()
+        if pred.kind == "ffislr":  # its own face-free input (seqs are normalised: face dropped, pose 1-10 := nose)
+            from recognition import ffislr
+            lg = ffislr.logits(pred.model, [ffislr.seq_to_raw(ffislr.minimise(s)) for s in seqs])
+        else:
+            X = torch.from_numpy(to_arrays(seqs, pred.T))
+            with torch.inference_mode():
+                lg = pred.model(X).numpy()
         m = metrics(softmax(lg, pred.temperature), labels)
         m["wrong_sign_spoken_rate_T1"] = spoken_wrong(softmax(lg), labels)
         models = {pred.ck["kind"]: m}
