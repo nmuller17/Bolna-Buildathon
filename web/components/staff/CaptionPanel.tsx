@@ -227,11 +227,30 @@ export default function CaptionPanel({ desk }: { desk: Desk }) {
         if (e.error === "not-allowed" || e.error === "service-not-allowed") {
           setNote("This browser would not start speech recognition. Type instead.");
           stopBrowser();
+        } else if (e.error === "network" || e.error === "audio-capture" || e.error === "language-not-supported") {
+          // Offline (the browser maker's service is unreachable) or no microphone: restarting would only
+          // loop. Say so and fall back to typing; nothing switches to another service by itself.
+          setNote(
+            e.error === "network"
+              ? `Browser speech needs the internet to reach ${b.vendor}, and it did not answer. Type instead, or use a quick reply.`
+              : "This browser would not start speech recognition. Type instead.",
+          );
+          stopBrowser();
         }
       };
       // Chrome ends recognition after a pause; restart while staff still want it (new ids each run).
+      // A run that ends within a second of starting, five times in a row, is a failing service: stop.
+      let startedAt = Date.now();
+      let quickEnds = 0;
       r.onend = () => {
         if (!wantBrowserRef.current) return;
+        quickEnds = Date.now() - startedAt < 1000 ? quickEnds + 1 : 0;
+        if (quickEnds >= 5) {
+          setNote(`Browser speech keeps stopping. Type instead, or use a quick reply.`);
+          stopBrowser();
+          return;
+        }
+        startedAt = Date.now();
         prefix = `b${randomId(6)}`;
         try {
           r.start();

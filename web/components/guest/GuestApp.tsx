@@ -425,7 +425,7 @@ function Conversation({ u }: { u: Ui }) {
     <div className={s.conversation} data-pending={((ui.pending !== null || keySigning || needsGuest) && !displayOnly) || undefined}>
       <DeskSaid session={u.session} />
       {/* F1: the tiles sit right under the desk's words, before the guest's own panel (phone order). */}
-      <FactTiles facts={ui.facts} interactive={!displayOnly} />
+      <FactTiles facts={ui.facts} interactive={!displayOnly} onShown={() => void u.session.act({ type: "card_shown" })} />
       <section className={s.you} aria-labelledby="you-title">
         {displayOnly ? <DisplayOnlyYou ui={ui} /> : <YouPanel u={u} />}
       </section>
