@@ -116,19 +116,23 @@ def test_pin_has_no_env_override(ckpt, monkeypatch):
 def test_pin_model_rewrites_only_the_constant(ckpt, tmp_path):
     pin = tmp_path / "model_pin.py"
     pin.write_text(Path(model_pin.__file__).read_text())
+    pin_model.write_pin(None, pin)  # start unpinned, whatever the committed pin is
+    original = pin.read_text()
     digest = pin_model.file_sha256(ckpt)
     pin_model.write_pin(digest, pin)
     ns = {}
     exec(pin.read_text(), ns)
     assert ns["EXPECTED_SHA256"] == digest == sha256_bytes(ckpt.read_bytes())
     pin_model.write_pin(None, pin)
-    assert pin.read_text() == Path(model_pin.__file__).read_text()
+    assert pin.read_text() == original
     with pytest.raises(ValueError):
         pin_model.write_pin("not-a-hash", pin)
 
 
 def test_committed_pin_is_none_or_a_digest():
-    assert model_pin.EXPECTED_SHA256 is None or len(model_pin.EXPECTED_SHA256) == 64
+    ns = {}
+    exec(Path(model_pin.__file__).read_text(), ns)  # the file, not the attribute the fixture unpinned
+    assert ns["EXPECTED_SHA256"] is None or len(ns["EXPECTED_SHA256"]) == 64
 
 
 def test_server_import_does_not_import_mediapipe():
