@@ -7,7 +7,10 @@
 // - Guest and staff action bodies: exact shapes, unknown keys refused.
 // - Names, guest text, staff text and gloss tokens.
 // Pure functions; every error carries a plain message (and `field` for the guest page, C2-25).
+import { normalizeText } from "./hygiene.ts";
 import {
+  FACT_KEYS,
+  FEATURE_LIMITS,
   LIMITS,
   SIGN_LABEL_ALIASES,
   SIGN_LABELS,
@@ -25,6 +28,7 @@ import {
   type Prediction,
   type SignLabel,
   type SkeletonSnapshot,
+  type FactKey,
   type StaffAction,
 } from "./types.ts";
 
@@ -327,6 +331,21 @@ export function sanitizeStaffText(raw: unknown): Valid<string> | Invalid {
   return { ok: true, value: s };
 }
 
+/**
+ * A fact value typed by staff (features-plan F1): NFKC, no control or zero-width characters, 1 to
+ * 60 characters of letters, digits, spaces and plain punctuation. A room is short and plain
+ * ("517", "12B", "B-204"). Never parsed from speech.
+ */
+export function sanitizeFactValue(key: FactKey, raw: unknown): Valid<string> | Invalid {
+  if (typeof raw !== "string") return bad("Type a value first", "text");
+  const s = normalizeText(raw);
+  if (!s) return bad("Type a value first", "text");
+  if ([...s].length > FEATURE_LIMITS.factValueMax) return bad(`Up to ${FEATURE_LIMITS.factValueMax} characters`, "text");
+  if (key === "room" && !/^[A-Za-z0-9][A-Za-z0-9 -]{0,9}$/.test(s)) return bad("A room number uses letters, digits, spaces and dashes (up to 10)", "text");
+  if (!/^[\p{L}\p{M}\p{N} .,:;'’()\/&@#+!?%*_=\-–]+$/u.test(s)) return bad("Use letters, digits and plain punctuation only", "text");
+  return { ok: true, value: s };
+}
+
 const FS_RE = new RegExp(`^FS:[A-Z0-9]{1,${LIMITS.glossFingerspellMaxLen}}$`);
 
 /**
@@ -363,10 +382,18 @@ function exactKeys(o: Record<string, unknown>, required: string[], optional: str
 
 const isId = (v: unknown): v is string => typeof v === "string" && ID_RE.test(v);
 const isIntentId = (v: unknown): v is GuestIntentId => isInt(v, 1, 20);
-const CHOICES = ["sign", "type", "interpreter", "text_only"] as const;
+const CHOICES = ["sign", "type", "tap", "interpreter", "text_only"] as const;
 const SIGN_CONTROL_CMDS = ["record", "undo", "end"] as const;
 const FIXES = ["sign_again", "type", "interpreter", "not_this"] as const;
-const REPLIES = ["please_repeat", "dont_understand", "please_type", "wait_please", "slower", "show_on_paper"] as const;
+const REPLIES = ["please_repeat", "dont_understand", "please_type", "wait_please", "slower", "show_on_paper", "say_another_way", "write_number"] as const;
+// features-plan additions (builder S)
+const VIAS = ["board", "phrase_list", "typed_match"] as const;
+const NUMBER_ABOUT = ["nights", "room", "people", "other"] as const;
+const SIGN_LANGS = ["ase", "bfi", "fsl", "asf", "isg", "other"] as const;
+const CAPTION_BACKENDS = ["local", "cloud_openai", "browser_google", "browser_apple", "browser_other", "typed"] as const;
+const PAGE_CAPTION_BACKENDS = ["cloud_openai", "browser_google", "browser_apple", "browser_other"] as const;
+const ALERT_CODES = ["come_to_desk", "taxi_here", "room_ready", "look_at_desk"] as const;
+export const UTTERANCE_RE = /^[A-Za-z0-9_-]{1,40}$/;
 const PRESSURE = ["nominal", "fair", "serious", "critical"] as const;
 const inList = <T extends string>(list: readonly T[], v: unknown): v is T => typeof v === "string" && (list as readonly string[]).includes(v);
 
@@ -386,10 +413,26 @@ export function validateGuestAction(raw: unknown): Valid<GuestAction> | Invalid 
     case "sign_control":
       return exactKeys(raw, ["n", "type", "cmd"]) && inList(SIGN_CONTROL_CMDS, raw.cmd) ? ok({ n: raw.n, type: t, cmd: raw.cmd }) : bad("bad sign_control");
     case "stop_signing":
-    case "interpreter_request":
     case "emergency":
     case "heartbeat":
+    case "card_shown":
       return exactKeys(raw, ["n", "type"]) ? ok({ n: raw.n, type: t }) : bad(`bad ${t}`);
+    case "interpreter_request": {
+      if (!exactKeys(raw, ["n", "type"], ["context"])) return bad("bad interpreter_request");
+      if (!has(raw, "context")) return ok({ n: raw.n, type: t });
+      const c = raw.context;
+      if (!isObj(c) || !exactKeys(c, ["language", "topics"]) || !(c.language === null || inList(SIGN_LANGS, c.language)) || typeof c.topics !== "boolean") {
+        return bad("bad interpreter_request");
+      }
+      return ok({ n: raw.n, type: t, context: { language: c.language as (typeof SIGN_LANGS)[number] | null, topics: c.topics } });
+    }
+    case "guest_number":
+      // The store checks the digits and answers with a reason for the field (F7).
+      return exactKeys(raw, ["n", "type", "about", "value"]) && inList(NUMBER_ABOUT, raw.about) && typeof raw.value === "string" && raw.value.length <= 20
+        ? ok({ n: raw.n, type: t, about: raw.about, value: raw.value })
+        : bad("bad guest_number");
+    case "ack_alert":
+      return exactKeys(raw, ["n", "type", "id"]) && isId(raw.id) ? ok({ n: raw.n, type: t, id: raw.id }) : bad("bad ack_alert");
     case "guest_confirm":
       if (!exactKeys(raw, ["n", "type", "proposalId", "candidateId"], ["name", "voice"]) || !isId(raw.proposalId) || !isId(raw.candidateId)) return bad("bad guest_confirm");
       if (has(raw, "name") && typeof raw.name !== "string") return bad(NAME_RULE_MESSAGE, "name");
@@ -407,10 +450,18 @@ export function validateGuestAction(raw: unknown): Valid<GuestAction> | Invalid 
         ? ok({ n: raw.n, type: t, proposalId: raw.proposalId, action: raw.action })
         : bad("bad guest_fix");
     case "guest_phrase":
-      if (!exactKeys(raw, ["n", "type", "intentId"], ["name", "voice"]) || !isIntentId(raw.intentId)) return bad("bad guest_phrase");
+      if (!exactKeys(raw, ["n", "type", "intentId"], ["name", "voice", "via"]) || !isIntentId(raw.intentId)) return bad("bad guest_phrase");
       if (has(raw, "name") && typeof raw.name !== "string") return bad(NAME_RULE_MESSAGE, "name");
       if (has(raw, "voice") && typeof raw.voice !== "boolean") return bad("bad guest_phrase");
-      return ok({ n: raw.n, type: t, intentId: raw.intentId, ...(typeof raw.name === "string" ? { name: raw.name } : {}), ...(typeof raw.voice === "boolean" ? { voice: raw.voice } : {}) });
+      if (has(raw, "via") && !inList(VIAS, raw.via)) return bad("bad guest_phrase");
+      return ok({
+        n: raw.n,
+        type: t,
+        intentId: raw.intentId,
+        ...(typeof raw.name === "string" ? { name: raw.name } : {}),
+        ...(typeof raw.voice === "boolean" ? { voice: raw.voice } : {}),
+        ...(inList(VIAS, raw.via) ? { via: raw.via } : {}),
+      });
     case "guest_typed":
       if (!exactKeys(raw, ["n", "type", "text"])) return bad("bad guest_typed");
       if (typeof raw.text !== "string") return bad("Please type a message first", "text");
@@ -491,7 +542,49 @@ export function validateStaffAction(raw: unknown): Valid<StaffAction> | Invalid 
       return exactKeys(raw, ["type", "state"]) && inList(PRESSURE, raw.state) ? ok({ type: t, state: raw.state }) : bad("bad device_health");
     case "note_vendor":
       return exactKeys(raw, ["type", "destination"]) && raw.destination === "browser speech service" ? ok({ type: t, destination: raw.destination }) : bad("bad note_vendor");
+    // features-plan additions (builder S)
+    case "caption_backend":
+      return exactKeys(raw, ["type", "backend"]) && inList(CAPTION_BACKENDS, raw.backend) ? ok({ type: t, backend: raw.backend }) : bad("bad caption_backend");
+    case "live_caption":
+      return exactKeys(raw, ["type", "utteranceId", "text", "final", "backend"]) &&
+        typeof raw.utteranceId === "string" && UTTERANCE_RE.test(raw.utteranceId) &&
+        typeof raw.text === "string" && raw.text.length <= 2 * FEATURE_LIMITS.liveCaptionMaxChars &&
+        typeof raw.final === "boolean" && inList(PAGE_CAPTION_BACKENDS, raw.backend)
+        ? ok({ type: t, utteranceId: raw.utteranceId, text: raw.text, final: raw.final, backend: raw.backend })
+        : bad("bad live_caption");
+    case "retract_caption":
+      return exactKeys(raw, ["type", "utteranceId"]) && typeof raw.utteranceId === "string" && UTTERANCE_RE.test(raw.utteranceId)
+        ? ok({ type: t, utteranceId: raw.utteranceId })
+        : bad("bad retract_caption");
+    case "set_fact":
+      if (!exactKeys(raw, ["type", "key", "value"]) || !inList(FACT_KEYS, raw.key)) return bad("bad set_fact");
+      if (typeof raw.value !== "string" || raw.value.length > 200) return bad("Type a value first", "text");
+      return ok({ type: t, key: raw.key, value: raw.value });
+    case "clear_fact":
+      return exactKeys(raw, ["type", "key"]) && inList(FACT_KEYS, raw.key) ? ok({ type: t, key: raw.key }) : bad("bad clear_fact");
+    case "resend_facts":
+      return exactKeys(raw, ["type"]) ? ok({ type: t }) : bad("bad resend_facts");
+    case "send_alert":
+      return exactKeys(raw, ["type", "code"]) && inList(ALERT_CODES, raw.code) ? ok({ type: t, code: raw.code }) : bad("bad send_alert");
+    case "cancel_alert":
+      return exactKeys(raw, ["type", "id"]) && isId(raw.id) ? ok({ type: t, id: raw.id }) : bad("bad cancel_alert");
     default:
       return bad("unknown action type");
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Local speech-to-text answer (features-plan F3)                      */
+/* ------------------------------------------------------------------ */
+
+/** Strict shape of web/stt/local_stt.py's answer; null when anything is off (the route answers 502). */
+export function validateLocalSttResponse(raw: unknown): { text: string; words: { w: string; p: number }[]; audioMs: number; decodeMs: number } | null {
+  if (!isObj(raw) || typeof raw.text !== "string" || raw.text.length > 2_000 || !Array.isArray(raw.words) || raw.words.length > 400) return null;
+  if (!isInt(raw.audioMs, 0, 600_000) || !isInt(raw.decodeMs, 0, 600_000)) return null;
+  const words: { w: string; p: number }[] = [];
+  for (const w of raw.words) {
+    if (!isObj(w) || typeof w.w !== "string" || w.w.length > 100 || !isNum(w.p) || w.p < 0 || w.p > 1) return null;
+    words.push({ w: w.w, p: w.p });
+  }
+  return { text: raw.text, words, audioMs: raw.audioMs, decodeMs: raw.decodeMs };
 }

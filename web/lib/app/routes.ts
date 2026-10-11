@@ -20,8 +20,8 @@ import { benchmarkFromReport } from "./benchmark.ts";
 import { accepting, ingestBridge } from "./ingest.ts";
 import { STAFF_COOKIE, readCookie, type ClaimResult } from "./staffcap.ts";
 import type { Store } from "./store.ts";
-import { LIMITS, type Role, type SignControlCmd } from "./types.ts";
-import { validateGuestAction, validateStaffAction } from "./validate.ts";
+import { FEATURE_LIMITS, LIMITS, type LocalSttResponse, type Role, type SignControlCmd } from "./types.ts";
+import { UTTERANCE_RE, validateGuestAction, validateStaffAction } from "./validate.ts";
 
 export const GUEST_COOKIE = "sb_g";
 
@@ -39,6 +39,8 @@ export type RouteDeps = {
   readBenchmark: () => unknown;
   /** Forwards a guest's sign_control to live_key.py on 127.0.0.1; true when it answered 200. */
   signControl?: (cmd: SignControlCmd) => Promise<boolean>;
+  /** features-plan F3: forwards raw PCM to web/stt/local_stt.py on 127.0.0.1 (absent without LOCAL_STT_PORT). */
+  stt?: (pcm: Uint8Array) => Promise<{ ok: true; value: LocalSttResponse } | { ok: false; why: "busy" | "failed" }>;
 };
 
 const NO_STORE = { "Cache-Control": "no-store" } as const;
@@ -49,7 +51,7 @@ export function json(status: number, body: Record<string, unknown>, headers: Rec
 
 const CODE_FOR: Record<number, string> = {
   400: "bad_request", 401: "unauthorized", 403: "forbidden", 404: "not_found", 409: "conflict", 410: "gone",
-  413: "too_large", 415: "unsupported_type", 429: "rate_limited", 503: "not_configured",
+  411: "length_required", 413: "too_large", 415: "unsupported_type", 429: "rate_limited", 502: "upstream_failed", 503: "not_configured",
 };
 export const apiError = (status: number, message: string, headers: Record<string, string> = {}) =>
   json(status, { ok: false, error: CODE_FOR[status] ?? "bad_request", message }, headers);
@@ -169,11 +171,92 @@ export async function staffAction(req: Request, d: RouteDeps): Promise<Response>
   if (bad) return bad;
   const b = await readJson(req, LIMITS.bodySmallJson);
   if (!b.ok) return b.res;
-  if (!d.limit("staff_action", 120, 60_000)) return apiError(429, "Too many requests. Wait a moment.");
+  // Browser live captions (features-plan F3) arrive several times a second while staff speak; they
+  // have their own budget so they never use up the one for buttons.
+  const liveCaption = typeof b.body === "object" && b.body !== null && (b.body as { type?: unknown }).type === "live_caption";
+  if (!(liveCaption ? d.limit("staff_live_caption", 300, 60_000) : d.limit("staff_action", 120, 60_000))) return apiError(429, "Too many requests. Wait a moment.");
   const v = validateStaffAction(b.body);
   if (!v.ok) return json(400, { ok: false, error: "bad_request", message: v.message, ...(v.field ? { field: v.field } : {}) });
   const r = d.store.staffAction(v.value);
   return json(r.status, r.body);
+}
+
+/* ------------------------------------------------------------------ */
+/* Live captions on this laptop (features-plan F3)                     */
+/* ------------------------------------------------------------------ */
+
+/** One request at a time to the local process per store; interim requests are skipped while one runs. */
+const sttGates = new WeakMap<Store, { busy: Promise<unknown> | null }>();
+
+async function readCappedBytes(req: Request, maxBytes: number): Promise<Uint8Array | null> {
+  if (!req.body) return new Uint8Array(0);
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let seen = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    seen += value.byteLength;
+    if (seen > maxBytes) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const all = new Uint8Array(seen);
+  let off = 0;
+  for (const c of chunks) {
+    all.set(c, off);
+    off += c.byteLength;
+  }
+  return all;
+}
+
+/**
+ * POST /api/staff/stt (staff cookie): raw 16 kHz mono s16le PCM of the utterance so far, from the
+ * staff page's microphone, forwarded to web/stt/local_stt.py on 127.0.0.1. Headers x-stt-utterance,
+ * x-stt-final ("0" or "1") and, on a final, x-stt-speech-end (ms since epoch, same laptop clock).
+ * The guest page never calls this (it has no microphone, AS-19); the guest listener path list is unchanged.
+ */
+export async function staffStt(req: Request, d: RouteDeps): Promise<Response> {
+  const bad = staffCheck(req, d);
+  if (bad) return bad;
+  if (!d.limit("staff_stt", 240, 60_000)) return apiError(429, "Too many requests. Wait a moment.");
+  const ct = (req.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  if (ct !== "application/octet-stream") return apiError(415, "Content-Type must be application/octet-stream.");
+  const declared = req.headers.get("content-length");
+  if (declared === null || !/^\d+$/.test(declared)) return apiError(411, "Content-Length is required.");
+  if (Number(declared) > FEATURE_LIMITS.sttBodyMaxBytes) return apiError(413, "Request body too large.");
+  const utt = req.headers.get("x-stt-utterance") ?? "";
+  const fin = req.headers.get("x-stt-final");
+  const endRaw = req.headers.get("x-stt-speech-end");
+  if (!UTTERANCE_RE.test(utt) || (fin !== "0" && fin !== "1") || (endRaw !== null && !/^\d{1,16}$/.test(endRaw))) return apiError(400, "Bad caption headers.");
+  const pcm = await readCappedBytes(req, FEATURE_LIMITS.sttBodyMaxBytes);
+  if (pcm === null) return apiError(413, "Request body too large.");
+  if (pcm.byteLength === 0 || pcm.byteLength % 2 !== 0) return apiError(400, "The body must be 16-bit PCM.");
+  const refused = d.store.sttCheck();
+  if (refused) return json(refused.status, refused.body);
+  if (!d.stt) return apiError(503, "Local captions are not set up on this laptop.");
+  const final = fin === "1";
+  let gate = sttGates.get(d.store);
+  if (!gate) sttGates.set(d.store, (gate = { busy: null }));
+  if (!final && gate.busy) return json(200, { ok: true, skipped: true });
+  // A final waits for the request in flight (at most the 8 s timeout), then goes; it is never dropped.
+  while (gate.busy) await gate.busy.catch(() => {});
+  const run = d.stt(pcm);
+  gate.busy = run;
+  let r: Awaited<typeof run>;
+  try {
+    r = await run;
+  } finally {
+    if (gate.busy === run) gate.busy = null;
+  }
+  if (!r.ok) {
+    if (r.why === "busy") return final ? apiError(503, "Local captions are busy.") : json(200, { ok: true, skipped: true });
+    return apiError(502, "Local captions did not answer. Type instead.");
+  }
+  const out = d.store.localSttResult(utt, final, r.value, endRaw !== null ? Number(endRaw) : null);
+  return json(out.status, out.body);
 }
 
 /** GET /api/staff/benchmark: "not yet audited" unless a cleared report file says otherwise (DSH-6). */

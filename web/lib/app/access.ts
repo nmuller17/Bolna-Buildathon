@@ -8,6 +8,8 @@
 /** Body caps in bytes (docs/app-plan.md section 7). */
 export const BODY_CAP_DEFAULT = 8 * 1024;
 export const BODY_CAP_AUDIO = 5 * 1024 * 1024;
+/** POST /api/staff/stt: raw 16 kHz s16le PCM (FEATURE_LIMITS.sttBodyMaxBytes in types.ts; no imports here). */
+export const BODY_CAP_STT = 960_000;
 
 /**
  * True only for a socket address on this machine: 127.0.0.0/8, ::1, or IPv4-mapped ::ffff:127.x.

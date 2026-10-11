@@ -18,18 +18,42 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { RateLimiter } from "./access.ts";
 import { Bus } from "./bus.ts";
 import { initChecklist, onDelivered, onGuestAsked, onGuestReply, onSeen, onStaffSent } from "./checklist.ts";
-import { emptyLatency, latencyStages, recordLatency, type LatencyData } from "./latency.ts";
+import { buildReceipt, emptyEqualAccess, emptyUse, noteCaptionBackend, noteUse, type SessionUse } from "./counters.ts";
+import { interpreterCard, interpreterCardLines } from "./guestfeatures.ts";
+import { addRedactions, hygieneForGuest } from "./hygiene.ts";
+import { emptyLatency, latencyStages, median, recordLatency, type LatencyData } from "./latency.ts";
 import { barFor, lightFor, nearestIntents, type GateCandidate, type JoinedSign } from "./match.ts";
-import { sanitizeGuestText, sanitizeName, sanitizeStaffText, validateGloss } from "./validate.ts";
+import { sanitizeFactValue, sanitizeGuestText, sanitizeName, sanitizeStaffText, validateGloss } from "./validate.ts";
 import { guestIntent, guestSentence, staffIntent } from "./vocab.ts";
 import { mapStaffTextToGloss, mapStaffTextToIntent } from "../voice/intents.ts";
 import {
+  CAPTION_BACKEND_IS_CLOUD,
+  CAPTION_BACKEND_LABEL,
+  DESK_ALERT_TEXT,
+  FACT_FOR_QUICK_REPLY,
+  FACT_KEYS,
+  FACT_LABEL,
+  FEATURE_LIMITS,
   FRAMING_GUIDANCE,
   GUEST_REPLY_TEXT,
   HELP_INTENT_ID,
   LIMITS,
   SESSION_PROFILES,
+  STT_UNSURE_BELOW,
   type AlertKind,
+  type BrowserCaptionBackend,
+  type CaptionBackend,
+  type CaptionStatus,
+  type DeskAlertCode,
+  type EqualAccessCounters,
+  type Fact,
+  type FactKey,
+  type InterpreterContextCard,
+  type InterpreterContextConsent,
+  type LiveCaptionWord,
+  type LocalSttResponse,
+  type NumberAbout,
+  type PhraseVia,
   type Candidate,
   type CandidateSource,
   type CaptionSource,
@@ -102,6 +126,10 @@ export type StoreConfig = {
    * and its GET /health keeps the recognizer marked as up (live_key.py sends no status event).
    */
   signControlPort: number | null;
+  /** features-plan F3: LOCAL_STT_PORT, web/stt/local_stt.py on 127.0.0.1; null = local captions "off". */
+  localSttPort: number | null;
+  /** features-plan F1: hotel-wide fact values (SB_PROPERTY_FACTS file, read once at start). */
+  propertyFacts: Partial<Record<FactKey, string>>;
 };
 
 export function defaultConfig(over: Partial<StoreConfig> = {}): StoreConfig {
@@ -125,6 +153,8 @@ export function defaultConfig(over: Partial<StoreConfig> = {}): StoreConfig {
     emergencyNote: "This app does not call 911.",
     knownSigns: new Set(),
     signControlPort: null,
+    localSttPort: null,
+    propertyFacts: {},
     ...over,
   };
 }
@@ -211,6 +241,27 @@ type Session = {
   /** SHA-256 (hex) of the guest window's User-Agent at join; a different one is a "device changed" signal. */
   uaHash: string | null;
   deviceChangedWarned: boolean;
+  /* features-plan additions (builder S); everything here is wiped with the session. */
+  facts: Map<FactKey, Fact>;
+  live: Map<string, LiveState>;
+  liveLimiter: RateLimiter | null;
+  deskAlerts: DeskAlert[];
+  alertLimiter: RateLimiter | null;
+  interpreterCard: InterpreterContextCard | null;
+  /** Fixed guest intents sent so far, for the interpreter card's topics (never names or text). */
+  intentsSent: GuestIntentId[];
+  use: SessionUse;
+};
+
+type LiveState = { rev: number; final: boolean; retracted: boolean; backend: CaptionBackend; text: string; words: LiveCaptionWord[]; logSeq: number | null };
+type DeskAlert = { id: string; code: DeskAlertCode; sentAt: number; seenAt: number | null };
+
+/** Who receives the audio for each cloud caption backend (privacy panel destination, plain words). */
+const CAPTION_VENDOR: Readonly<Record<Exclude<CaptionBackend, "local" | "typed">, string>> = {
+  cloud_openai: "api.openai.com",
+  browser_google: "Google (Chrome speech recognition)",
+  browser_apple: "Apple (Safari speech recognition)",
+  browser_other: "browser speech service",
 };
 
 /**
@@ -272,7 +323,13 @@ const GUEST_LIMITS: Record<string, [number, number, "429" | "ignore" | "merge"]>
   heartbeat: [1, 2_000, "ignore"],
   more_time: [1, 30_000, "merge"],
   device_health: [1, LIMITS.deviceHealthMinIntervalMs, "ignore"],
-  interpreter_request: [1, 60_000, "merge"],
+  // 3 a minute: the guest's first tap carries no card; a second one within the minute may add the
+  // consented card (features-plan F11). Staff still get one banner a minute (interpreter()).
+  interpreter_request: [3, 60_000, "merge"],
+  // features-plan additions (builder S)
+  guest_number: [10, 60_000, "429"],
+  ack_alert: [20, 60_000, "ignore"],
+  card_shown: [10, 60_000, "ignore"],
 };
 
 const SETTING_TEXT: Record<GuestMode, string> = {
@@ -328,12 +385,24 @@ export class Store {
   lastStaffPingAt = 0;
   bridgeKeyFailures = 0;
   localRuns = 0;
+  /** features-plan F16: counts only, since the server started, memory only. */
+  equalAccess: EqualAccessCounters = emptyEqualAccess();
+  /** features-plan F3: which caption backend staff chose (null = automatic: local when up, else typed). */
+  captionChoice: CaptionBackend | null = null;
+  /** Local STT process: "off" without LOCAL_STT_PORT; "up" once GET /health says ready. */
+  localStt: "up" | "down" | "off";
+  /** Last caption backend announced to the guest (to send a badge change only when it changes). */
+  lastLiveBackend: CaptionBackend | null = null;
+  /** Measured, never invented: local decode times and end-of-speech to final caption, last 20 each. */
+  sttDecodeMs: number[] = [];
+  sttSpeechEndMs: number[] = [];
 
   constructor(config: StoreConfig, deps: StoreDeps = realDeps) {
     this.config = config;
     this.deps = deps;
     this.thisGuest = emptyPrivacy(config.vendorKeysConfigured);
     this.sinceStart = emptyPrivacy(config.vendorKeysConfigured);
+    this.localStt = config.localSttPort === null ? "off" : "down";
   }
 
   /* ---------------- small helpers ---------------- */
@@ -533,7 +602,283 @@ export class Store {
         ? { emergency: s.emergency ? { ...s.emergency } : null, interpreterAt: s.interpreterAt, moreTimeAt: s.moreTimeAt }
         : { emergency: null, interpreterAt: null, moreTimeAt: null },
       staffStreams: this.bus.count("staff"),
+      captions: this.captionStatus(),
+      equalAccess: structuredClone(this.equalAccess),
     };
+  }
+
+  /* ---------------- features plan: live caption backends (F3) ---------------- */
+
+  get cloudAllowed(): boolean {
+    return this.config.profile !== "engagement";
+  }
+
+  /** The backend live right now. Never a cloud backend unless staff chose it (and the profile allows it). */
+  captionLive(): CaptionBackend {
+    const c = this.captionChoice;
+    if (c === null || c === "local") return this.localStt === "up" ? "local" : "typed";
+    if (CAPTION_BACKEND_IS_CLOUD[c] && !this.cloudAllowed) return "typed";
+    if (c === "cloud_openai" && !this.config.transcribeAvailable) return "typed";
+    return c;
+  }
+
+  captionStatus(): CaptionStatus {
+    const last = (v: number[]) => (v.length ? v[v.length - 1] : null);
+    return {
+      live: this.captionLive(),
+      local: this.localStt,
+      cloudOpenaiAvailable: this.config.transcribeAvailable && this.cloudAllowed,
+      browserAllowed: this.cloudAllowed,
+      localDecodeMs: { median: median(this.sttDecodeMs), last: last(this.sttDecodeMs) },
+      speechEndToFinalMs: { median: median(this.sttSpeechEndMs), last: last(this.sttSpeechEndMs) },
+    };
+  }
+
+  /** Tells the guest screen when the badge changes (staff choice, or the local process went up or down). */
+  announceCaptionBackend(): void {
+    const live = this.captionLive();
+    if (live === this.lastLiveBackend) return;
+    this.lastLiveBackend = live;
+    if (this.session && this.session.state === "ACTIVE") this.toGuest({ type: "caption_backend", backend: live });
+  }
+
+  /** The runtime's health probe of web/stt/local_stt.py (only with LOCAL_STT_PORT). */
+  noteLocalStt(up: boolean): void {
+    if (this.config.localSttPort === null) return;
+    const next = up ? "up" : "down";
+    if (next === this.localStt) return;
+    const wasLive = this.captionLive() === "local";
+    this.localStt = next;
+    if (wasLive && next === "down") this.systemLine("Local captions are off: the speech-to-text process on this laptop stopped. Captions are typed now");
+    if (next === "up" && this.captionLive() === "local") this.systemLine("Local captions are on (speech-to-text on this laptop)");
+    this.announceCaptionBackend();
+    this.sendStatus();
+  }
+
+  setCaptionBackend(b: CaptionBackend): Result {
+    if (CAPTION_BACKEND_IS_CLOUD[b] && !this.cloudAllowed) {
+      return fail(409, "conflict", "Cloud captions are off in this profile: no audio leaves this laptop. Use local captions or type.");
+    }
+    if (b === "local" && this.localStt !== "up") {
+      return fail(409, "conflict", this.localStt === "off" ? "Local captions are not set up (no LOCAL_STT_PORT). Type, or use a quick reply." : "Local captions are not running. Start them with scripts/demo.sh, or type.");
+    }
+    if (b === "cloud_openai" && !this.config.transcribeAvailable) return fail(409, "conflict", "OpenAI speech-to-text has no key on this laptop.");
+    this.captionChoice = b;
+    if (this.session) this.systemLine(`Live captions: ${CAPTION_BACKEND_LABEL[b]}`);
+    this.announceCaptionBackend();
+    return ok({ live: this.captionLive() });
+  }
+
+  /** POST /api/staff/stt may go ahead: an active guest and local captions live. Null when it may. */
+  sttCheck(): Result | null {
+    const s = this.session;
+    if (!s || s.state !== "ACTIVE") return fail(409, "conflict", "No guest window is connected yet.");
+    if (this.captionLive() !== "local") return fail(409, "conflict", "Local captions are off. Type, or choose another caption service.");
+    return null;
+  }
+
+  /** A local STT answer for one utterance (interim or final). Decode time is measured by local_stt.py. */
+  localSttResult(utteranceId: string, final: boolean, r: LocalSttResponse, speechEndAt: number | null): Result {
+    const s = this.session;
+    if (!s || s.state !== "ACTIVE") return fail(409, "conflict", "No guest window is connected yet.");
+    if (this.captionLive() !== "local") return fail(409, "conflict", "Local captions are off.");
+    pushCapped(this.sttDecodeMs, r.decodeMs);
+    const now = this.now();
+    let speechEndToFinal: number | null = null;
+    if (final && speechEndAt !== null) {
+      const d = now - speechEndAt;
+      if (d >= 0 && d <= 60_000) {
+        speechEndToFinal = d;
+        pushCapped(this.sttSpeechEndMs, d);
+      }
+    }
+    return this.publishLive(s, utteranceId, r.text, r.words, "local", final, r.decodeMs, speechEndToFinal);
+  }
+
+  /** Browser speech (or one P1 utterance) from the staff page: only for the backend staff chose. */
+  liveFromStaffPage(utteranceId: string, text: string, final: boolean, backend: BrowserCaptionBackend | "cloud_openai"): Result {
+    const s = this.session as Session;
+    if (!this.cloudAllowed) return fail(409, "conflict", "Cloud captions are off in this profile.");
+    if (this.captionLive() !== backend) return fail(409, "conflict", "Choose this caption service first.");
+    const r = this.publishLive(s, utteranceId, text, null, backend, final, null, null);
+    if (r.status === 200 && final && r.body.published) {
+      this.noteVendorCall({ destination: CAPTION_VENDOR[backend], purpose: "Live captions of the receptionist's speech (staff voice)", route: backend === "cloud_openai" ? "/api/transcribe" : "staff page", guestData: false, observedBy: "staff_browser" }, 0);
+    }
+    return r;
+  }
+
+  /**
+   * One revision of a live caption to both screens. Hygiene first (NFKC, controls, card numbers);
+   * interim revisions are rate-limited and may be dropped, final ones never. A final line joins the
+   * staff log. Live captions never reach the avatar, the checklist or a fact tile.
+   */
+  publishLive(s: Session, utteranceId: string, raw: string, rawWords: { w: string; p: number }[] | null, backend: CaptionBackend, final: boolean, decodeMs: number | null, speechEndToFinalMs: number | null): Result {
+    const prev = s.live.get(utteranceId);
+    if (prev && (prev.final || prev.retracted)) return ok({ published: false });
+    const h = hygieneForGuest(raw);
+    if (Object.keys(h.redactions).length) this.bothPrivacy((p) => addRedactions((p.redactions ??= {}), h.redactions));
+    let text = h.text;
+    if ([...text].length > FEATURE_LIMITS.liveCaptionMaxChars) {
+      const cut = [...text].slice(0, FEATURE_LIMITS.liveCaptionMaxChars).join("");
+      const sp = cut.lastIndexOf(" ");
+      text = (sp > 40 ? cut.slice(0, sp) : cut) + "…";
+    }
+    if (!text) {
+      if (!final || !prev) return ok({ published: false });
+      text = prev.text;
+    }
+    if (!final) {
+      s.liveLimiter ??= new RateLimiter(FEATURE_LIMITS.liveCaptionsPerSecond, 1_000, () => this.now());
+      if (!s.liveLimiter.take()) return ok({ published: false });
+    }
+    const words = liveWords(text, rawWords, Object.keys(h.redactions).length > 0);
+    const rev = (prev?.rev ?? 0) + 1;
+    const st: LiveState = { rev, final, retracted: false, backend, text, words, logSeq: prev?.logSeq ?? null };
+    s.live.set(utteranceId, st);
+    if (s.live.size > 60) s.live.delete(s.live.keys().next().value as string);
+    this.toGuest({ type: "live_caption", utteranceId, rev, final, text, words, backend });
+    if (final) {
+      const at = this.now();
+      st.logSeq = this.nextLogSeq(s);
+      this.pushLog(s, { kind: "live_caption", seq: st.logSeq, at, utteranceId, text, backend, retracted: false });
+      this.equalAccess.captionUtterances[backend]++;
+      noteCaptionBackend(s.use, backend);
+      // Staff speaking to the guest is staff activity (AS-16).
+      this.touch(s);
+    }
+    this.toStaff({ type: "live_caption", utteranceId, rev, final, text, words, backend, decodeMs, speechEndToFinalMs });
+    return ok({ published: true, rev });
+  }
+
+  /** "Remove from guest screen": the guest page strikes the line out with "Removed by the desk". */
+  retractCaption(utteranceId: string): Result {
+    const s = this.session as Session;
+    const st = s.live.get(utteranceId);
+    if (!st) return fail(404, "not_found", "That caption is no longer on screen.");
+    if (st.retracted) return ok();
+    st.retracted = true;
+    st.rev++;
+    const e = st.logSeq !== null ? s.log.find((x) => x.seq === st.logSeq) : undefined;
+    if (e && e.kind === "live_caption") e.retracted = true;
+    this.toGuest({ type: "live_caption", utteranceId, rev: st.rev, final: st.final, text: st.text, words: st.words, backend: st.backend, retracted: true });
+    this.toStaff({ type: "live_caption", utteranceId, rev: st.rev, final: st.final, text: st.text, words: st.words, backend: st.backend, retracted: true, decodeMs: null, speechEndToFinalMs: null });
+    this.systemLine("Staff removed a live caption from the guest screen");
+    return ok();
+  }
+
+  /* ---------------- features plan: facts (F1) ---------------- */
+
+  staffFacts(s: Session | null): { facts: Fact[]; property: Partial<Record<FactKey, string>> } {
+    return { facts: s ? FACT_KEYS.flatMap((k) => (s.facts.has(k) ? [{ ...(s.facts.get(k) as Fact) }] : [])) : [], property: { ...this.config.propertyFacts } };
+  }
+
+  sendFactsToStaff(s: Session): void {
+    this.toStaff({ type: "facts", ...this.staffFacts(s) });
+  }
+
+  /** Staff typed a fact (or picked the hotel value). Never from speech recognition; the value is never logged. */
+  setFact(key: FactKey, raw: string): Result {
+    const s = this.session as Session;
+    const v = sanitizeFactValue(key, raw);
+    if (!v.ok) return fail(400, "bad_request", v.message, { field: "text" });
+    const fact: Fact = { key, value: v.value, source: this.config.propertyFacts[key] === v.value ? "property" : "staff_typed", at: this.now() };
+    s.facts.set(key, fact);
+    this.toGuest({ type: "fact", fact: { ...fact } });
+    this.sendFactsToStaff(s);
+    this.equalAccess.factsShown++;
+    this.systemLine(`${FACT_LABEL[key]} shown on the guest screen (not said aloud)`);
+    return ok();
+  }
+
+  clearFact(key: FactKey): Result {
+    const s = this.session as Session;
+    if (!s.facts.delete(key)) return ok();
+    this.toGuest({ type: "fact_cleared", key });
+    this.sendFactsToStaff(s);
+    return ok();
+  }
+
+  /** After a guest reconnect (the snapshot keeps AS-1: no facts), every fact again. */
+  resendFacts(): Result {
+    const s = this.session as Session;
+    for (const k of FACT_KEYS) {
+      const f = s.facts.get(k);
+      if (f) this.toGuest({ type: "fact", fact: { ...f } });
+    }
+    return ok({ count: s.facts.size });
+  }
+
+  /** A quick reply pins its fact: the session value, or the hotel value when staff set none. */
+  pinFactFor(s: Session, key: StaffIntentKey): void {
+    const fk = FACT_FOR_QUICK_REPLY[key];
+    if (!fk) return;
+    let f = s.facts.get(fk);
+    if (!f) {
+      const pv = this.config.propertyFacts[fk];
+      if (!pv) return;
+      f = { key: fk, value: pv, source: "property", at: this.now() };
+      s.facts.set(fk, f);
+      this.equalAccess.factsShown++;
+      this.sendFactsToStaff(s);
+    }
+    this.toGuest({ type: "fact", fact: { ...f } });
+  }
+
+  /* ---------------- features plan: desk alerts (F9) ---------------- */
+
+  deskAlertsView(s: Session | null) {
+    return s ? s.deskAlerts.map((a) => ({ ...a })) : [];
+  }
+
+  sendAlert(code: DeskAlertCode): Result {
+    const s = this.session as Session;
+    if (s.deskAlerts.filter((a) => a.seenAt === null).length >= FEATURE_LIMITS.alertsOpenMax) {
+      return fail(429, "rate_limited", `${FEATURE_LIMITS.alertsOpenMax} alerts are already waiting on the guest screen. Clear one first.`);
+    }
+    s.alertLimiter ??= new RateLimiter(FEATURE_LIMITS.alertsPerMinute, 60_000, () => this.now());
+    if (!s.alertLimiter.take()) return fail(429, "rate_limited", "Too many alerts this minute. Go to the guest instead.");
+    const a: DeskAlert = { id: this.id("a"), code, sentAt: this.now(), seenAt: null };
+    s.deskAlerts.push(a);
+    while (s.deskAlerts.length > 10) s.deskAlerts.shift();
+    this.toGuest({ type: "desk_alert", id: a.id, code });
+    this.toStaff({ type: "desk_alerts", alerts: this.deskAlertsView(s) });
+    this.equalAccess.alertsSent++;
+    this.systemLine(`Alert sent to the guest screen: "${DESK_ALERT_TEXT[code]}"`);
+    return ok({ id: a.id });
+  }
+
+  cancelAlert(id: string): Result {
+    const s = this.session as Session;
+    const i = s.deskAlerts.findIndex((a) => a.id === id);
+    if (i === -1) return fail(404, "not_found", "That alert is no longer open.");
+    s.deskAlerts.splice(i, 1);
+    this.toGuest({ type: "desk_alert_cleared", id });
+    this.toStaff({ type: "desk_alerts", alerts: this.deskAlertsView(s) });
+    return ok();
+  }
+
+  ackAlert(s: Session, id: string): Result {
+    const a = s.deskAlerts.find((x) => x.id === id);
+    if (a && a.seenAt === null) {
+      a.seenAt = this.now();
+      this.toStaff({ type: "desk_alerts", alerts: this.deskAlertsView(s) });
+      this.systemLine("Guest saw the alert and tapped OK");
+    }
+    return ok();
+  }
+
+  /* ---------------- features plan: numbers (F7) ---------------- */
+
+  guestNumber(s: Session, about: NumberAbout, value: string): Result {
+    if (!new RegExp(`^\\d{1,${FEATURE_LIMITS.guestNumberMaxDigits}}$`).test(value)) {
+      return fail(400, "bad_request", `Use digits only, up to ${FEATURE_LIMITS.guestNumberMaxDigits}.`, { field: "text" });
+    }
+    const logSeq = this.nextLogSeq(s);
+    this.pushLog(s, { kind: "guest_number", seq: logSeq, at: this.now(), about, value });
+    this.toStaff({ type: "guest_number", about, value, logSeq });
+    this.equalAccess.sentBy.typed++;
+    noteUse(s.use, "number");
+    return ok({ logSeq });
   }
 
   staffSnapshot(): StaffSnapshot {
@@ -547,6 +892,9 @@ export class Store {
       evidence: s ? s.evidence.map((e) => ({ ...e })) : [],
       warnings: this.warnings.map((w) => ({ ...w })),
       pending: s && s.pending ? s.pending.proposal : null,
+      facts: this.staffFacts(s),
+      deskAlerts: this.deskAlertsView(s),
+      interpreterCard: s ? s.interpreterCard : null,
     };
   }
 
@@ -576,7 +924,10 @@ export class Store {
     const s = this.guestSessionFor(token, ua);
     if (!s) return null;
     const id = this.bus.add({ role: "guest", sessionId: s.id, send, close, openedAt: this.now() });
-    for (const msg of [this.hello(), this.guestSnapshot(s)] as GuestEvent[]) {
+    // The caption badge is a status, not conversation content, so it follows the snapshot (AS-1 keeps the
+    // snapshot itself to the last caption and the pending proposal; facts are re-sent by staff).
+    this.lastLiveBackend = this.captionLive();
+    for (const msg of [this.hello(), this.guestSnapshot(s), { type: "caption_backend", backend: this.lastLiveBackend }] as GuestEvent[]) {
       const d = this.bus.toOne(id, msg, this.now());
       this.bothPrivacy((p) => {
         p.messagesToGuest += d.delivered;
@@ -677,6 +1028,14 @@ export class Store {
       failedJoins: 0,
       uaHash: null,
       deviceChangedWarned: false,
+      facts: new Map(),
+      live: new Map(),
+      liveLimiter: null,
+      deskAlerts: [],
+      alertLimiter: null,
+      interpreterCard: null,
+      intentsSent: [],
+      use: emptyUse(),
     };
   }
 
@@ -690,11 +1049,13 @@ export class Store {
     const s = this.session;
     if (!s) return null;
     const pendingLost = s.pending !== null || s.held !== null;
-    this.toGuest({ type: "session_end", reason, pendingLost });
-    this.bus.closeGuests(s.id);
     const itemsErased =
       s.log.length + s.evidence.length + s.signEvents.size + s.captions.size + (s.pending ? 1 : 0) + (s.previous ? 1 : 0) + (s.held ? 1 : 0) +
-      (s.tokenHash ? 1 : 0) + s.pairCodes.length + s.nonces.size;
+      (s.tokenHash ? 1 : 0) + s.pairCodes.length + s.nonces.size + s.facts.size + s.live.size + s.deskAlerts.length + (s.interpreterCard ? 1 : 0);
+    // features-plan F17: what this conversation used, from real counters, on the guest's end screen.
+    const guestReceipt = buildReceipt(s.use, this.thisGuest, this.now(), itemsErased);
+    this.toGuest({ type: "session_end", reason, pendingLost, receipt: guestReceipt });
+    this.bus.closeGuests(s.id);
     const receipt: WipeReceipt = { at: this.now(), reason, itemsErased };
     // Drop every reference first, then clear the containers, so nothing about the guest is reachable.
     s.log.length = 0;
@@ -717,6 +1078,12 @@ export class Store {
     s.device = null;
     s.emergency = null;
     s.checklist = initChecklist();
+    s.facts.clear();
+    s.live.clear();
+    s.deskAlerts.length = 0;
+    s.interpreterCard = null;
+    s.intentsSent.length = 0;
+    s.use = emptyUse();
     this.session = null;
     this.lastWipe = receipt;
     this.thisGuest = emptyPrivacy(this.config.vendorKeysConfigured);
@@ -779,6 +1146,7 @@ export class Store {
       s.capWarned = false;
       s.device = { deviceClass: "Guest window on this laptop (Mode 0)", address: "this laptop", joinedAt: now };
       s.lastHeardAt = now;
+      this.equalAccess.sessions++;
       this.systemLine(this.displayOnly ? "Guest window connected on this laptop (display only)" : "Guest window connected on this laptop (guest input on)");
       this.sessionState();
       this.sendStatus();
@@ -881,14 +1249,30 @@ export class Store {
         case "note_vendor":
           this.noteVendorCall({ destination: a.destination, purpose: "Browser speech recognition used by the receptionist (staff voice only)", route: "staff page", guestData: false, observedBy: "staff_browser" }, 0);
           return ok();
-        default:
-          // docs/features-plan.md: caption_backend, live_caption, retract_caption, set_fact, clear_fact,
-          // resend_facts, send_alert and cancel_alert are typed but not built yet (Builder S).
-          return fail(404, "not_found", "This feature is not built yet.");
+        // docs/features-plan.md (builder S)
+        case "caption_backend":
+          return this.setCaptionBackend(a.backend);
+        case "live_caption":
+          return needActive() ?? this.liveFromStaffPage(a.utteranceId, a.text, a.final, a.backend);
+        case "retract_caption":
+          return needActive() ?? this.retractCaption(a.utteranceId);
+        case "set_fact":
+          return needActive() ?? this.setFact(a.key, a.value);
+        case "clear_fact":
+          return needActive() ?? this.clearFact(a.key);
+        case "resend_facts":
+          return needActive() ?? this.resendFacts();
+        case "send_alert":
+          return needActive() ?? this.sendAlert(a.code);
+        case "cancel_alert":
+          return needActive() ?? this.cancelAlert(a.id);
       }
     })();
     // Every successful staff action is activity (AS-16), except a report from the staff page itself.
-    if (r.status === 200 && this.session && this.session.state === "ACTIVE" && a.type !== "speak_done" && a.type !== "device_health" && a.type !== "note_vendor") {
+    if (
+      r.status === 200 && this.session && this.session.state === "ACTIVE" &&
+      a.type !== "speak_done" && a.type !== "device_health" && a.type !== "note_vendor" && a.type !== "caption_backend" && !(a.type === "live_caption" && !a.final)
+    ) {
       this.touch(this.session);
     }
     if (r.status === 200) this.sendStatus();
@@ -937,7 +1321,18 @@ export class Store {
     const s = this.session as Session;
     const intent = staffIntent(key);
     if (!intent) return fail(400, "bad_request", "Unknown quick reply.");
-    return this.caption(s, intent.text, [...intent.gloss], "fixed_intent", "quick_reply", key);
+    let text = intent.text;
+    let gloss = [...intent.gloss];
+    // features-plan F1: "You're in room 517." from the room staff typed (or the hotel value), never from
+    // speech recognition. The digits and letters become sign tokens after "YOUR ROOM".
+    const room = key === "room_number" ? (s.facts.get("room")?.value ?? null) : null;
+    if (room) {
+      text = `You're in room ${room}.`;
+      gloss = [...intent.gloss.filter((t) => !/^\d+$/.test(t)), ...[...room.toUpperCase()].filter((c) => /[A-Z0-9]/.test(c))];
+    }
+    const r = this.caption(s, text, gloss, "fixed_intent", "quick_reply", key);
+    if (r.status === 200) this.pinFactFor(s, key);
+    return r;
   }
 
   /** Typed or reviewed voice text (CAP-2): client gloss if every token is valid, else P1's local mapping, else captions only. */
@@ -990,6 +1385,7 @@ export class Store {
     const typed = /^typed-(\d+)$/.exec(ref);
     const e = typed ? s.log.find((x) => x.seq === Number(typed[1])) : s.log.find((x) => x.kind === "guest" && x.proposalId === ref);
     if (!e) return ok();
+    if (how !== "none") s.use.voiced = true;
     if (e.kind === "guest") {
       if (how !== "none") e.spokenAt = startedAt;
       const at = s.confirmedAt.get(ref);
@@ -1098,13 +1494,21 @@ export class Store {
       case "guest_fix":
         return this.fix(a.proposalId, a.action);
       case "guest_phrase":
-        return this.phrase(a.intentId, a.name, a.voice !== false);
+        return this.phrase(a.intentId, a.name, a.voice !== false, a.via);
       case "guest_typed":
         return this.typed(a.text);
       case "guest_reply":
         return this.reply(a.reply, a.captionId);
       case "interpreter_request":
-        return this.interpreter();
+        return this.interpreter(a.context);
+      case "guest_number":
+        return this.guestNumber(s, a.about, a.value);
+      case "ack_alert":
+        return this.ackAlert(s, a.id);
+      case "card_shown":
+        this.equalAccess.cardsShown++;
+        noteUse(s.use, "card");
+        return ok();
       case "prefs":
         return this.prefs(a.speakAloud, a.showAvatar);
       case "more_time":
@@ -1146,6 +1550,7 @@ export class Store {
       return ok();
     }
     s.guestMode = mode;
+    if (mode !== "choosing") this.equalAccess.modeChosen[mode]++;
     if (mode !== "sign") s.held = null;
     const at = this.now();
     this.pushLog(s, { kind: "guest_setting", seq: this.nextLogSeq(s), at, text: SETTING_TEXT[mode] });
@@ -1216,14 +1621,53 @@ export class Store {
     return r;
   }
 
-  interpreter(): Result {
+  /**
+   * Interpreter hand-off (features-plan F11). `consent` is what the guest ticked on their own screen
+   * after seeing the card text; the card is built here from the same functions the guest preview uses
+   * (guestfeatures.ts), so the desk sees exactly what the guest agreed to: the sign language if ticked,
+   * topic words and the last fixed request if ticked. Never a name, typed text or a number. Nothing is
+   * sent to any provider.
+   */
+  interpreter(consent?: InterpreterContextConsent): Result {
     const s = this.session as Session;
     const now = this.now();
-    if (s.interpreterAt !== null && now - s.interpreterAt < 60_000) return ok({ merged: true });
+    let card: InterpreterContextCard | null = null;
+    if (consent) {
+      card = interpreterCard({
+        shareLanguage: consent.language !== null,
+        language: consent.language ?? "other",
+        shareTopics: consent.topics,
+        intents: s.intentsSent,
+        openRequest: this.lastFixedRequest(s),
+      });
+      if (interpreterCardLines(card).length === 0) card = null;
+    }
+    if (s.interpreterAt !== null && now - s.interpreterAt < 60_000) {
+      // One banner a minute; a card the guest agreed to share afterwards still reaches the banner.
+      if (card) {
+        s.interpreterCard = card;
+        this.toStaff({ type: "interpreter_request", vri: this.config.vri, context: card });
+      }
+      return ok({ merged: true });
+    }
     s.interpreterAt = now;
-    this.systemLine("Guest asked for a human interpreter");
-    this.toStaff({ type: "interpreter_request", vri: this.config.vri });
+    if (card) s.interpreterCard = card;
+    this.equalAccess.interpreterRequests++;
+    noteUse(s.use, "interpreter");
+    this.systemLine(card ? "Guest asked for a human interpreter and shared a context card" : "Guest asked for a human interpreter");
+    this.toStaff({ type: "interpreter_request", vri: this.config.vri, context: s.interpreterCard });
     return ok();
+  }
+
+  /** The guest's last fixed sentence (never a name sentence, never typed text). */
+  lastFixedRequest(s: Session): string | null {
+    for (let i = s.log.length - 1; i >= 0; i--) {
+      const e = s.log[i];
+      if (e.kind !== "guest" || e.intentId === null) continue;
+      const g = guestIntent(e.intentId);
+      if (g && !g.needsName) return g.text;
+    }
+    return null;
   }
 
   prefs(speakAloud?: boolean, showAvatar?: boolean): Result {
@@ -1250,6 +1694,8 @@ export class Store {
     if (!t.ok) return fail(400, "bad_request", t.message, { field: "text" });
     const at = this.now();
     this.pushLog(s, { kind: "guest_typed", seq: this.nextLogSeq(s), at, text: t.value, readAloudAt: null });
+    this.equalAccess.sentBy.typed++;
+    noteUse(s.use, "typed");
     this.toStaff({ type: "guest_typed", text: t.value });
     this.toGuest({ type: "guest_utterance", proposalId: null, text: t.value, delivery: s.speakAloud && s.guestMode !== "text_only" ? "waiting_for_staff" : "shown" });
     return ok({ logSeq: s.logSeq });
@@ -1259,7 +1705,10 @@ export class Store {
     const s = this.session as Session;
     const at = this.now();
     const c = captionId ? s.captions.get(captionId) : undefined;
-    if (captionId && !c) return fail(409, "conflict", "That message is no longer on screen.");
+    // A repair reply may also answer a live caption (features-plan F3); it never touches the checklist.
+    if (captionId && !c && !s.live.has(captionId)) return fail(409, "conflict", "That message is no longer on screen.");
+    this.equalAccess.repairReplies++;
+    noteUse(s.use, "replies");
     if (c) {
       const e = s.log.find((x) => x.kind === "staff" && x.id === c.id);
       if (e && e.kind === "staff") e.guestReply = kind;
@@ -1337,7 +1786,7 @@ export class Store {
   }
 
   /** A request picked from the phrase list, already confirmed on the guest screen (GST-10). */
-  phrase(intentId: GuestIntentId, rawName: string | undefined, voice = true): Result {
+  phrase(intentId: GuestIntentId, rawName: string | undefined, voice = true, via?: PhraseVia): Result {
     const s = this.session as Session;
     const g = guestIntent(intentId);
     if (!g) return fail(400, "bad_request", "Unknown request.");
@@ -1347,12 +1796,12 @@ export class Store {
       if (!n.ok) return fail(400, "bad_request", n.message, { field: "name" });
       name = n.value;
     }
-    return this.finishUtterance(s, { proposalId: this.id("ph"), echoProposalId: null, signs: [], intentId, name, source: "phrase", by: "guest", simulated: false, testMode: false, voice });
+    return this.finishUtterance(s, { proposalId: this.id("ph"), echoProposalId: null, signs: [], intentId, name, source: "phrase", by: "guest", simulated: false, testMode: false, voice, via: via ?? "phrase_list" });
   }
 
   finishUtterance(
     s: Session,
-    u: { proposalId: string; echoProposalId: string | null; signs: StaffSignView[]; intentId: GuestIntentId; name: string | null; source: CandidateSource; by: "guest" | "staff_for_guest"; simulated: boolean; testMode: boolean; voice?: boolean },
+    u: { proposalId: string; echoProposalId: string | null; signs: StaffSignView[]; intentId: GuestIntentId; name: string | null; source: CandidateSource; by: "guest" | "staff_for_guest"; simulated: boolean; testMode: boolean; voice?: boolean; via?: PhraseVia },
   ): Result {
     const g = guestIntent(u.intentId);
     if (!g) return fail(400, "bad_request", "Unknown request.");
@@ -1361,13 +1810,20 @@ export class Store {
     const speak = this.planSpeak(g.needsName, g.id, g.text, u.testMode, u.voice !== false);
     this.pushLog(s, {
       kind: "guest", seq: this.nextLogSeq(s), at, proposalId: u.proposalId, text, signs: u.signs, intentId: g.id, source: u.source,
-      speak, spokenAt: null, confirmedBy: u.by, simulated: u.simulated,
+      speak, spokenAt: null, confirmedBy: u.by, simulated: u.simulated, ...(u.via ? { via: u.via } : {}),
     });
+    // features-plan F16/F17 (counts only) and F11 (topic words, never the sentence's name).
+    if (u.via === "board") this.equalAccess.sentBy.board++;
+    else if (u.via === "typed_match") this.equalAccess.sentBy.typedMatch++;
+    else if (u.via === "phrase_list") this.equalAccess.sentBy.phraseList++;
+    else this.equalAccess.sentBy.signs++;
+    noteUse(s.use, u.via ?? "signs");
+    if (!g.needsName) s.intentsSent.push(g.id);
     s.confirmedAt.set(u.proposalId, at);
     s.counters.confirmed++;
     s.repeatStreak = 0;
     s.checklist = onGuestAsked(s.checklist, g.id, at);
-    this.toStaff({ type: "guest_utterance", proposalId: u.proposalId, signs: u.signs, text, intentId: g.id, source: u.source, speak, confirmedBy: u.by });
+    this.toStaff({ type: "guest_utterance", proposalId: u.proposalId, signs: u.signs, text, intentId: g.id, source: u.source, speak, confirmedBy: u.by, ...(u.via ? { via: u.via } : {}) });
     this.toStaff({ type: "checklist", items: s.checklist.map((x) => ({ ...x })) });
     const delivery = speak.mode === "tts" ? "spoken" : speak.mode === "local_after_tap" ? "waiting_for_staff" : "shown";
     this.toGuest({ type: "guest_utterance", proposalId: u.echoProposalId, text, delivery });
@@ -1532,5 +1988,39 @@ export function finalizeHeld(store: Store): void {
   store.toStaff({
     type: "recognition", source: h.source, receivedAt: store.now(), signs: views, outcome: "unmatched", repeatReason: null,
     recognizerSaidRepeat: h.saidRepeat, candidates: s.pending ? s.pending.proposal.candidates : [], proposalId, testMode: store.recognizer.mode === "mock",
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Features plan helpers (builder S)                                   */
+/* ------------------------------------------------------------------ */
+
+function pushCapped(list: number[], v: number): void {
+  if (!Number.isFinite(v) || v < 0) return;
+  list.push(Math.round(v));
+  if (list.length > 20) list.shift();
+}
+
+const bare = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{N}']/gu, "");
+
+/**
+ * Words for a live caption, from the cleaned text. With the recogniser's words, each token takes the
+ * probability of the next recogniser word with the same letters (a word below STT_UNSURE_BELOW is
+ * "unsure", shown grey). Redaction placeholders and unmatched tokens are never marked unsure.
+ */
+export function liveWords(text: string, raw: { w: string; p: number }[] | null, redacted: boolean): LiveCaptionWord[] {
+  const tokens = text.split(" ").filter(Boolean);
+  if (!raw || raw.length === 0) return tokens.map((w) => ({ w, unsure: false }));
+  let j = 0;
+  return tokens.map((w) => {
+    if (redacted && (w.startsWith("[") || w.endsWith("]"))) return { w, unsure: false };
+    const b = bare(w);
+    for (let k = j; k < raw.length && k < j + 4; k++) {
+      if (bare(raw[k].w) === b) {
+        j = k + 1;
+        return { w, unsure: raw[k].p < STT_UNSURE_BELOW };
+      }
+    }
+    return { w, unsure: false };
   });
 }
