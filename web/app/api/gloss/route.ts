@@ -26,9 +26,11 @@ export async function POST(request: Request) {
 
   const known = await loadKnownSigns();
   const local = mapStaffTextToGloss(text, known);
-  if (local.matches.some((match) => match.intentId !== "unknown")) {
-    return Response.json({ gloss: local.gloss });
+  // intents: the staff intents recognized, in spoken order (lib/voice/expectedAnswers.ts uses the last one).
+  const intents = local.matches.map((match) => match.intentId).filter((id) => id !== "unknown");
+  if (intents.length > 0) {
+    return Response.json({ gloss: local.gloss, intents });
   }
 
-  return Response.json({ gloss: fallbackGlossFromText(text, known) });
+  return Response.json({ gloss: fallbackGlossFromText(text, known), intents: [] });
 }

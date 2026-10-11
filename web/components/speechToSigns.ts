@@ -1,7 +1,10 @@
 // P4: spoken English -> signs, with P1's routes. /api/transcribe (Whisper) for audio, /api/gloss for text.
 // Used by the hands-free guest screen and the optional /staff console.
 
-export type SignedSentence = { text: string; gloss: string[] };
+import type { StaffIntentId } from "@/lib/voice/intents";
+
+/** intents: the receptionist intents recognized in this sentence (/api/gloss), for the guest's expected answers. */
+export type SignedSentence = { text: string; gloss: string[]; intents?: StaffIntentId[] };
 
 const TRANSCRIBE_TIMEOUT_MS = 8000;
 const GLOSS_TIMEOUT_MS = 5000;
@@ -55,9 +58,12 @@ export async function toSignedSentences(text: string): Promise<SignedSentence[]>
           body: JSON.stringify({ text: sentence }),
           signal: AbortSignal.timeout(GLOSS_TIMEOUT_MS),
         });
-        const data = (await res.json().catch(() => ({}))) as { gloss?: unknown };
+        const data = (await res.json().catch(() => ({}))) as { gloss?: unknown; intents?: unknown };
         const gloss = Array.isArray(data.gloss) ? data.gloss.filter((t): t is string => typeof t === "string") : [];
-        if (res.ok && gloss.length > 0) return { text: sentence, gloss };
+        const intents = Array.isArray(data.intents)
+          ? data.intents.filter((t): t is StaffIntentId => typeof t === "string")
+          : [];
+        if (res.ok && gloss.length > 0) return { text: sentence, gloss, intents };
       } catch (err) {
         console.warn(`[signs] /api/gloss failed for "${sentence}":`, err);
       }
@@ -90,5 +96,5 @@ function splitAtMarkers(sentence: SignedSentence): SignedSentence[] {
       ? [...clauses.slice(0, parts.length - 1), clauses.slice(parts.length - 1).join(", ")]
       : parts.map(() => sentence.text);
   const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-  return parts.map((gloss, i) => ({ text: capital(texts[i]), gloss }));
+  return parts.map((gloss, i) => ({ text: capital(texts[i]), gloss, intents: sentence.intents }));
 }
