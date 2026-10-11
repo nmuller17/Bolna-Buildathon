@@ -37,13 +37,13 @@ test("B3: Host allowlist rejects DNS-rebinding and metadata hosts", () => {
 test("B1: a LAN client reaches only the guest paths (default deny, traversal-proof)", () => {
   for (const [m, p] of [["GET", "/guest"], ["GET", "/guest?s=abc"], ["POST", "/api/guest/join"], ["POST", "/api/guest/action"],
     ["GET", "/api/events?role=guest&s=x"], ["GET", "/_next/static/chunks/a.js"], ["GET", "/signs/index.json"],
-    ["GET", "/signs/alphabet/A.json"]]) {
+    ["GET", "/signs/alphabet/A.json"], ["GET", "/avatar/bellhop.glb"]]) {
     assert.equal(lanPathAllowed(m, p, false), true, `${m} ${p}`);
   }
   for (const [m, p] of [["GET", "/staff"], ["GET", "/staff/"], ["POST", "/api/english"], ["POST", "/api/tts"],
     ["POST", "/api/transcribe"], ["POST", "/api/gloss"], ["POST", "/api/guest/signs"], ["POST", "/api/staff/action"],
     ["POST", "/api/dev/simulate"], ["GET", "/%2e%2e/staff"], ["GET", "/guest/../staff"], ["GET", "/guest/..%2fstaff"],
-    ["GET", "//staff"], ["GET", "/signs/../.env.json"], ["GET", "/signs/a/b/c.json"], ["GET", "/_next/webpack-hmr"],
+    ["GET", "//staff"], ["GET", "/signs/../.env.json"], ["GET", "/signs/a/b/c.json"], ["GET", "/avatar/../.env"], ["GET", "/avatar/x.obj"], ["GET", "/_next/webpack-hmr"],
     ["PUT", "/guest"], ["GET", "/api/english"], ["POST", "/guest"]]) {
     assert.equal(lanPathAllowed(m, p, false), false, `${m} ${p}`);
   }

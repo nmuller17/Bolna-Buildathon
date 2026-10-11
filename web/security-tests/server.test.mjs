@@ -304,6 +304,59 @@ describe("server.mjs, default (loopback) mode", { concurrency: false }, () => {
     }
   });
 
+  test("merge: LEAVE (and the old FS-CHECKOUT label, aliased) map to the checkout sentences", async () => {
+    // Two /api/english calls; with the earlier tests this block stays at 10, the per-minute budget.
+    const SO = { ...JSON_H, Origin: `http://127.0.0.1:${port}`, "Sec-Fetch-Site": "same-origin" };
+    const a = await request({ port, method: "POST", path: "/api/english", headers: SO, body: signs("LEAVE", "TIME") });
+    assert.equal(a.status, 200, a.body);
+    assert.equal(JSON.parse(a.body).text, "What time is checkout?");
+    const b = await request({ port, method: "POST", path: "/api/english", headers: SO, body: signs("LATE", "FS-CHECKOUT", "PLEASE") });
+    assert.equal(b.status, 200, b.body);
+    assert.equal(JSON.parse(b.body).text, "Could I have a late checkout?");
+  });
+
+  test("merge: the avatar loads every file in signs/index.json through /signs (signer stripped) and the bellhop model", async () => {
+    const idx = await request({ port, path: "/signs/index.json" });
+    assert.equal(idx.status, 200);
+    const index = JSON.parse(idx.body);
+    assert.ok(Object.keys(index).length >= 80, "index too small");
+    for (const [token, rel] of Object.entries(index)) {
+      const r = await request({ port, path: `/signs/${rel}` });
+      assert.equal(r.status, 200, `${token} -> ${rel}`);
+      const data = JSON.parse(r.body);
+      assert.equal("signer" in data, false, rel);
+      assert.ok(Array.isArray(data.frames) && data.frames.length > 0, rel);
+    }
+    const glb = await request({ port, path: "/avatar/bellhop.glb" });
+    assert.equal(glb.status, 200);
+    assert.ok(glb.body.startsWith("glTF"), "not a GLB");
+  });
+
+  test("merge: /api/gloss (P1) is guarded and still maps staff text to a gloss", async () => {
+    const SO = { ...JSON_H, Origin: `http://127.0.0.1:${port}`, "Sec-Fetch-Site": "same-origin" };
+    const cross = await request({ port, method: "POST", path: "/api/gloss", headers: { ...JSON_H, Origin: "http://evil.example", "Sec-Fetch-Site": "cross-site" }, body: json({ text: "What time is checkout?" }) });
+    assert.equal(cross.status, 403);
+    const plain = await request({ port, method: "POST", path: "/api/gloss", headers: { "Content-Type": "text/plain" }, body: json({ text: "hi" }) });
+    assert.equal(plain.status, 415);
+    const long = await request({ port, method: "POST", path: "/api/gloss", headers: SO, body: json({ text: "a ".repeat(400) }) });
+    assert.equal(long.status, 400);
+    const ok = await request({ port, method: "POST", path: "/api/gloss", headers: SO, body: json({ text: "Checkout is at 11." }) });
+    assert.equal(ok.status, 200, ok.body);
+    assert.ok(JSON.parse(ok.body).gloss.includes("LEAVE"), ok.body);
+  });
+
+  test("merge: /api/transcribe (P1) refuses cross-site, non-multipart and length-less bodies before any vendor call", async () => {
+    const MP = { "Content-Type": "multipart/form-data; boundary=x" };
+    const body = "--x\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"a.webm\"\r\n\r\nxx\r\n--x--\r\n";
+    const cross = await request({ port, method: "POST", path: "/api/transcribe", headers: { ...MP, Origin: "http://evil.example", "Sec-Fetch-Site": "cross-site" }, body });
+    assert.equal(cross.status, 403);
+    const json415 = await request({ port, method: "POST", path: "/api/transcribe", headers: JSON_H, body: json({ audio: "x" }) });
+    assert.equal(json415.status, 415);
+    const chunked = await request({ port, method: "POST", path: "/api/transcribe", headers: MP, body, chunked: true });
+    assert.equal(chunked.status, 411);
+    for (const r of [cross, json415, chunked]) assert.doesNotMatch(r.body, new RegExp(CANARY));
+  });
+
   test("B4: /api/english is rate-limited (10 a minute)", async () => {
     let limited = false;
     for (let i = 0; i < 12 && !limited; i++) {
@@ -366,9 +419,9 @@ describe("plain `next dev` (no server.mjs): loopback-only routes fail closed", {
   });
   after(async () => srv && (await stopServer(srv.child)));
 
-  test("B1/D1/D2: /api/english and /api/tts answer 403 even with forged x-sb-* headers", async () => {
-    for (const p of ["/api/english", "/api/tts"]) {
-      const body = p === "/api/tts" ? json({ text: "Yes." }) : signs("YES");
+  test("B1/D1/D2: /api/english, /api/tts, /api/gloss and /api/transcribe answer 403 even with forged x-sb-* headers", async () => {
+    for (const p of ["/api/english", "/api/tts", "/api/gloss", "/api/transcribe"]) {
+      const body = p === "/api/english" ? signs("YES") : json({ text: "Yes." });
       const r = await request({ port, method: "POST", path: p, headers: { ...JSON_H, "x-sb-loopback": "1", "x-sb-proof": "guess" }, body });
       assert.equal(r.status, 403, p);
     }
