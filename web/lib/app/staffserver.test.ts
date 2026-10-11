@@ -204,6 +204,22 @@ test("F3-4: browser speech in the stage profile: labelled, counted as a vendor, 
   assert.ok(r.vendors.some((x) => x.startsWith("Google")));
 });
 
+test("F3-4 integration: a cloud caption choice ends with the guest; the next guest starts on local captions", () => {
+  const w = setup();
+  w.store.noteLocalStt(true);
+  assert.equal(w.staffAct({ type: "caption_backend", backend: "browser_google" }).status, 200);
+  assert.equal(w.store.captionLive(), "browser_google");
+  w.staffAct({ type: "end_guest" });
+  assert.equal(w.store.captionLive(), "local");
+  const st = of(w.staff, "status").at(-1) as { status?: { captions?: { live?: string } } } | undefined;
+  assert.equal(st?.status?.captions?.live ?? w.store.captionStatus().live, "local");
+  // A local or typed choice is a desk setting and stays.
+  w.store.startNewGuest();
+  assert.equal(w.staffAct({ type: "caption_backend", backend: "typed" }).status, 200);
+  w.store.wipe("staff_ended");
+  assert.equal(w.store.captionLive(), "typed");
+});
+
 test("F3-6: a spoken card number is hidden in the guest caption and the redaction is counted (kind only)", () => {
   const w = setup();
   w.store.noteLocalStt(true);

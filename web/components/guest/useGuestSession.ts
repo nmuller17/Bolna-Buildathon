@@ -404,7 +404,9 @@ function outcomeOf(status: number, data: unknown): ActionOutcome {
   const err = (data ?? null) as ApiError | null;
   if (status === 0) return { ok: false, status, message: "This screen lost its connection to the desk. Wave to the desk." };
   if (status === 429) return { ok: false, status, message: "Please wait a moment, then try again." };
-  if (status === 409) return { ok: false, status, message: "That choice is no longer waiting. Please sign again or type." };
+  // 409 messages from the server are plain guest English ("Signing is not available right now. Please type
+  // or ask for an interpreter."); the generic line is only a fallback, so the guest learns the real reason.
+  if (status === 409) return { ok: false, status, message: err?.message || "That choice is no longer waiting. Please sign again or type." };
   if (status === 401) return { ok: false, status, message: "This screen is no longer connected. Ask the desk to reconnect." };
   return { ok: false, status, message: err?.message || "That did not go through. Please try again.", field: err?.field };
 }

@@ -154,7 +154,11 @@ export function FirstScreen(props: { session: Session; language: SignLanguage; s
           onOther={(c) => void choose(c)}
           onBack={() => setStep("choices")}
         />
-        {error && <p className={s.error}>{error}</p>}
+        {error && (
+          <p className={s.error} role="alert">
+            {error}
+          </p>
+        )}
       </>
     );
   }
@@ -180,7 +184,7 @@ export function FirstScreen(props: { session: Session; language: SignLanguage; s
           );
         })}
       </div>
-      {error && <p className={s.error}>{error}</p>}
+      {error && (<p className={s.error} role="alert">{error}</p>)}
       <label className={s.check}>
         <input type="checkbox" checked={speakAloud} onChange={(e) => void act({ type: "prefs", speakAloud: e.target.checked })} />
         <span>
@@ -218,7 +222,8 @@ export function ModeSwitch({ session }: { session: Session }) {
             type="button"
             className={s.modeButton}
             aria-pressed={mode === c.choice}
-            disabled={c.choice === "sign" && !ui.signingAvailable}
+            // Not disabled when signing is down: a greyed-out button gives no reason. The tap gets the
+            // server's plain answer ("Signing is not available right now...") in the alert below.
             onClick={() => void pick(c.choice)}
           >
             <ChoiceIcon kind={ICON_OF[c.choice]} className={s.modeIcon} />

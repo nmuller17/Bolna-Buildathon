@@ -1092,6 +1092,12 @@ export class Store {
     for (const w of this.warnings) w.open = false;
     this.warnings = [];
     this.sinceStart.skeletonsHeld = 0;
+    // A cloud caption service is an opt-in for one guest, never a desk setting that carries over: the
+    // next guest starts on local captions (or typed), and the staff page stops feeding the browser maker.
+    if (this.captionChoice !== null && CAPTION_BACKEND_IS_CLOUD[this.captionChoice]) {
+      this.captionChoice = null;
+      this.lastLiveBackend = this.captionLive();
+    }
     this.toStaff({ type: "session_end", reason, receipt });
     this.sendStatus();
     return receipt;
