@@ -74,7 +74,7 @@
  },
  "created": "2026-10-10T20:00:00+00:00",
  "data": [
-  "/private/tmp/claude-502/-Users-trehman/98c4d218-329a-433e-99b6-f430ad9401cc/scratchpad/synthetic_train_v2"
+  "<scratch>/synthetic_train_v2"
  ],
  "n_samples": 1320,
  "signers": [

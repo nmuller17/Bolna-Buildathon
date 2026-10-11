@@ -2,7 +2,7 @@
 
 > **SYNTHETIC DATA.** These numbers only show that the training and evaluation code run and learn on made-up trajectories. They are not a measure of how well real ASL signs are recognised. The synthetic signs are much easier to tell apart than real ones (each has its own location), so do not choose between the GRU and the baseline from this report.
 
-Created 2026-10-10T20:00:00+00:00. Mode: cross-validation. Data: /private/tmp/claude-502/-Users-trehman/98c4d218-329a-433e-99b6-f430ad9401cc/scratchpad/synthetic_train_v2.
+Created 2026-10-10T20:00:00+00:00. Mode: cross-validation. Data: <scratch>/synthetic_train_v2.
 1320 takes, 4 signers (synthA, synthB, synthC, synthD).
 
 Evaluation: each signer is held out in turn; the models are trained on the other signers (early stopping and temperature on one inner held-out signer, then refit on all training signers) and tested on the held-out signer. Predictions from all folds are pooled. Team members seen in training will usually score higher than this in the live demo; a new guest will score about this.

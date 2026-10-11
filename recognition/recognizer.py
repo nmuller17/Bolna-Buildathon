@@ -19,11 +19,18 @@ needs_repeat(signs) is the CLAUDE.md 7.2 step 4 rule (any top-1 NONE or below RE
 recognition.stream uses it for the utterance event, and the app applies the same rule.
 
 The checkpoint is checked against model_pin.EXPECTED_SHA256 before it is loaded (the bytes
-that were hashed are the bytes that are loaded); a mismatch raises ModelPinError.
+that were hashed are the bytes that are loaded); a mismatch raises ModelPinError. Fail closed
+(red-team A1/C4): while the pin is None, loading is also refused (ModelPinError) unless the
+caller opts in to development mode with allow_unpinned=True or RECOGNITION_ALLOW_UNPINNED=1.
+That opt-in never overrides a pin that is set: a set pin always wins.
+
+Face landmarks are dropped right after validation (red-team D11): the model does not use them,
+so neither the server nor Recognizer keeps a guest's face geometry in memory.
 """
 import hashlib
 import io
 import logging
+import os
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -63,8 +70,8 @@ class PredictRequest(BaseModel):
 
 
 def frame_dicts(frames):
-    """Parsed Frame models -> plain Frame dicts."""
-    return [f.model_dump() for f in frames]
+    """Parsed Frame models -> plain Frame dicts, face dropped (not a model feature; privacy)."""
+    return [{**f.model_dump(exclude={"face"}), "face": None} for f in frames]
 
 
 class ModelUnavailable(RuntimeError):
@@ -72,7 +79,17 @@ class ModelUnavailable(RuntimeError):
 
 
 class ModelPinError(RuntimeError):
-    """The checkpoint's SHA-256 differs from model_pin.EXPECTED_SHA256."""
+    """The checkpoint's SHA-256 differs from model_pin.EXPECTED_SHA256, or no pin is set (fail closed)."""
+
+
+ALLOW_UNPINNED_ENV = "RECOGNITION_ALLOW_UNPINNED"
+
+
+def unpinned_allowed(allow_unpinned=None):
+    """allow_unpinned if given, else RECOGNITION_ALLOW_UNPINNED in (1, true, yes). Only matters while the pin is None."""
+    if allow_unpinned is not None:
+        return bool(allow_unpinned)
+    return os.environ.get(ALLOW_UNPINNED_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
 def mock_top(frames):
@@ -94,15 +111,20 @@ def sha256_bytes(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def load_predictor(path):
+def load_predictor(path, allow_unpinned=None):
     """Read the checkpoint once, check it against the pin, load it. Raises FileNotFoundError,
-    ModelPinError, or the checkpoint loader's error."""
+    ModelPinError (hash mismatch, or no pin without the development opt-in), or the loader's error."""
     data = Path(path).read_bytes()
     digest = sha256_bytes(data)
     expected = model_pin.EXPECTED_SHA256
     if expected is None:
-        log.warning("model not pinned: loading %s (sha256 %s) without a fingerprint check; "
-                    "pin it at the freeze with python -m recognition.pin_model", Path(path).name, digest)
+        if not unpinned_allowed(allow_unpinned):
+            log.error("model not pinned: refusing %s (sha256 %s). Pin it with python -m recognition.pin_model "
+                      "%s, or for development only set %s=1", Path(path).name, digest, path, ALLOW_UNPINNED_ENV)
+            raise ModelPinError("model not pinned (see the log)")
+        log.warning("model not pinned: loading %s (sha256 %s) without a fingerprint check (%s=1, development "
+                    "only); pin it at the freeze with python -m recognition.pin_model", Path(path).name, digest,
+                    ALLOW_UNPINNED_ENV)
     elif digest != expected.lower():
         log.error("model hash mismatch: %s has sha256 %s, model_pin.py expects %s", Path(path).name, digest, expected)
         raise ModelPinError("model hash mismatch (see the log)")
@@ -159,12 +181,12 @@ class Recognizer:
     frames: one segmented sign as Frame dicts (e.g. mediapipe_adapter output). mock=True
     needs no model and returns the server's deterministic mock answers."""
 
-    def __init__(self, checkpoint=None, mock=False):
+    def __init__(self, checkpoint=None, mock=False, allow_unpinned=None):
         self.mock = mock
         self.predictor = None
         if not mock:
             torch.set_num_threads(2)
-            self.predictor = load_predictor(Path(checkpoint or DEFAULT_MODEL))
+            self.predictor = load_predictor(Path(checkpoint or DEFAULT_MODEL), allow_unpinned)
 
     def predict(self, frames):
         return decide(validate(_plain(list(frames))), self.predictor, self.mock)
