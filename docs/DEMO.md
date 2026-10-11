@@ -44,31 +44,38 @@ The guest's camera feed must show at the bottom right; if it says "Camera offlin
 - **Receptionist:** hold **Space**, say the sentence, release. The bellhop signs it with captions.
 - **Guest:** when "Your turn" shows and the camera frame turns **green**, sign the whole sentence in one go,
   then rest the hands **out of the picture** for 2.5 s. The answer appears ("You said: ...") and is spoken.
-- **R** restarts the script at step 1. The corner shows `guided · step x/10`, then `Q&A`.
+- **R** restarts the script at step 1. The corner shows `guided · step x/4`, then `Q&A`.
 
 ### The script (`?script=1`, one expected answer per step: the translation cannot fail)
 
 | # | Receptionist says | Guest signs | Laptop says |
 |---|---|---|---|
 | 1 | Welcome! Do you have a reservation? | YES · NAME · S-A-M | Yes, my name is Sam. |
-| 2 | Can I see your ID? | YES (hands the ID) | Yes. |
-| 3 | Sam, you're in room 412. Here is your key card. | THANK-YOU · WHERE · ELEVATOR | Thank you. Where is the elevator? |
-| 4 | The elevator is on your left. | FS-WIFI · PASSWORD | What's the Wi-Fi password? |
-| 5 | The Wi-Fi password is on your key card. | BREAKFAST · TIME | What time is breakfast? |
-| 6 | Breakfast is from 7 to 10. | LEAVE · TIME | What time is checkout? |
-| 7 | Checkout is at 11. | LATE · LEAVE · PLEASE | Could I have a late checkout? |
-| 8 | Late checkout is fine, until 1 PM. | MORE · TOWEL · PLEASE | Could I have more towels, please? |
-| 9 | I'll send towels to your room. Anything else? | NO · THANK-YOU | No, that's all, thank you. |
-| 10 | Enjoy your stay! | (no answer, the demo ends on the bellhop) | |
+| 2 | Sam, you're in room 412. Here is your key card. | THANK-YOU · WHERE · ELEVATOR | Thank you. Where is the elevator? |
+| 3 | The elevator is on your left. | FS-WIFI · PASSWORD | What's the Wi-Fi password? |
+| 4 | The Wi-Fi password is on your key card. | BREAKFAST · TIME | What time is breakfast? |
 
 The reference video of each guest sign is in `capture/reference/`.
 
-### Questions from the jury (after step 10, corner shows `Q&A`)
+### After the script (corner shows `Q&A`)
 
-A team member holds Space and repeats the juror's question. The bellhop signs it (known signs, unknown words
-fingerspelled). If it is a question, the guest answers with a simple sentence: **YES**, **NO**, **THANK-YOU**, or a
-guest sentence on the topic of the question (taxi, help, name, breakfast, towels, room...). A remark (not a
-question) gets no guest turn.
+The receptionist (or a team member repeating a juror's question) keeps talking with Space held.
+
+- **Classic front-desk sentences keep a fixed answer** (`CLASSIC_ANSWERS` in `web/lib/voice/expectedAnswers.ts`):
+
+  | Receptionist says | Guest signs | Laptop says |
+  |---|---|---|
+  | Can I see your ID? | YES | Yes. |
+  | Breakfast is from 7 to 10. | LEAVE · TIME | What time is checkout? |
+  | Checkout is at 11. | LATE · LEAVE · PLEASE | Could I have a late checkout? |
+  | Late checkout is fine, until 1 PM. | MORE · TOWEL · PLEASE | Could I have more towels, please? |
+  | I'll send towels to your room. Anything else? | NO · THANK-YOU | No, that's all, thank you. |
+  | Enjoy your stay! | (no guest turn) | |
+
+  The four script sentences keep their answers too if they are said again.
+- **Any other question** (e.g. from the jury): the guest answers with a simple sentence: **YES**, **NO**,
+  **THANK-YOU**, or a guest sentence on the topic of the question (taxi, help, name, breakfast, towels, room...).
+- **A remark that is not a question** gets no guest turn.
 
 Without `?script=1` the answer is chosen among the answers that make sense after the question
 (`web/lib/voice/expectedAnswers.ts`), not forced: that is the real recognition. Tell the jury the demo's guest

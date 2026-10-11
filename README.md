@@ -33,7 +33,7 @@ whole guest turn.
 | Welcome! Do you have a reservation? | HELLO WELCOME · *(brows up)* YOU HAVE RESERVATION | YES · NAME · S-A-M | Yes, my name is Sam. |
 | Checkout is at 11. | LEAVE TIME 11 | LATE · LEAVE · PLEASE | Could I have a late checkout? |
 
-The full 10-step demo script and the jury Q&A mode are in [docs/DEMO.md](docs/DEMO.md).
+The 4-step demo script, the classic sentences that follow and the jury Q&A mode are in [docs/DEMO.md](docs/DEMO.md).
 
 ---
 
