@@ -1,7 +1,7 @@
 {
   "name": "SignBridge front desk",
   "short_name": "SignBridge",
-  "description": "Guest screen for the SignBridge front desk: captions, signing avatar and Help.",
+  "description": "Guest screen for the SignBridge front desk: live captions, signing avatar, picture requests, typing and Help. Nothing is stored on this device.",
   "id": "/guest",
   "start_url": "/guest",
   "scope": "/guest",

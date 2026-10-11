@@ -10,7 +10,27 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { openEventStream, postJson, sendGuestAction, type GuestActionBody, type PostResult } from "@/lib/channel";
 import {
+  DESK_LINE_LABEL,
+  GUEST_LINE_LABEL,
+  addAlert,
+  applyFact,
+  applyLiveCaption,
+  clearFact,
+  numberLine,
+  removeAlert,
+  type FactMap,
+  type GuestSendVia,
+} from "@/lib/app/guestfeatures";
+import { GUEST_INTENTS } from "@/lib/app/vocab";
+import {
   LIMITS,
+  type CaptionBackend,
+  type GuestDeskAlert,
+  type GuestIntentId,
+  type GuestLiveCaption,
+  type GuestPrivacyReceipt,
+  type LineSourceLabel,
+  type NumberAbout,
   type ApiError,
   type BusEnvelope,
   type CapturePhase,
@@ -24,6 +44,7 @@ import {
   type GuestSettings,
   type GuestStaffUtterance,
   type GuestUtteranceEcho,
+  type InterpreterContextConsent,
   type SessionEndReason,
 } from "@/lib/app/types";
 
@@ -33,10 +54,14 @@ export type GuestConn = "connecting" | "no_session" | "link_used" | "live" | "lo
 
 export type CaptionItem = { cap: GuestStaffUtterance; seq: number; isNew: boolean };
 
-/** One line of the guest's own record (BN-5): what the desk said, and what the guest sent. */
+/**
+ * One line of the guest's own record (BN-5): what the desk said, and what the guest sent. Every line
+ * carries exactly one machine-or-human label (features-plan F6). Final live captions join the record
+ * (label "Staff speech, machine captions"); a line the desk removed stays, struck out (F3).
+ */
 export type RecordItem =
-  | { kind: "desk"; key: string; at: number; text: string; fromSpeech: boolean }
-  | { kind: "you"; key: string; at: number; text: string; delivery: GuestUtteranceEcho["delivery"] };
+  | { kind: "desk"; key: string; at: number; text: string; fromSpeech: boolean; label: LineSourceLabel; retracted?: boolean }
+  | { kind: "you"; key: string; at: number; text: string; delivery: GuestUtteranceEcho["delivery"] | "number"; label: LineSourceLabel };
 
 /** Upper bound on the in-memory record, so a long session cannot grow without limit. */
 const RECORD_MAX = 120;
@@ -70,7 +95,7 @@ export type GuestUi = {
   signingAvailable: boolean;
   paused: boolean;
   pairedWith: string | null;
-  end: { reason: SessionEndReason; pendingLost: boolean } | null;
+  end: { reason: SessionEndReason; pendingLost: boolean; receipt: GuestPrivacyReceipt | null; at: number } | null;
   /** The guest's own screen confirms every mode or setting change (C2-7). */
   notice: { text: string; at: number } | null;
   /**
@@ -78,6 +103,22 @@ export type GuestUi = {
    * server sends nothing), so the screen can say it may be out of date. Back to "ok" on the next byte.
    */
   link: "ok" | "down";
+  /* ---- features-plan.md additions (Builder G). All page memory only (AS-3). ---- */
+  /** F3: live captions of the desk's speech, oldest first, at most FEATURE_LIMITS.guestLiveCaptionsKept. */
+  liveCaptions: GuestLiveCaption[];
+  /** F3: the captions badge; null = live captions are off. */
+  captionBackend: CaptionBackend | null;
+  /** F1: fact tiles (staff typed or hotel settings, never speech recognition). Not in the snapshot (AS-1). */
+  facts: FactMap;
+  /** F9: open desk alerts. */
+  alerts: GuestDeskAlert[];
+  /** F6: how the next echo was sent, set just before the action (cleared by the echo). */
+  sendingVia: GuestSendVia | null;
+  /** F11 and F17: the fixed requests the guest sent, and the ways used, for the consent card and the end screen. */
+  sentIntents: GuestIntentId[];
+  usedVia: GuestSendVia[];
+  /** F17: caption backends seen in this conversation (shown on the end screen when the desk sends no receipt). */
+  backendsSeen: CaptionBackend[];
 };
 
 const DEFAULT_SETTINGS: GuestSettings = { type: "settings", guestMode: "choosing", speakAloud: true, showAvatar: true };
@@ -104,6 +145,14 @@ const INITIAL: GuestUi = {
   end: null,
   notice: null,
   link: "ok",
+  liveCaptions: [],
+  captionBackend: null,
+  facts: {},
+  alerts: [],
+  sendingVia: null,
+  sentIntents: [],
+  usedVia: [],
+  backendsSeen: [],
 };
 
 type Act =
@@ -119,7 +168,13 @@ type Act =
   | { t: "proposal_closed"; proposalId: string; notice?: string }
   /** The guest tapped Sign again on a repeat request: the request and the rejected attempt are finished with. */
   | { t: "repeat_dismissed" }
-  | { t: "local_end"; reason: SessionEndReason; pendingLost: boolean };
+  | { t: "local_end"; reason: SessionEndReason; pendingLost: boolean }
+  /** F6: the guest is about to send by this route; the echo that follows gets its label. */
+  | { t: "sending"; via: GuestSendVia }
+  /** F7: the desk accepted a typed number; it joins the guest's own record. */
+  | { t: "number_sent"; about: NumberAbout; value: string }
+  /** F9: the guest tapped OK on a desk alert. */
+  | { t: "alert_seen"; id: string };
 
 function settingsNotice(prev: GuestSettings, next: GuestSettings): string | null {
   const parts: string[] = [];
@@ -150,7 +205,28 @@ function addRecord(list: RecordItem[], item: RecordItem): RecordItem[] {
   return [...list, item].slice(-RECORD_MAX);
 }
 
-const deskItem = (cap: GuestStaffUtterance, at: number): RecordItem => ({ kind: "desk", key: `d-${cap.id}`, at, text: cap.text, fromSpeech: cap.captionSource === "voice" });
+const deskItem = (cap: GuestStaffUtterance, at: number): RecordItem => ({
+  kind: "desk",
+  key: `d-${cap.id}`,
+  at,
+  text: cap.text,
+  fromSpeech: cap.captionSource === "voice",
+  label: DESK_LINE_LABEL[cap.captionSource],
+});
+
+/** Insert or update one record line by key (a final live caption can be revised once more). */
+function upsertRecord(list: RecordItem[], item: RecordItem): RecordItem[] {
+  const i = list.findIndex((r) => r.key === item.key);
+  if (i < 0) return [...list, item].slice(-RECORD_MAX);
+  const next = list.slice();
+  next[i] = { ...item, at: list[i].at };
+  return next;
+}
+
+const addOnce = <T,>(list: T[], v: T): T[] => (list.includes(v) ? list : [...list, v]);
+
+/** The fixed request behind an echoed sentence, if it is one (never the name template). */
+const intentOfText = (text: string): GuestIntentId | null => GUEST_INTENTS.find((g) => !g.needsName && g.text === text)?.id ?? null;
 
 function reduce(ui: GuestUi, a: Act): GuestUi {
   switch (a.t) {
@@ -176,7 +252,17 @@ function reduce(ui: GuestUi, a: Act): GuestUi {
     case "repeat_dismissed":
       return ui.repeat ? { ...ui, repeat: null, live: [], liveClosed: true } : ui;
     case "local_end":
-      return { ...INITIAL, conn: "ended", hello: ui.hello, end: { reason: a.reason, pendingLost: a.pendingLost } };
+      return { ...INITIAL, conn: "ended", hello: ui.hello, end: { reason: a.reason, pendingLost: a.pendingLost, receipt: null, at: Date.now() }, usedVia: ui.usedVia, backendsSeen: ui.backendsSeen };
+    case "sending":
+      return { ...ui, sendingVia: a.via };
+    case "number_sent":
+      return {
+        ...ui,
+        usedVia: addOnce(ui.usedVia, "number"),
+        record: addRecord(ui.record, { kind: "you", key: `n-${Date.now()}-${a.value}`, at: Date.now(), text: numberLine(a.about, a.value), delivery: "number", label: GUEST_LINE_LABEL.number }),
+      };
+    case "alert_seen":
+      return { ...ui, alerts: removeAlert(ui.alerts, a.id) };
     case "env":
       break;
   }
@@ -237,15 +323,22 @@ function reduce(ui: GuestUi, a: Act): GuestUi {
       return { ...ui, repeat: msg, pending: null, echo: null, liveClosed: true, capture: null };
     case "guest_proposal":
       return { ...ui, pending: msg, repeat: null, echo: null, liveClosed: true, capture: null };
-    case "guest_utterance":
+    case "guest_utterance": {
+      // F6: a confirmed proposal came from signs; otherwise the route the guest just used (typed by default).
+      const via: GuestSendVia = msg.proposalId ? "signs" : (ui.sendingVia ?? "typed");
+      const intent = intentOfText(msg.text);
       return {
         ...ui,
         echo: msg,
         pending: null,
         repeat: null,
         liveClosed: true,
-        record: addRecord(ui.record, { kind: "you", key: `y-${seq}`, at, text: msg.text, delivery: msg.delivery }),
+        sendingVia: null,
+        usedVia: addOnce(ui.usedVia, via),
+        sentIntents: intent ? [...ui.sentIntents, intent].slice(-40) : ui.sentIntents,
+        record: addRecord(ui.record, { kind: "you", key: `y-${seq}`, at, text: msg.text, delivery: msg.delivery, label: GUEST_LINE_LABEL[via] }),
       };
+    }
     case "staff_ack":
       if (msg.about === "emergency") return { ...ui, help: { state: "acked", at: ui.help.at } };
       if (msg.about === "interpreter") return { ...ui, interpreter: "acked" };
@@ -261,7 +354,45 @@ function reduce(ui: GuestUi, a: Act): GuestUi {
     case "signing_available":
       return { ...ui, signingAvailable: msg.available };
     case "session_end":
-      return { ...INITIAL, conn: "ended", hello: ui.hello, end: { reason: msg.reason, pendingLost: msg.pendingLost } };
+      return {
+        ...INITIAL,
+        conn: "ended",
+        hello: ui.hello,
+        end: { reason: msg.reason, pendingLost: msg.pendingLost, receipt: msg.receipt ?? null, at },
+        usedVia: ui.usedVia,
+        backendsSeen: ui.backendsSeen,
+      };
+    /* ---- features-plan.md (Builder G) ---- */
+    case "live_caption": {
+      const liveCaptions = applyLiveCaption(ui.liveCaptions, msg);
+      if (liveCaptions === ui.liveCaptions) return ui;
+      const now = liveCaptions.find((c) => c.utteranceId === msg.utteranceId);
+      let record = ui.record;
+      const key = `l-${msg.utteranceId}`;
+      if (now?.retracted) {
+        record = record.map((r) => (r.key === key && r.kind === "desk" ? { ...r, retracted: true } : r));
+      } else if (now?.final) {
+        record = upsertRecord(record, { kind: "desk", key, at, text: now.text, fromSpeech: true, label: DESK_LINE_LABEL.live_caption });
+      }
+      return {
+        ...ui,
+        liveCaptions,
+        record,
+        captionBackend: msg.retracted ? ui.captionBackend : msg.backend,
+        backendsSeen: addOnce(ui.backendsSeen, msg.backend),
+        warnings: { ...ui.warnings, idle: null },
+      };
+    }
+    case "caption_backend":
+      return { ...ui, captionBackend: msg.backend, backendsSeen: msg.backend ? addOnce(ui.backendsSeen, msg.backend) : ui.backendsSeen };
+    case "fact":
+      return { ...ui, facts: applyFact(ui.facts, msg.fact) };
+    case "fact_cleared":
+      return { ...ui, facts: clearFact(ui.facts, msg.key) };
+    case "desk_alert":
+      return { ...ui, alerts: addAlert(ui.alerts, msg) };
+    case "desk_alert_cleared":
+      return { ...ui, alerts: removeAlert(ui.alerts, msg.id) };
   }
   return ui;
 }
@@ -433,10 +564,14 @@ export function useGuestSession() {
     if (second.status !== 200) dispatch({ t: "help_failed" });
   }, []);
 
-  const requestInterpreter = useCallback(async () => {
-    dispatch({ t: "interpreter_sent" });
-    return act({ type: "interpreter_request" });
-  }, [act]);
+  /** F11: `context` only after the guest ticked what to share on their own screen. */
+  const requestInterpreter = useCallback(
+    async (context?: InterpreterContextConsent) => {
+      dispatch({ t: "interpreter_sent" });
+      return act(context ? { type: "interpreter_request", context } : { type: "interpreter_request" });
+    },
+    [act],
+  );
 
   const finish = useCallback(async () => {
     const lost = unsentRef.current || uiRef.current.pending !== null;
@@ -445,8 +580,27 @@ export function useGuestSession() {
   }, [finishLocally]);
 
   const captionsSeen = useCallback(() => dispatch({ t: "captions_seen" }), []);
+  /** F6: call right before an action that the desk echoes back, so the echo gets the right label. */
+  const sendingVia = useCallback((via: GuestSendVia) => dispatch({ t: "sending", via }), []);
+  /** F7: a typed number (digits only); joins the guest's own record once the desk accepted it. */
+  const sendNumber = useCallback(
+    async (about: NumberAbout, value: string): Promise<ActionOutcome> => {
+      const r = await act({ type: "guest_number", about, value });
+      if (r.ok) dispatch({ t: "number_sent", about, value });
+      return r;
+    },
+    [act],
+  );
+  /** F9: "OK" on a desk alert. The alert leaves this screen at once; the desk's "Seen" is best effort. */
+  const ackAlert = useCallback(
+    (id: string) => {
+      dispatch({ t: "alert_seen", id });
+      void act({ type: "ack_alert", id });
+    },
+    [act],
+  );
   const closeProposal = useCallback((proposalId: string, notice?: string) => dispatch({ t: "proposal_closed", proposalId, notice }), []);
   const dismissRepeat = useCallback(() => dispatch({ t: "repeat_dismissed" }), []);
 
-  return { ui, hidden, act, emergency, requestInterpreter, finish, captionsSeen, closeProposal, dismissRepeat, unsentRef };
+  return { ui, hidden, act, emergency, requestInterpreter, finish, captionsSeen, closeProposal, dismissRepeat, unsentRef, sendingVia, sendNumber, ackAlert };
 }
