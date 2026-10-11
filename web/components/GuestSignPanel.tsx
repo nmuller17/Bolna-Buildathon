@@ -1,6 +1,7 @@
 // P4: the guest's own side of /guest. The tip line, each recognized sign as a tag while they sign,
 // then "You said: ..." (or a request to sign again). Sits between the avatar and the captions.
-import type { CSSProperties } from "react";
+// `confirm`, when given, replaces "You said: ..." with the guest's Say it / Text only / Fix card (GuestConfirm).
+import type { CSSProperties, ReactNode } from "react";
 import type { GuestSign, GuestUtterance } from "./useGuestEvents";
 
 const FRAMING: Record<string, string> = {
@@ -11,9 +12,9 @@ const FRAMING: Record<string, string> = {
   NO_PERSON: "Stand in front of the camera",
 };
 
-type Props = { signs: GuestSign[]; utterance: GuestUtterance | null; framing: string | null };
+type Props = { signs: GuestSign[]; utterance: GuestUtterance | null; framing: string | null; confirm?: ReactNode };
 
-export default function GuestSignPanel({ signs, utterance, framing }: Props) {
+export default function GuestSignPanel({ signs, utterance, framing, confirm }: Props) {
   const signing = signs.length > 0;
   const hint = framing ? FRAMING[framing] : undefined;
   return (
@@ -26,6 +27,8 @@ export default function GuestSignPanel({ signs, utterance, framing }: Props) {
             </span>
           ))}
         </div>
+      ) : confirm ? (
+        confirm
       ) : utterance && utterance.needsRepeat ? (
         <p style={{ ...styles.said, ...styles.repeat }}>Sorry, could you sign that again?</p>
       ) : utterance && !utterance.mock && utterance.text ? (

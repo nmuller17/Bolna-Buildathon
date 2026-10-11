@@ -1,10 +1,12 @@
 "use client";
 // Receptionist screen (P4), on the staff laptop.
 // Guest -> staff: what the guest signs (recognizer -> /api/guest/signs -> /api/guest/stream) shows big on the right
-// and is spoken aloud (/api/tts, browser voice as fallback). The first click on the page unlocks sound.
+// and is spoken aloud (/api/tts, browser voice as fallback) only after the guest taps "Say it" on /guest
+// (guest_decision on the channel, createSpeakGate). The first click on the page unlocks sound.
 // Staff -> guest runs hands-free on /guest; this page also offers push-to-talk (button or Space) and a text field,
 // sent to /guest over the BroadcastChannel (MediaRecorder -> /api/transcribe -> /api/gloss -> staff_utterance).
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { createSpeakGate, needsConfirm, type GateOutcome } from "@/components/confirmBeforeSpeak";
 import { speakText, warmUpVoice } from "@/components/speakSigns";
 import { toSignedSentences, transcribe } from "@/components/speechToSigns";
 import { useGuestEvents, type GuestUtterance } from "@/components/useGuestEvents";
@@ -25,6 +27,12 @@ const GUEST_SOURCE: Record<GuestUtterance["source"], string> = {
   recognizer: "known sentence",
   english: "worded by /api/english",
   words: "signs as words",
+};
+const DECISION_LABEL: Record<GateOutcome, string> = {
+  spoken: "The guest tapped Say it: spoken aloud.",
+  text_only: "The guest chose Text only: not spoken.",
+  cancelled: "The guest will sign it again.",
+  ignored: "",
 };
 const STALE_SPEECH_S = 15; // a sentence that waited longer for the sound to be unlocked is not spoken late
 const BUTTON_LABEL: Record<StaffState, string> = { idle: "Hold to talk", listening: "Listening…", processing: "Translating…" };
@@ -59,6 +67,12 @@ export default function StaffPage() {
   const waiting = useRef<{ text: string; at: number } | null>(null); // latest sentence, until sound is unlocked
   const speaking = useRef(Promise.resolve());
 
+  // Confirm before speaking: a guest sentence is spoken only after the guest's "Say it" (guest_decision from /guest).
+  const speakGuest = useRef<(text: string) => void>(() => {});
+  const [gate] = useState(() => createSpeakGate((text) => speakGuest.current(text)));
+  const [decision, setDecision] = useState<{ id: number; outcome: GateOutcome; text: string } | null>(null);
+  const lastGuestText = useRef(""); // the sentence as recognized, to tell a fixed one apart
+
   // CLAUDE.md 6.7 messages from another window. staff_utterance: what /guest heard and signed (hands-free).
   // guest_utterance / repeat_request: older path, the recognizer now posts to /api/guest/signs.
   const onMessage = useCallback((message: ChannelMessage) => {
@@ -69,8 +83,16 @@ export default function StaffPage() {
       setHistory((turns) => [{ from: "guest", text: message.text, signs: message.signs, at: Date.now() }, ...turns]);
     } else if (message.type === "repeat_request") {
       setHistory((turns) => [{ from: "guest", text: "(asked to sign again)", at: Date.now() }, ...turns]);
+    } else if (message.type === "guest_decision") {
+      const recognized = gate.pending === message.id ? lastGuestText.current : "";
+      const { outcome, text } = gate.decide(message);
+      if (outcome === "ignored") return;
+      setDecision({ id: message.id, outcome, text });
+      if (text && text !== recognized) {
+        setHistory((turns) => [{ from: "guest", text: `${text} (fixed by the guest)`, at: Date.now() }, ...turns]);
+      }
     }
-  }, []);
+  }, [gate]);
   const send = useSignbridgeChannel(onMessage);
 
   /** Speaks one sentence after the other; /guest mutes its microphone meanwhile (voice_output). */
@@ -88,15 +110,23 @@ export default function StaffPage() {
     [send],
   );
 
+  useEffect(() => {
+    speakGuest.current = (text: string) => {
+      if (soundRef.current) say(text);
+      else waiting.current = { text, at: Date.now() / 1000 };
+    };
+  }, [say]);
+
   const onGuestUtterance = useCallback(
     (u: GuestUtterance) => {
       const text = u.needsRepeat ? "(asked to sign again)" : u.text;
       setHistory((turns) => [{ from: "guest", text, gloss: u.labels, at: Date.now() }, ...turns]);
-      if (u.needsRepeat || u.mock || !u.text) return; // never speak a guess
-      if (soundRef.current) say(u.text);
-      else waiting.current = { text: u.text, at: Date.now() / 1000 };
+      // Never spoken here: the guest confirms on /guest first. needs_repeat, mock and empty sentences are never offered.
+      lastGuestText.current = u.text;
+      gate.offer(u);
+      setDecision(null);
     },
-    [say],
+    [gate],
   );
   const guest = useGuestEvents(onGuestUtterance);
 
@@ -316,8 +346,20 @@ export default function StaffPage() {
             <>
               {guest.utterance.needsRepeat ? (
                 <p className={styles.repeat}>The guest is asked to sign again.</p>
+              ) : decision?.id === guest.utterance.id && decision.text && decision.text !== guest.utterance.text ? (
+                <>
+                  <p className={styles.guestSentence}>{decision.text}</p>
+                  <p className={styles.raw}>fixed by the guest; recognized: {guest.utterance.text}</p>
+                </>
               ) : (
                 <p className={styles.guestSentence}>{guest.utterance.text}</p>
+              )}
+              {needsConfirm(guest.utterance) && (
+                <p className={styles.meta}>
+                  {decision?.id === guest.utterance.id
+                    ? DECISION_LABEL[decision.outcome]
+                    : "Waiting for the guest to tap Say it, Text only or Fix. Nothing is spoken before that."}
+                </p>
               )}
               <div className={styles.gloss}>
                 {guest.utterance.labels.map((label, i) => (
