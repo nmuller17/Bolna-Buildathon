@@ -53,8 +53,9 @@ def load_recognizer(args, allow_missing=False):
     try:
         return Recognizer(args.checkpoint, mock=args.mock), ("mock" if args.mock else "ok")
     except (FileNotFoundError, ModelPinError) as e:
-        hint = ("this model.pt is not the one pinned in recognition/model_pin.py" if isinstance(e, ModelPinError)
-                else "train a model (python -m recognition.train) or pass --mock")
+        hint = ("this model.pt is not the one pinned in recognition/model_pin.py (or no pin is set: pin it with "
+                "python -m recognition.pin_model, or for development only set RECOGNITION_ALLOW_UNPINNED=1)"
+                if isinstance(e, ModelPinError) else "train a model (python -m recognition.train) or pass --mock")
         if not allow_missing:
             sys.exit(f"{e}\n  {hint}")
         print(f"WARNING: no model ({e}); {hint}. Running without predictions.", file=sys.stderr)
@@ -70,7 +71,7 @@ def load(args, video=True):
 def load_landmarker(args, video=True):
     try:
         landmarker = mpa.load_holistic(args.task, video=video)
-    except (ImportError, FileNotFoundError) as e:
+    except (ImportError, FileNotFoundError, mpa.TaskPinError) as e:
         sys.exit(str(e))
     check_task(args.task)
     return landmarker

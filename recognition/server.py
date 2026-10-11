@@ -1,10 +1,12 @@
 """FastAPI server: POST /predict on port 8000.
 
     uvicorn recognition.server:app --host 127.0.0.1 --port 8000
-    python -m recognition.server --host 0.0.0.0     # LAN (iPad): refuses to start without RECOGNITION_TOKEN
+    python -m recognition.server --host 0.0.0.0 --ssl-certfile cert.pem --ssl-keyfile key.pem
+        # LAN (iPad): refuses to start without RECOGNITION_TOKEN, and without TLS unless --insecure-http
 
 POST /predict  {"frames": Frame[]} -> {"top": [{"label", "conf"} x 3]}  (CLAUDE.md 6.5)
-GET  /health   -> {"status", "model_loaded", "classes", "mock"}
+GET  /health   -> {"status", "model_loaded", "classes", "mock"} for a loopback client or one with the token;
+                  only {"status"} for anyone else (red-team A3: no recon of the label set or mock state)
 
 Environment:
     RECOGNITION_MODEL            checkpoint path (default recognition/models/model.pt)
@@ -13,6 +15,8 @@ Environment:
     RECOGNITION_ALLOWED_HOSTS    extra Host header values to accept (default only localhost, 127.0.0.1)
     RECOGNITION_TOKEN            if set, /predict requires header X-Recognition-Token; if NOT set, any
                                  client whose address is not 127.0.0.1 / ::1 gets 403
+    RECOGNITION_ALLOW_UNPINNED=1 development only: load a checkpoint while model_pin.py is still None
+                                 (without it an unpinned model is refused and /predict answers 503)
 
 Privacy: request bodies and landmarks are never logged or written to disk; face
 landmarks are not used by the model. Bind to 127.0.0.1 (default). Binding 0.0.0.0
@@ -20,7 +24,11 @@ landmarks are not used by the model. Bind to 127.0.0.1 (default). Binding 0.0.0.
 Never expose port 8000 through a tunnel (ngrok etc.).
 
 The checkpoint must match recognition/model_pin.py (SHA-256) when that is set; otherwise
-the log says "hash mismatch" and /predict answers 503.
+the log says "hash mismatch" and /predict answers 503. While the pin is None the model is
+refused too (fail closed) unless RECOGNITION_ALLOW_UNPINNED=1.
+
+Importing this module has no side effects: `app` builds the real application (and loads the
+model) on first use, which uvicorn does at startup (red-team A10).
 
 The decision rules (NONE when too few frames contain a hand or the shoulders, non-finite
 guard) live in recognition/recognizer.py, shared with the in-process Recognizer.
@@ -31,6 +39,7 @@ import ipaddress
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -140,7 +149,8 @@ def _split_env(name, default=""):
     return [o.strip() for o in os.environ.get(name, default).split(",") if o.strip()]
 
 
-def create_app(model_path=None, mock=None, allowed_origins=None, token=None, allowed_hosts=None):
+def create_app(model_path=None, mock=None, allowed_origins=None, token=None, allowed_hosts=None,
+               allow_unpinned=None):
     model_path = Path(model_path or os.environ.get("RECOGNITION_MODEL") or DEFAULT_MODEL)
     if mock is None:
         mock = os.environ.get("RECOGNITION_MOCK", "") in ("1", "true", "yes")
@@ -156,7 +166,7 @@ def create_app(model_path=None, mock=None, allowed_origins=None, token=None, all
         log.warning("RECOGNITION_MOCK is on: /predict returns invented signs, not model output")
     elif model_path.exists():
         try:
-            predictor = load_predictor(model_path)
+            predictor = load_predictor(model_path, allow_unpinned)
             log.info("model loaded from %s", model_path)
         except Exception as e:  # keep serving /health; /predict answers 503 (hash mismatch is logged by load_predictor)
             log.error("could not load %s: %s", model_path, e)
@@ -185,8 +195,17 @@ def create_app(model_path=None, mock=None, allowed_origins=None, token=None, all
         errors = [{"loc": list(e.get("loc", [])), "msg": e.get("msg", "")} for e in exc.errors()[:5]]
         return JSONResponse({"detail": errors}, status_code=422)
 
+    def trusted(request: Request, x_recognition_token: Optional[str]):
+        # Loopback peers, or (token mode) callers holding the token, may see the details.
+        if is_loopback(request.scope.get("client")):
+            return True
+        return token is not None and hmac.compare_digest((x_recognition_token or "").encode("utf-8"),
+                                                         token.encode("utf-8"))
+
     @api.get("/health")
-    def health():
+    def health(request: Request, x_recognition_token: Optional[str] = Header(default=None)):
+        if not trusted(request, x_recognition_token):
+            return {"status": "ok"}   # red-team A3: no label set, model or mock state for LAN callers
         return {"status": "ok", "model_loaded": predictor is not None, "classes": CLASSES, "mock": mock}
 
     @api.post("/predict", response_model=PredictResponse, dependencies=[Depends(check_token)])
@@ -200,19 +219,54 @@ def create_app(model_path=None, mock=None, allowed_origins=None, token=None, all
     return api
 
 
-app = create_app()
+class _LazyApp:
+    """ASGI app that builds create_app() on first use (uvicorn's lifespan startup), so importing
+    recognition.server reads no checkpoint (red-team A10). `uvicorn recognition.server:app` still works."""
+
+    def __init__(self, factory=create_app):
+        self._factory, self._app, self._lock = factory, None, threading.Lock()
+
+    def get(self):
+        if self._app is None:
+            with self._lock:
+                if self._app is None:
+                    self._app = self._factory()
+        return self._app
+
+    async def __call__(self, scope, receive, send):
+        await self.get()(scope, receive, send)
+
+
+app = _LazyApp()
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Run the recognition server (refuses a non-local host without a token).")
+    ap = argparse.ArgumentParser(description="Run the recognition server (refuses a non-local host without a token, "
+                                             "and without TLS unless --insecure-http).")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument("--ssl-certfile", default=None, help="TLS certificate (PEM); required for a non-local host")
+    ap.add_argument("--ssl-keyfile", default=None, help="TLS private key (PEM); keep it out of git")
+    ap.add_argument("--insecure-http", action="store_true",
+                    help="allow a non-local host over plain HTTP (the token and landmarks cross the network "
+                         "unencrypted; only on an isolated network)")
     args = ap.parse_args(argv)
-    if args.host not in LOCAL_HOSTS and not os.environ.get("RECOGNITION_TOKEN"):
+    local = args.host in LOCAL_HOSTS
+    if not local and not os.environ.get("RECOGNITION_TOKEN"):
         sys.exit(f"refusing to bind {args.host} without RECOGNITION_TOKEN (and set RECOGNITION_ALLOWED_ORIGINS, "
                  "RECOGNITION_ALLOWED_HOSTS to the laptop's LAN address)")
+    if bool(args.ssl_certfile) != bool(args.ssl_keyfile):
+        sys.exit("give both --ssl-certfile and --ssl-keyfile")
+    tls = bool(args.ssl_certfile)
+    if not local and not tls and not args.insecure_http:   # red-team A5
+        sys.exit(f"refusing to bind {args.host} over plain HTTP: X-Recognition-Token and guest landmarks would "
+                 "cross the network unencrypted. Pass --ssl-certfile/--ssl-keyfile (e.g. from mkcert), or "
+                 "--insecure-http on an isolated network only")
+    if not local and not tls:
+        print("WARNING: plain HTTP on a non-local address: the token and landmarks can be sniffed", file=sys.stderr)
     import uvicorn
-    uvicorn.run(app, host=args.host, port=args.port, limit_concurrency=32)
+    tls_kw = {"ssl_certfile": args.ssl_certfile, "ssl_keyfile": args.ssl_keyfile} if tls else {}
+    uvicorn.run(app, host=args.host, port=args.port, limit_concurrency=32, **tls_kw)
 
 
 if __name__ == "__main__":

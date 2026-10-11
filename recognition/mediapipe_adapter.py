@@ -44,6 +44,7 @@ None, as in capture.py. Minimisation and the MAX_ABS check are applied after tha
 Holistic results only (as capture.py); y_scale is 1. Segments must then be cleaned with
 capture.clean.clean before prediction (recognition.stream does it).
 """
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -57,6 +58,27 @@ MAX_ABS = 50.0  # = recognizer.COORD_LIMIT (checked by a test)
 HOLISTIC_URL = ("https://storage.googleapis.com/mediapipe-models/holistic_landmarker/"
                 "holistic_landmarker/float16/latest/holistic_landmarker.task")
 DEFAULT_TASK = Path(__file__).parent / "models" / "holistic_landmarker.task"
+# Red-team A1/C5: SHA-256 of the one holistic_landmarker.task we accept (float16, GCS generation
+# 1703178474695092, 2023-12-21; md5 3ZywDp2ZM9rHmI2M40e6ew== matches the bucket). The "latest" URL is
+# mutable, so a re-download that changed, or a swapped local file, is refused instead of being parsed
+# by MediaPipe's native code. A constant in git, no environment override.
+EXPECTED_TASK_SHA256 = "e2dab61191e2dcd0a15f943d8e3ed1dce13c82dfa597b9dd39f562975a50c3f8"
+
+
+class TaskPinError(RuntimeError):
+    """The .task file's SHA-256 differs from EXPECTED_TASK_SHA256."""
+
+
+def read_pinned_task(task_path, expected=None):
+    """Bytes of the .task file after checking them against the pin (the bytes checked are the bytes loaded)."""
+    expected = (expected or EXPECTED_TASK_SHA256).lower()
+    data = Path(task_path).read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != expected:
+        raise TaskPinError(f"{Path(task_path).name} has sha256 {digest}, expected {expected}: re-download it from "
+                           f"{HOLISTIC_URL} and compare, or update EXPECTED_TASK_SHA256 in "
+                           "recognition/mediapipe_adapter.py after review")
+    return data
 INSTALL_HINT = "pip install mediapipe opencv-python   (or: pip install -r requirements.txt)"
 
 
@@ -250,9 +272,10 @@ def load_holistic(task_path=DEFAULT_TASK, video=True):
     if not task_path.is_file():
         raise FileNotFoundError(f"model file not found: {task_path}\n  download it with:\n  "
                                 f"curl -L -o {task_path} {HOLISTIC_URL}")
+    data = read_pinned_task(task_path)   # raises TaskPinError on a different file
     mode = vision.RunningMode.VIDEO if video else vision.RunningMode.IMAGE
     return vision.HolisticLandmarker.create_from_options(vision.HolisticLandmarkerOptions(
-        base_options=BaseOptions(model_asset_path=str(task_path)), running_mode=mode))
+        base_options=BaseOptions(model_asset_buffer=data), running_mode=mode))
 
 
 def detect_image(rgb, task_path=DEFAULT_TASK):

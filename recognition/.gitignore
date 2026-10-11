@@ -1,2 +1,14 @@
 # MediaPipe model files (download with the curl line in mediapipe_adapter.py / README)
 models/*.task
+
+# Red-team C8: keep media, certificates and arrays out of the public repo (see docs/requests.md R10 for the root file).
+*.wav
+*.jpg
+*.jpeg
+*.png
+*.pem
+*.key
+*.crt
+*.npy
+*.parquet
+*.onnx
