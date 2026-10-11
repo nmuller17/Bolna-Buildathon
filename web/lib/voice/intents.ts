@@ -40,7 +40,7 @@ export const STAFF_INTENTS: IntentRule[] = [
   rule("wifi_password", ["FS:WIFI", "PRIVATE", "WORD", "YOUR", "KEY", "CARD"], ["wi.?fi", "internet", "password"]),
   rule("send_towels", ["TOWEL", "ME", "SEND", "YOUR", "ROOM"], ["towel", "towels", "send"]),
   rule("room_number", ["YOUR", "ROOM"], ["room number", "your room", "room is", "in room", "room \\d+"]),
-  rule("key_card", ["YOUR", "KEY", "CARD", "HERE"], ["key card", "room key", "your key"]),
+  rule("key_card", ["YOUR", "KEY", "CARD", "HERE"], ["key.?card", "room key", "your key"]),
   rule("elevator_left", ["ELEVATOR", "THERE", "LEFT"], ["elevator", "lift", "left"]),
   rule("breakfast_time", ["BREAKFAST", "TIME"], ["breakfast"]),
   rule("late_checkout", ["LATE", "LEAVE", "FINE"], ["late checkout", "late check out", "late"]),
