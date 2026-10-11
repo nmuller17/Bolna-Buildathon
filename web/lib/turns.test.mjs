@@ -95,24 +95,32 @@ test("script mode: one expected answer per step, then the next step", () => {
     s,
   );
   next = nextExpected(s, true);
-  assert.deepEqual(next.expected, [["YES"]], "step 2: Can I see your ID? -> YES");
+  assert.deepEqual(next.expected, [["THANK-YOU", "WHERE", "ELEVATOR"]], "step 2: room 412 + key card");
   assert.equal(next.scriptStep, 2);
   assert.equal(turnsReducer(s, { type: "resetScript", now: 1 }).scriptStep, 0);
 });
 
-test("script: the closing step has no guest turn", () => {
-  let s = { ...initialTurns(0), scriptStep: 9 };
+test("after the script: Enjoy your stay has no guest turn", () => {
+  let s = { ...initialTurns(0), scriptStep: 4 };
   s = turnsReducer(s, { type: "staffSigned", intents: ["enjoy_stay"], now: 0 });
   const next = nextExpected(s, true);
   assert.equal(next.skip, true);
   s = turnsReducer(s, { type: "skipTurn", scriptStep: next.scriptStep, now: 600 });
   assert.equal(s.phase, "frontDesk");
   assert.equal(s.staffSigned, false);
-  assert.equal(s.scriptStep, 10);
+  assert.equal(s.scriptStep, 4);
+});
+
+test("after the script: classic sentences keep their fixed answer", () => {
+  let s = { ...initialTurns(0), scriptStep: 4 };
+  s = turnsReducer(s, { type: "staffSigned", intents: ["checkout_time"], text: "Checkout is at 11.", now: 0 });
+  assert.deepEqual(nextExpected(s, true).expected, [["LATE", "LEAVE", "PLEASE"]]);
+  s = turnsReducer(s, { type: "staffSigned", intents: ["id_please"], text: "Can I see your ID?", now: 0 });
+  assert.deepEqual(nextExpected(s, true).expected, [["YES"]]);
 });
 
 test("after the script: Q&A, simple answers to questions only", () => {
-  let s = { ...initialTurns(0), scriptStep: 10 };
+  let s = { ...initialTurns(0), scriptStep: 4 };
   s = turnsReducer(s, { type: "staffSigned", intents: [], text: "Did you like the hotel?", now: 0 });
   let next = nextExpected(s, true);
   assert.equal(next.skip, false);
@@ -123,5 +131,5 @@ test("after the script: Q&A, simple answers to questions only", () => {
   s = turnsReducer(s, { type: "staffSigned", intents: [], text: "Great demo.", now: 0 });
   next = nextExpected(s, true);
   assert.equal(next.skip, true, "not a question: no guest turn");
-  assert.equal(next.scriptStep, 10);
+  assert.equal(next.scriptStep, 4);
 });

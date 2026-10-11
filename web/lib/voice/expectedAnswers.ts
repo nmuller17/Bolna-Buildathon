@@ -100,16 +100,42 @@ export type ScriptStep = { staff: string; triggers: StaffIntentId[]; answer: Gue
  */
 export const DEMO_SCRIPT: ScriptStep[] = [
   { staff: "Welcome! Do you have a reservation?", triggers: ["reservation_question"], answer: "yes_name" },
-  { staff: "Can I see your ID?", triggers: ["id_please"], answer: "yes" },
   { staff: "Sam, you're in room 412. Here is your key card.", triggers: ["key_card"], answer: "thanks_where_elevator" },
   { staff: "The elevator is on your left.", triggers: ["elevator_left"], answer: "wifi_password" },
   { staff: "The Wi-Fi password is on your key card.", triggers: ["wifi_password"], answer: "breakfast_time" },
-  { staff: "Breakfast is from 7 to 10.", triggers: ["breakfast_time"], answer: "checkout_time" },
-  { staff: "Checkout is at 11.", triggers: ["checkout_time"], answer: "late_checkout" },
-  { staff: "Late checkout is fine, until 1 PM.", triggers: ["late_checkout"], answer: "more_towels" },
-  { staff: "I'll send towels to your room. Anything else?", triggers: ["anything_else"], answer: "no_thanks" },
-  { staff: "Enjoy your stay!", triggers: ["enjoy_stay"], answer: null },
 ];
+
+/**
+ * After the script (Q&A), the classic front-desk sentences keep the fixed answer they had in the full demo
+ * ("Checkout is at 11." -> LATE LEAVE PLEASE), matched by the receptionist's last intent. null = no guest turn.
+ */
+export const CLASSIC_ANSWERS: Partial<Record<StaffIntentId, GuestAnswerId | null>> = {
+  reservation_question: "yes_name",
+  id_please: "yes",
+  room_number: "thanks_where_elevator",
+  key_card: "thanks_where_elevator",
+  elevator_left: "wifi_password",
+  wifi_password: "breakfast_time",
+  breakfast_time: "checkout_time",
+  checkout_time: "late_checkout",
+  late_checkout: "more_towels",
+  anything_else: "no_thanks",
+  enjoy_stay: null,
+};
+
+/**
+ * Q&A after the script: a classic sentence gets its fixed answer (or no turn); any other question gets the simple
+ * answers of qaExpected; anything else gets no guest turn (expected null, skip true).
+ */
+export function afterScriptExpected(intents: readonly StaffIntentId[], text: string): { expected: Expected; skip: boolean } {
+  const last = [...intents].reverse().find((id) => id !== "unknown");
+  if (last && last in CLASSIC_ANSWERS) {
+    const answer = CLASSIC_ANSWERS[last];
+    return answer ? { expected: toLabels([answer]), skip: false } : { expected: null, skip: true };
+  }
+  const expected = qaExpected(text);
+  return { expected, skip: expected === null };
+}
 
 /**
  * Script mode: the current step decides, whatever the receptionist's intents were (skip: that step has no guest

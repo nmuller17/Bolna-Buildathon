@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { mapStaffTextToGloss } from "./intents.ts";
-import { DEMO_SCRIPT, EXPECTED_AFTER, GUEST_ANSWERS, expectedAfter, scriptedExpected } from "./expectedAnswers.ts";
+import { DEMO_SCRIPT, EXPECTED_AFTER, GUEST_ANSWERS, afterScriptExpected, expectedAfter, scriptedExpected } from "./expectedAnswers.ts";
 
 const root = new URL("../../../", import.meta.url);
 const vocabulary = readFileSync(new URL("docs/vocabulary.md", root), "utf8");
@@ -66,7 +66,27 @@ test("script mode follows the steps whatever was transcribed, and skips steps wi
     step = r.nextStep;
   }
   assert.equal(step, DEMO_SCRIPT.length);
-  const after = scriptedExpected(step, intentsOf("Parking is downstairs."));
+  const after = scriptedExpected(step, intentsOf("Parking is downstairs."));  // after the script
   assert.equal(after.scripted, false, "after the script: back to the table");
   assert.deepEqual(after.expected, [["THANK-YOU"]]);
+});
+
+test("classic answers after the script are the ones of the full demo, and allowed by the table", () => {
+  const classic = [
+    ["Can I see your ID?", ["YES"]],
+    ["Breakfast is from 7 to 10.", ["LEAVE", "TIME"]],
+    ["Checkout is at 11.", ["LATE", "LEAVE", "PLEASE"]],
+    ["Late checkout is fine, until 1 PM.", ["MORE", "TOWEL", "PLEASE"]],
+    ["I'll send towels to your room. Anything else?", ["NO", "THANK-YOU"]],
+  ];
+  for (const [staff, answer] of classic) {
+    const r = afterScriptExpected(intentsOf(staff), staff);
+    assert.deepEqual(r.expected, [answer], staff);
+    const last = intentsOf(staff).filter((i) => i !== "unknown").at(-1);
+    const id = Object.entries(GUEST_ANSWERS).find(([, a]) => a.join(" ") === answer.join(" "))[0];
+    assert.ok(EXPECTED_AFTER[last].includes(id), `${staff}: ${id} not in the table`);
+  }
+  assert.equal(afterScriptExpected(intentsOf("Enjoy your stay!"), "Enjoy your stay!").skip, true);
+  assert.deepEqual(afterScriptExpected(intentsOf("Did you like the hotel?"), "Did you like the hotel?").expected,
+    [["YES"], ["NO"], ["THANK-YOU"]]);
 });

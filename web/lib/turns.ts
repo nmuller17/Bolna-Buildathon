@@ -1,7 +1,7 @@
 // Turn-taking of the single-screen demo: the receptionist talks and the bellhop signs, then the guest answers
 // in signs (recorded by recognition/live_key.py), the answer is spoken aloud, then back to the receptionist.
 // Pure reducer: the page feeds it events and runs the side effects (POST /turn, speaking) on phase changes.
-import { DEMO_SCRIPT, expectedAfter, qaExpected, scriptedExpected, type Expected } from "./voice/expectedAnswers.ts";
+import { DEMO_SCRIPT, afterScriptExpected, expectedAfter, scriptedExpected, type Expected } from "./voice/expectedAnswers.ts";
 import type { StaffIntentId } from "./voice/intents";
 
 export type TurnPhase =
@@ -78,9 +78,10 @@ export function nextExpected(
   scriptMode: boolean,
 ): { expected: Expected; scriptStep: number; scripted: boolean; skip: boolean } {
   if (scriptMode && s.scriptStep >= DEMO_SCRIPT.length) {
-    // Q&A with the jury after the script: simple answers to a question, no guest turn after anything else.
-    const expected = qaExpected(s.lastText);
-    return { expected, scriptStep: s.scriptStep, scripted: false, skip: expected === null };
+    // Q&A after the script: classic sentences keep their fixed answer, other questions get simple answers,
+    // anything else gets no guest turn.
+    const r = afterScriptExpected(s.lastIntents, s.lastText);
+    return { expected: r.expected, scriptStep: s.scriptStep, scripted: false, skip: r.skip };
   }
   if (scriptMode) {
     const r = scriptedExpected(s.scriptStep, s.lastIntents, s.expected);
