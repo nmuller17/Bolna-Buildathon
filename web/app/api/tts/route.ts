@@ -6,6 +6,10 @@ import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { INTENTS } from "../english/intents";
+// SECURITY (red-team B1/B3/B6/C3/D2/D3/D5/D6): see docs/requests.md "Security hardening of the app".
+// Changes are marked "SECURITY:" below; synthesis itself is unchanged.
+import { cleanSentence } from "@/lib/app/access";
+import { guardLoopbackJsonPost } from "@/lib/app/guard";
 
 export const runtime = "nodejs";
 
@@ -13,6 +17,28 @@ const PIPER_TIMEOUT_MS = 30_000;
 const PIPER_ON = process.env.PIPER_FALLBACK === "1";
 const ELEVENLABS_TIMEOUT_MS = 2000; // the client gives up at 2.5 s and uses the browser's voice
 const DEFAULT_ELEVENLABS_VOICE = "EXAVITQu4vr4xnSDxMaL"; // "Sarah", an ElevenLabs premade voice
+// SECURITY: request limits and a text cap.
+const MAX_BODY_BYTES = 4 * 1024;
+const PER_MINUTE = 30;
+const MAX_TEXT_CHARS = 300;
+// SECURITY (B6/D3): only the fixed guest sentences are cached. Any other text is synthesized
+// uncached (no unbounded memory, no "was this sentence said before?" timing oracle) and at most
+// MAX_UNCACHED_IN_FLIGHT at a time (no flood of paid ElevenLabs calls or Piper processes).
+const FIXED_TEXTS = new Set(INTENTS.map((i) => i.text));
+const MAX_UNCACHED_IN_FLIGHT = 2;
+let uncachedInFlight = 0;
+class TtsBusy extends Error {}
+// SECURITY (C3/D5): the Piper child gets only these variables, never the API keys or BRIDGE_KEY.
+const PIPER_ENV_KEYS = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TEMP", "TMP", "SYSTEMROOT", "USERPROFILE"];
+
+function piperEnv(): NodeJS.ProcessEnv {
+  const env: Record<string, string> = { PYTHONIOENCODING: "utf-8" };
+  for (const key of PIPER_ENV_KEYS) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env as unknown as NodeJS.ProcessEnv;
+}
 
 // text -> WAV, per engine. Also holds in-flight runs so the same sentence is never synthesized twice at once.
 const elevenLabsCache = new Map<string, Promise<Buffer>>();
@@ -33,7 +59,8 @@ async function synthesizeElevenLabs(text: string, apiKey: string): Promise<Buffe
         signal: controller.signal,
       },
     );
-    if (!res.ok) throw new Error(`ElevenLabs ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    // SECURITY (D6): status only; the vendor's error body may echo the request and is never logged.
+    if (!res.ok) throw new Error(`ElevenLabs ${res.status}`);
     return Buffer.from(await res.arrayBuffer());
   } finally {
     clearTimeout(timer);
@@ -48,7 +75,7 @@ function runPiper(args: string[], input: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn("python", ["-m", "piper", "-m", path.resolve(voice), ...args], {
       stdio: ["pipe", "ignore", "pipe"],
-      env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+      env: piperEnv(), // SECURITY (C3/D5): was { ...process.env, PYTHONIOENCODING: "utf-8" }
       windowsHide: true,
     });
     const timer = setTimeout(() => child.kill(), PIPER_TIMEOUT_MS);
@@ -128,37 +155,49 @@ function startWarmUp() {
 }
 
 async function synthesize(text: string): Promise<Buffer> {
-  const apiKey = process.env.ELEVENLABS_API_KEY;
-  if (apiKey) {
-    try {
-      return await cached(elevenLabsCache, text, () => synthesizeElevenLabs(text, apiKey));
-    } catch (err) {
-      if (!PIPER_ON) throw err;
-      console.warn("[api/tts] ElevenLabs failed, using Piper:", err);
+  // SECURITY (B6/D3): cache fixed sentences only; free text is uncached and concurrency-limited.
+  const fixed = FIXED_TEXTS.has(text);
+  if (!fixed && uncachedInFlight >= MAX_UNCACHED_IN_FLIGHT) throw new TtsBusy("busy");
+  const run = (cache: Map<string, Promise<Buffer>>, make: () => Promise<Buffer>) => (fixed ? cached(cache, text, make) : make());
+  if (!fixed) uncachedInFlight++;
+  try {
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+    if (apiKey) {
+      try {
+        return await run(elevenLabsCache, () => synthesizeElevenLabs(text, apiKey));
+      } catch (err) {
+        if (!PIPER_ON) throw err;
+        console.warn("[api/tts] ElevenLabs failed, using Piper:", err instanceof Error ? err.message : "error");
+      }
     }
+    if (!PIPER_ON) throw new Error("ELEVENLABS_API_KEY is not set (and PIPER_FALLBACK is off)");
+    return await run(piperCache, () => synthesizePiper(text));
+  } finally {
+    if (!fixed) uncachedInFlight--;
   }
-  if (!PIPER_ON) throw new Error("ELEVENLABS_API_KEY is not set (and PIPER_FALLBACK is off)");
-  return cached(piperCache, text, () => synthesizePiper(text));
 }
 
 export async function POST(req: Request) {
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON" }, { status: 400 });
+  // SECURITY (B1/B3/D2): loopback only (via web/server.mjs), Host allowlist, same-origin,
+  // application/json, 4 KB capped read, 30 requests a minute. Replaces `await req.json()`.
+  const guarded = await guardLoopbackJsonPost(req, { route: "tts", maxBytes: MAX_BODY_BYTES, perMinute: PER_MINUTE });
+  if (!guarded.ok) return guarded.res;
+  const raw = (guarded.body as { text?: unknown } | null)?.text;
+  // Piper reads one sentence per line, so newlines would split the audio (cleanSentence collapses them).
+  // SECURITY (B6/D2): at most MAX_TEXT_CHARS plain-sentence characters (no markup, no control characters).
+  const text = cleanSentence(raw, MAX_TEXT_CHARS);
+  if (!text) {
+    return Response.json({ error: `Expected { text: one plain sentence of at most ${MAX_TEXT_CHARS} characters }` }, { status: 400 });
   }
-  const raw = (body as { text?: unknown } | null)?.text;
-  // Piper reads one sentence per line, so newlines would split the audio.
-  const text = typeof raw === "string" ? raw.replace(/\s+/g, " ").trim() : "";
-  if (!text) return Response.json({ error: "Expected { text: non-empty string }" }, { status: 400 });
 
   if (PIPER_ON) startWarmUp();
   try {
     const wav = await synthesize(text);
     return new Response(new Uint8Array(wav), { headers: { "Content-Type": "audio/wav" } });
   } catch (err) {
-    console.error("[api/tts] TTS failed:", err);
+    if (err instanceof TtsBusy) return Response.json({ error: "TTS busy, retry" }, { status: 503 });
+    // SECURITY (D6): the short message only.
+    console.error("[api/tts] TTS failed:", err instanceof Error ? err.message : "error");
     return Response.json({ error: "TTS failed" }, { status: 500 });
   }
 }

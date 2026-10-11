@@ -44,11 +44,34 @@ function playWav(wav: Blob): Promise<void> {
   }).finally(() => URL.revokeObjectURL(url));
 }
 
-function speakWithBrowser(text: string): Promise<void> {
+/**
+ * SECURITY (red-team D9, docs/requests.md "Security hardening of the app"): the last-resort voice must be an
+ * on-device voice (localService === true). A network voice would send the sentence to the browser
+ * vendor; when no local English voice exists we stay silent (the caller still gets the text to show).
+ */
+async function localEnglishVoice(): Promise<SpeechSynthesisVoice | null> {
+  let all = window.speechSynthesis.getVoices();
+  if (all.length === 0) {
+    // Chrome loads the voice list lazily: wait for it briefly the first time.
+    await new Promise<void>((resolve) => {
+      const done = () => resolve();
+      window.speechSynthesis.addEventListener("voiceschanged", done, { once: true });
+      setTimeout(done, 500);
+    });
+    all = window.speechSynthesis.getVoices();
+  }
+  const voices = all.filter((v) => v.localService);
+  return voices.find((v) => v.lang === "en-US") ?? voices.find((v) => v.lang.startsWith("en")) ?? null;
+}
+
+async function speakWithBrowser(text: string): Promise<void> {
+  if (!("speechSynthesis" in window)) return;
+  const voice = await localEnglishVoice();
+  if (!voice) return;
   return new Promise((resolve) => {
-    if (!("speechSynthesis" in window)) return resolve();
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "en-US";
+    utterance.voice = voice;
+    utterance.lang = voice.lang;
     utterance.onend = () => resolve();
     utterance.onerror = () => resolve();
     window.speechSynthesis.cancel();
