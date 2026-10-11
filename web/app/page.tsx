@@ -23,7 +23,7 @@ import { useGuestEvents, type GuestTurnEvent, type GuestUtterance } from "@/comp
 import { useHandsFreeSpeech } from "@/components/useHandsFreeSpeech";
 import { mountAvatar, playGloss } from "@/lib/avatar/player";
 import { guestTurnDue, initialTurns, nextExpected, turnsReducer, type TurnEvent, type TurnState } from "@/lib/turns";
-import { DEMO_SCRIPT } from "@/lib/voice/expectedAnswers";
+import { DEMO_SCRIPT, expectedAfter } from "@/lib/voice/expectedAnswers";
 import type { StaffIntentId } from "@/lib/voice/intents";
 import styles from "./page.module.css";
 
@@ -201,7 +201,8 @@ export default function SignBridgePage() {
       apply({ type: "requested", ...next, now });
       fetch(`${RECOGNIZER_URL}/turn`, {
         method: "POST",
-        body: JSON.stringify({ expected: next.expected }),
+        // context: the answers the question alone allows, for the rehearsal check in the recognizer's log.
+        body: JSON.stringify({ expected: next.expected, context: expectedAfter(turnsRef.current.lastIntents) }),
         signal: AbortSignal.timeout(TURN_REQUEST_TIMEOUT_MS),
       }).then(
         (res) => !res.ok && apply({ type: "requestFailed", now: performance.now() }),

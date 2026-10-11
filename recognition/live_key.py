@@ -37,6 +37,7 @@ it through http://127.0.0.1:8765 (loopback only, CORS open, empty body):
   POST /sign, /end, /undo   manual control (one sign, end of sentence, drop last sign)
 """
 import argparse
+from pathlib import Path
 import json
 import os
 import queue
@@ -131,15 +132,16 @@ def serve_control(port):
             if cmd is None:
                 return self._reply(404, b"unknown")
             if cmd == "turn":            # optional body {"expected": [["YES"], ["YES", "RESERVATION"], ...]}
-                expected = None
+                expected = context = None
                 length = int(self.headers.get("Content-Length") or 0)
                 if 0 < length <= 4096:
                     try:
                         body = json.loads(self.rfile.read(length) or b"{}")
                         expected = valid_expected(body.get("expected"))
+                        context = valid_expected(body.get("context"))
                     except (ValueError, AttributeError):
                         return self._reply(400, b"bad json")
-                COMMANDS.put(("turn", expected))
+                COMMANDS.put(("turn", expected, context if length else None))
             else:
                 COMMANDS.put(cmd)
             self._reply(200)
@@ -205,7 +207,10 @@ def wrists(frame):
     return [tuple(frame[h][0][:2]) for h in ("lh", "rh") if frame[h] is not None]
 
 
-def continuous_turn(rec, predictor, emit, expected=None):
+REHEARSAL_LOG = Path(__file__).resolve().parent.parent / "data" / "rehearsals.jsonl"
+
+
+def continuous_turn(rec, predictor, emit, expected=None, context=None):
     """The guest signs a whole sentence in one go; it ends when the hands rest for REST_SEC.
     Returns a decode_continuous result, or None when the guest did not sign."""
     emit({"type": "capture", "phase": "listening"})
@@ -248,7 +253,20 @@ def continuous_turn(rec, predictor, emit, expected=None):
     frames = clean([normalize(raws[i]) for i in idx], [stamps[i] for i in idx]) if idx else []
     if len(frames) < 10:
         return None
-    return decode_continuous(window_probs(frames, predictor), n_frames=len(frames), candidates=expected)
+    probs = window_probs(frames, predictor)
+    res = decode_continuous(probs, n_frames=len(frames), candidates=expected)
+    # Rehearsal check: what the recognizer would have said with less help (never used for the answer).
+    free = decode_continuous(probs, n_frames=len(frames))
+    guided = decode_continuous(probs, n_frames=len(frames), candidates=context) if context else free
+    print(f"  check: free={' '.join(free['labels'])} | question={' '.join(guided['labels'])} | answer={' '.join(res['labels'])}")
+    try:
+        REHEARSAL_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with REHEARSAL_LOG.open("a") as f:
+            f.write(json.dumps({"t": time.time(), "expected": expected, "context": context, "windows": res["raw"],
+                                "free": free["labels"], "question": guided["labels"], "answer": res["labels"]}) + "\n")
+    except OSError:
+        pass
+    return res
 
 
 def main(argv=None):
@@ -375,9 +393,10 @@ def main(argv=None):
                 sentence = []
             elif key == "turn" or (isinstance(key, tuple) and key[0] == "turn"):
                 expected = key[1] if isinstance(key, tuple) else None
+                context = key[2] if isinstance(key, tuple) and len(key) > 2 else None
                 emit({"type": "turn", "phase": "start", "expected": expected})
                 print(f"guest turn (continuous){'  expected: ' + ' | '.join(' '.join(e) for e in expected) if expected else ''}")
-                res = continuous_turn(rec, predictor, emit, expected)
+                res = continuous_turn(rec, predictor, emit, expected, context)
                 if res:
                     print(f"utterance: windows {' '.join(res['raw'])} -> {' '.join(res['labels'])}  {res['text'] or ''}")
                     emit({"type": "utterance", "raw": res["raw"], "labels": res["labels"], "text": res["text"],
