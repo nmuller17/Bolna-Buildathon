@@ -156,3 +156,36 @@ def test_c5_load_holistic_refuses_a_swapped_task(tmp_path):
     fake.write_bytes(b"\x00" * 1024)
     with pytest.raises(mpa.TaskPinError):
         mpa.load_holistic(fake)
+
+
+def _committed_pin():
+    """EXPECTED_SHA256 exactly as committed in model_pin.py (conftest sets the live value aside)."""
+    ns = {}
+    exec(Path(model_pin.__file__).read_text(), ns)
+    return ns["EXPECTED_SHA256"]
+
+
+def test_a1_committed_pin_refuses_test_checkpoints_even_with_the_dev_optin(real_and_tampered, monkeypatch, caplog):
+    """conftest sets the pin aside only for the session's throwaway checkpoints; the pin as committed
+    must still refuse them (and the opt-in must not bypass a set pin) while the committed demo model loads."""
+    pin = _committed_pin()
+    if pin is None:
+        pytest.skip("no pin committed yet (fail-closed without a pin is test_a1_unpinned_model_is_refused_by_default)")
+    monkeypatch.setattr(model_pin, "EXPECTED_SHA256", pin)
+    for optin in (None, "1"):
+        if optin is None:
+            monkeypatch.delenv("RECOGNITION_ALLOW_UNPINNED", raising=False)
+        else:
+            monkeypatch.setenv("RECOGNITION_ALLOW_UNPINNED", optin)
+        for path in real_and_tampered:
+            with caplog.at_level(logging.ERROR, "recognition"), pytest.raises(ModelPinError):
+                load_predictor(path)
+            assert "model hash mismatch" in caplog.text
+            with pytest.raises(ModelPinError):
+                load_predictor(path, allow_unpinned=True)
+        c = client_for(real_and_tampered[0])
+        assert c.get("/health").json()["model_loaded"] is False
+    demo = ROOT / "recognition" / "models" / "model.pt"
+    if demo.is_file():
+        monkeypatch.delenv("RECOGNITION_ALLOW_UNPINNED", raising=False)
+        assert load_predictor(demo) is not None
