@@ -76,17 +76,29 @@ def collapse(labels):
     return out
 
 
-def decode_continuous(probs, n_frames=None, length_weight=None):
+def candidate_intents(candidates):
+    """Expected answers (list of label lists) -> the matching GUEST_INTENTS entries, in order.
+    None, empty, or nothing matching -> all 20 sentences."""
+    if not candidates:
+        return GUEST_INTENTS
+    wanted = [list(c) for c in candidates if isinstance(c, (list, tuple))]
+    picked = [(labels, text) for labels, text in GUEST_INTENTS if labels in wanted]
+    return picked or GUEST_INTENTS
+
+
+def decode_continuous(probs, n_frames=None, length_weight=None, candidates=None):
     """Window probabilities of one sentence -> dict like intents.decode: raw (collapsed window
     argmax), labels, text, snapped, score (mean log probability per window, minus a duration
-    prior: a sentence of k signs is expected to last about k * FRAMES_PER_SIGN frames)."""
+    prior: a sentence of k signs is expected to last about k * FRAMES_PER_SIGN frames).
+    candidates: the expected answers (label lists, e.g. [["YES"], ["YES", "RESERVATION"]]) from the
+    conversation context; only those sentences are considered (all 20 when None)."""
     weight = LENGTH_WEIGHT if length_weight is None else length_weight
     if not probs:
         return {"raw": [], "labels": [], "text": None, "snapped": False, "score": -math.inf}
     logp = np.log(np.maximum(np.asarray(probs), FLOOR))
     raw = collapse([CLASSES[int(np.argmax(p))] for p in probs])
     best = None
-    for labels, text in GUEST_INTENTS:
+    for labels, text in candidate_intents(candidates):
         total, path = _align(logp, labels)
         if path is None:
             continue

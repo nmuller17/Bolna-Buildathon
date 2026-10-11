@@ -31,9 +31,13 @@ it through http://127.0.0.1:8765 (loopback only, CORS open, empty body):
                       "listening"} (waiting for the hands) -> "signing" (hands moving) -> "processing";
                       utterance; {"type": "turn", "phase": "end", "empty"}. Nothing signed within
                       START_TIMEOUT (8 s) -> empty turn.
+                      Optional JSON body {"expected": [["YES"], ["NO"], ["YES", "RESERVATION"]]}: the
+                      answers expected after the last question (label lists of vocabulary.md s2); only
+                      those sentences are considered. One entry = scripted demo step, cannot fail.
   POST /sign, /end, /undo   manual control (one sign, end of sentence, drop last sign)
 """
 import argparse
+import json
 import os
 import queue
 import sys
@@ -71,6 +75,14 @@ def fmt(top):
 COMMANDS = queue.Queue()   # "space" / "enter" / "back" / "turn" from the control server
 PREVIEW = {"jpg": None, "lock": threading.Lock()}   # latest mirrored camera frame as JPEG
 MAX_TURN_SIGNS = 4         # longest guest sentence has 3 signs
+
+
+def valid_expected(expected):
+    """Body field "expected" -> list of label lists made of known labels, or None."""
+    if not isinstance(expected, list):
+        return None
+    out = [e for e in expected if isinstance(e, list) and e and all(label in CLASSES for label in e)]
+    return out or None
 
 
 def serve_control(port):
@@ -118,7 +130,18 @@ def serve_control(port):
             cmd = paths.get(self.path)
             if cmd is None:
                 return self._reply(404, b"unknown")
-            COMMANDS.put(cmd)
+            if cmd == "turn":            # optional body {"expected": [["YES"], ["YES", "RESERVATION"], ...]}
+                expected = None
+                length = int(self.headers.get("Content-Length") or 0)
+                if 0 < length <= 4096:
+                    try:
+                        body = json.loads(self.rfile.read(length) or b"{}")
+                        expected = valid_expected(body.get("expected"))
+                    except (ValueError, AttributeError):
+                        return self._reply(400, b"bad json")
+                COMMANDS.put(("turn", expected))
+            else:
+                COMMANDS.put(cmd)
             self._reply(200)
 
         def log_message(self, *args):
@@ -146,6 +169,8 @@ def wait_key(rec, lines):
             return "back"
         if key in (ord("s"), ord("q")):
             return chr(key)
+        if key == ord("t"):
+            return "turn"
 
 
 def sign_once(rec, predictor, title, target, a, countdown=None):
@@ -180,7 +205,7 @@ def wrists(frame):
     return [tuple(frame[h][0][:2]) for h in ("lh", "rh") if frame[h] is not None]
 
 
-def continuous_turn(rec, predictor, emit):
+def continuous_turn(rec, predictor, emit, expected=None):
     """The guest signs a whole sentence in one go; it ends when the hands rest for REST_SEC.
     Returns a decode_continuous result, or None when the guest did not sign."""
     emit({"type": "capture", "phase": "listening"})
@@ -194,6 +219,8 @@ def continuous_turn(rec, predictor, emit):
         raw = detect(rec.landmarker, cv2.cvtColor(img, cv2.COLOR_BGR2RGB), t_ms)
         raws.append(raw)
         stamps.append(t_ms)
+        state = "Your turn: sign when ready" if started_at is None else "SIGNING... rest your hands to finish"
+        show(img, [state], RED if started_at is not None else WHITE)
         w = wrists(normalize(raw))
         history = [(t, ws) for t, ws in history if now - t <= STILL_SEC] + [(now, w)]
         old = history[0][1]
@@ -221,7 +248,7 @@ def continuous_turn(rec, predictor, emit):
     frames = clean([normalize(raws[i]) for i in idx], [stamps[i] for i in idx]) if idx else []
     if len(frames) < 10:
         return None
-    return decode_continuous(window_probs(frames, predictor), n_frames=len(frames))
+    return decode_continuous(window_probs(frames, predictor), n_frames=len(frames), candidates=expected)
 
 
 def main(argv=None):
@@ -336,7 +363,7 @@ def main(argv=None):
         while True:
             heard = " ".join(CLASSES[int(np.argmax(p))] for p in sentence)
             key = wait_key(rec, [f"sentence: {heard or '...'}", last,
-                                 "SPACE sign   ENTER end sentence   BACKSPACE undo   Q quit"])
+                                 "T your turn (continuous)   SPACE one sign   ENTER end   Q quit"])
             if key == "q":
                 break
             if key == "back" and sentence:
@@ -346,10 +373,11 @@ def main(argv=None):
                 last = f"-> {r['text'] or ' '.join(r['labels'])}"
                 print(f"utterance: heard {' '.join(r['raw'])} -> {' '.join(r['labels'])}  {r['text'] or ''}")
                 sentence = []
-            elif key == "turn":
-                emit({"type": "turn", "phase": "start"})
-                print("guest turn (continuous)")
-                res = continuous_turn(rec, predictor, emit)
+            elif key == "turn" or (isinstance(key, tuple) and key[0] == "turn"):
+                expected = key[1] if isinstance(key, tuple) else None
+                emit({"type": "turn", "phase": "start", "expected": expected})
+                print(f"guest turn (continuous){'  expected: ' + ' | '.join(' '.join(e) for e in expected) if expected else ''}")
+                res = continuous_turn(rec, predictor, emit, expected)
                 if res:
                     print(f"utterance: windows {' '.join(res['raw'])} -> {' '.join(res['labels'])}  {res['text'] or ''}")
                     emit({"type": "utterance", "raw": res["raw"], "labels": res["labels"], "text": res["text"],
