@@ -62,7 +62,9 @@ export async function POST(request: Request) {
       if (!Number.isInteger(body.seq) || (body.seq as number) < 0 || !isPredictions(body.top, 5)) {
         return bad('Expected { type: "sign", seq: int, top: [{ label, conf }] }');
       }
-      publish({ type: "sign", seq: body.seq as number, top: body.top, at });
+      // Optional recognizer timestamps (live.py), only for the staff latency panel: kept when they are numbers.
+      const time = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+      publish({ type: "sign", seq: body.seq as number, top: body.top, at, t_sign_end: time(body.t_sign_end), t_predicted: time(body.t_predicted) });
       return Response.json({ ok: true });
     }
 
