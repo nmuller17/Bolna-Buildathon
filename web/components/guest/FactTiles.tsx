@@ -42,7 +42,16 @@ function QrSvg({ text }: { text: string }) {
   );
 }
 
-export default function FactTiles({ facts, interactive }: { facts: FactMap; interactive: boolean }) {
+export default function FactTiles({
+  facts,
+  interactive,
+  onShown,
+}: {
+  facts: FactMap;
+  interactive: boolean;
+  /** Called each time the guest opens the card (counts "card shown" for the receipt; carries no text). */
+  onShown?: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const list = orderedFacts(facts);
   const text = takeHomeText(facts);
@@ -64,7 +73,16 @@ export default function FactTiles({ facts, interactive }: { facts: FactMap; inte
       </ul>
       {interactive && text && (
         <>
-          <button type="button" className={s.secondary} aria-expanded={open} aria-controls="take-home" onClick={() => setOpen((v) => !v)}>
+          <button
+            type="button"
+            className={s.secondary}
+            aria-expanded={open}
+            aria-controls="take-home"
+            onClick={() => {
+              if (!open) onShown?.();
+              setOpen((v) => !v);
+            }}
+          >
             {open ? "Hide my card" : TAKE_HOME_SHOW}
           </button>
           {open && (
