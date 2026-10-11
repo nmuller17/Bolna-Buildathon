@@ -64,13 +64,18 @@ export type Utterance = {
   intent: number | null;
   /** One line for the receptionist describing what will happen. */
   note: string;
+  /**
+   * True when the guest would be shown a fixed phrase that is not what was typed: the page then asks for a
+   * second, confirming tap (or the receptionist sends their own words as captions only).
+   */
+  confirm?: boolean;
 };
 
 export const splitGloss = (gloss: string) => gloss.trim().toUpperCase().split(/\s+/).filter(Boolean);
 
 /** Lower case, keep letters, digits and apostrophes, collapse spaces ("Wi-Fi" -> "wi fi", "check-out" -> "check out"). */
 function normalize(text: string): string {
-  return ` ${text.toLowerCase().replace(/[^a-z0-9']+/g, " ").replace(/\s+/g, " ").trim()} `;
+  return ` ${text.toLowerCase().replace(/[’‘]/g, "'").replace(/[^a-z0-9']+/g, " ").replace(/\s+/g, " ").trim()} `;
 }
 
 function score(norm: string, intent: Intent): number {
@@ -79,18 +84,41 @@ function score(norm: string, intent: Intent): number {
   return total;
 }
 
-/** A plain number the avatar can sign digit by digit (digits 0-9 are in signs/index.json). */
-const roomNumber = (norm: string) => norm.match(/ (\d{1,4}) /)?.[1] ?? null;
+/**
+ * Words that can turn a fixed phrase into its opposite ("Late checkout is NOT possible", "the restaurant is
+ * CLOSED"). Keyword matching cannot read them, so such text is sent as the receptionist's own words, captions only.
+ */
+const NEGATION = /( not | no | never | none | nobody | nothing | cannot | can't | cant | won't | wont | n't | isn't | isnt | aren't | arent | wasn't | wasnt | weren't | don't | dont | doesn't | doesnt | didn't | didnt | haven't | havent | hasn't | hasnt | couldn't | couldnt | shouldn't | wouldn't | without | closed | close | broken | out of order | out of service | full | unavailable | not available | sold out | but | however | except | instead | only if | unfortunately )/;
+const hasNegation = (norm: string) => NEGATION.test(norm) || /n't /.test(norm);
+
+/** Every number written with digits ("7", "412", "4417"). */
+const numbersIn = (text: string) => text.match(/\d+/g) ?? [];
+
+/** The room number: 1-4 digits right after "room" ("room 518", "room is 518", "room number is 518"; "#" is dropped). */
+const roomNumber = (norm: string) => norm.match(/ room (?:number |no |nr |num )?(?:is )?(\d{1,4}) /)?.[1] ?? null;
 
 export function fromIntent(intent: Intent): Utterance {
   return { text: intent.text, gloss: splitGloss(intent.gloss), intent: intent.id, note: `#${intent.id} ${intent.text}` };
 }
 
+/** The receptionist's own words, unchanged, as captions only (no signing). */
+export function captionsOnly(raw: string, why: string): Utterance {
+  return { text: raw.trim(), gloss: [], intent: null, note: `${why}: captions only, your words exactly (no signing)` };
+}
+
 /**
  * Maps typed English to the closest fixed intent. Rules, in order:
- * 1. Highest keyword score wins (ties go to the lower intent number). A score below 2 is no match.
- * 2. Room intent with a number in the text signs that number ("room 518" -> YOUR ROOM 5 1 8).
- * 3. No match: captions only. With `fingerspell` on, one or two short words (a name, a code) are spelled with FS: tokens.
+ * 1. A negation or contrast word (not, no, n't, cannot, closed, broken, full, unavailable, but...) -> the typed
+ *    words as captions only: a keyword match could send the opposite meaning.
+ * 2. Highest keyword score wins (ties go to the lower intent number). A score below 2 is no match.
+ * 3. Room intent: only digits right after "room" are used ("room 518", "room is 518" -> YOUR ROOM 5 1 8). No such number
+ *    (or "room 5B", "room 12345") -> captions only. The fixed "room 412" is never a fallback for typed text.
+ * 4. Any number typed that the chosen phrase does not contain ("breakfast is at 8", "card ends 4417") ->
+ *    captions only: a number would be lost or changed.
+ * 5. When the chosen phrase is not what was typed (word for word), `confirm` is set: the page shows the phrase
+ *    and needs a second tap.
+ * 6. No match: captions only. With `fingerspell` on, one or two short words (a name, a code) are spelled with FS:
+ *    tokens.
  */
 export function matchTyped(typed: string, fingerspell: boolean): Utterance | null {
   const raw = typed.trim();
@@ -107,19 +135,24 @@ export function matchTyped(typed: string, fingerspell: boolean): Utterance | nul
     }
   }
 
+  // An intent's own wording may hold a negation ("didn't understand" -> Repeat?); remove those keys first.
+  // "room no 518" means room number 518, not a negation.
+  let negCheck = norm.replace(/ room (no|nr) (?=\d)/g, " room ");
+  if (best) for (const [key] of best.keys) negCheck = negCheck.split(` ${key} `).join(" ");
+  if (hasNegation(negCheck)) return captionsOnly(raw, "Has a negation or contrast word");
+
   if (best && bestScore >= 2) {
+    let out = fromIntent(best);
     if (best.id === 6) {
       const n = roomNumber(norm);
-      if (n) {
-        return {
-          text: `You're in room ${n}.`,
-          gloss: ["YOUR", "ROOM", ...n.split("")],
-          intent: 6,
-          note: `#6 You're in room ${n}.`,
-        };
-      }
+      if (!n) return captionsOnly(raw, "No room number right after \"room\"");
+      out = { text: `You're in room ${n}.`, gloss: ["YOUR", "ROOM", ...n.split("")], intent: 6, note: `#6 You're in room ${n}.` };
     }
-    return fromIntent(best);
+    const kept = new Set(numbersIn(out.text));
+    const lost = numbersIn(raw).filter((d) => !kept.has(d));
+    if (lost.length) return captionsOnly(raw, `The number ${lost[0]} is not in phrase #${best.id}`);
+    if (normalize(out.text) !== norm) out = { ...out, confirm: true, note: `Closest phrase #${out.intent}: "${out.text}"` };
+    return out;
   }
 
   const words = norm.trim().split(" ").filter(Boolean);
@@ -128,5 +161,5 @@ export function matchTyped(typed: string, fingerspell: boolean): Utterance | nul
     const gloss = words.map((w) => `FS:${w.toUpperCase()}`);
     return { text: raw, gloss, intent: null, note: `No phrase matched: fingerspelling ${words.join(" ").toUpperCase()}` };
   }
-  return { text: raw, gloss: [], intent: null, note: "No phrase matched: captions only (no signing)" };
+  return captionsOnly(raw, "No phrase matched");
 }

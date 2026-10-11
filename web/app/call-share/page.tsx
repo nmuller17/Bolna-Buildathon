@@ -4,20 +4,39 @@
 // never shared. Optional pop-out window (/call-share/window) holds only the shared area, for "share a window".
 // No network calls besides the local sign files and avatar model; no API keys; typed text is not logged or stored.
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { INTENTS, fromIntent, matchTyped, type Utterance } from "@/components/callshare/intents";
+import { INTENTS, captionsOnly, fromIntent, matchTyped, type Utterance } from "@/components/callshare/intents";
 import CallShareStyles from "@/components/callshare/CallShareStyles";
 import ShareRegion from "@/components/callshare/ShareRegion";
 import { useCallShare } from "@/components/callshare/useCallShare";
+
+/** The consent notice stays up at least this long, so the guest can read it before the front desk hides it. */
+const MIN_NOTICE_SEC = 10;
 
 export default function CallSharePage() {
   const { state, say, setConsent } = useCallShare("controller");
   const [typed, setTyped] = useState("");
   const [spell, setSpell] = useState(true);
   const [last, setLast] = useState<Utterance | null>(null);
+  const [pending, setPending] = useState<Utterance | null>(null); // a closest phrase waiting for its second tap
   const [size, setSize] = useState<{ w: number; h: number } | null>(null);
+  const [noticeLeft, setNoticeLeft] = useState(MIN_NOTICE_SEC);
   const regionRef = useRef<HTMLDivElement>(null);
 
   const preview = matchTyped(typed, spell);
+  const locked = state.consent; // nothing is sent while the guest is reading the notice
+
+  // Count down the notice's minimum reading time each time it is shown.
+  useEffect(() => {
+    if (!state.consent) return;
+    const shown = Date.now();
+    setNoticeLeft(MIN_NOTICE_SEC);
+    const t = setInterval(() => {
+      const left = Math.max(0, MIN_NOTICE_SEC - Math.floor((Date.now() - shown) / 1000));
+      setNoticeLeft(left);
+      if (left === 0) clearInterval(t);
+    }, 250);
+    return () => clearInterval(t);
+  }, [state.consent]);
 
   useEffect(() => {
     const el = regionRef.current!;
@@ -27,9 +46,20 @@ export default function CallSharePage() {
   }, []);
 
   function send(u: Utterance) {
+    if (locked) return; // the notice is closed only by "Guest agreed", never by a message
     setLast(u);
-    if (state.consent) setConsent(false); // the first message closes the notice
+    setPending(null);
     say(u.text, u.gloss);
+  }
+
+  function submitTyped() {
+    if (!preview || locked) return;
+    if (preview.confirm && !pending) {
+      setPending(preview); // first tap: show the phrase the guest would get, ask again
+      return;
+    }
+    send(pending ?? preview);
+    setTyped("");
   }
 
   function popOut() {
@@ -73,7 +103,8 @@ export default function CallSharePage() {
           </ol>
           <p style={styles.privacy}>
             Privacy: everything runs on this laptop. No recording, no saving, no Zoom or Teams API, no keys, no inbound
-            connections. Typed text is not logged.
+            connections. Typed text is not logged. Start the sign reader (live.py --source screen) only after the guest
+            has agreed to the notice.
           </p>
         </div>
       </div>
@@ -87,15 +118,26 @@ export default function CallSharePage() {
         <div style={styles.row}>
           <button
             type="button"
-            style={state.consent ? styles.primary : styles.ghost}
+            style={state.consent ? { ...styles.primary, ...(noticeLeft > 0 ? styles.off : {}) } : styles.ghost}
+            disabled={state.consent && noticeLeft > 0}
             onClick={() => setConsent(!state.consent)}
           >
-            {state.consent ? "Hide notice and start" : "Show notice"}
+            {state.consent
+              ? noticeLeft > 0
+                ? `Guest is reading (${noticeLeft} s)`
+                : "Guest agreed: hide notice"
+              : "Show notice"}
           </button>
-          <button type="button" style={styles.ghost} disabled={!last} onClick={() => last && send(last)}>
+          <button type="button" style={styles.ghost} disabled={!last || locked} onClick={() => last && send(last)}>
             Replay
           </button>
         </div>
+        {locked && (
+          <p style={styles.lockNote}>
+            The guest sees the notice. Ask them (in the chat or by signing) whether they agree, then tap
+            &quot;Guest agreed&quot;. Messages are sent only after that. If they say no, use the call&apos;s text chat.
+          </p>
+        )}
 
         <h2 style={styles.h2}>One tap</h2>
         <div style={styles.grid}>
@@ -103,8 +145,13 @@ export default function CallSharePage() {
             <button
               key={intent.id}
               type="button"
+              disabled={locked}
               title={`${intent.text}  —  ${intent.gloss}`}
-              style={last?.intent === intent.id ? { ...styles.intent, ...styles.intentOn } : styles.intent}
+              style={{
+                ...styles.intent,
+                ...(last?.intent === intent.id ? styles.intentOn : {}),
+                ...(locked ? styles.off : {}),
+              }}
               onClick={() => send(fromIntent(intent))}
             >
               <span style={styles.num}>{intent.id}</span>
@@ -118,30 +165,49 @@ export default function CallSharePage() {
           style={styles.typeForm}
           onSubmit={(e) => {
             e.preventDefault();
-            if (!preview) return;
-            send(preview);
-            setTyped("");
+            submitTyped();
           }}
         >
           <div style={styles.row}>
             <input
               style={styles.input}
               value={typed}
-              onChange={(e) => setTyped(e.target.value)}
+              onChange={(e) => {
+                setTyped(e.target.value);
+                setPending(null);
+              }}
               placeholder="e.g. your room is 518"
               autoComplete="off"
               spellCheck={false}
               aria-label="Type a message for the guest"
             />
-            <button type="submit" style={styles.primary} disabled={!preview}>
-              Send
+            <button type="submit" style={styles.primary} disabled={!preview || locked}>
+              {pending ? "Confirm" : "Send"}
             </button>
           </div>
-          <p style={preview?.intent ? styles.matchOk : styles.matchNo}>
-            {preview
-              ? `${preview.note}${preview.gloss.length ? `  →  ${preview.gloss.join(" ")}` : ""}`
-              : "Matched to the closest of the 20 phrases by keywords."}
-          </p>
+          {pending ? (
+            <div style={styles.confirmBox} role="alert">
+              <p style={styles.confirmText}>
+                The guest will see <b>&quot;{pending.text}&quot;</b>, not your exact words. Tap Confirm to send it.
+              </p>
+              <button
+                type="button"
+                style={styles.ghost}
+                onClick={() => {
+                  send(captionsOnly(typed, "Your words"));
+                  setTyped("");
+                }}
+              >
+                Send my words instead (captions only)
+              </button>
+            </div>
+          ) : (
+            <p style={preview?.intent ? styles.matchOk : styles.matchNo}>
+              {preview
+                ? `${preview.note}${preview.gloss.length ? `  →  ${preview.gloss.join(" ")}` : ""}`
+                : "Matched to the closest of the 20 phrases by keywords. Negations (not, closed...) and numbers the phrase lacks are sent as your own words, captions only."}
+            </p>
+          )}
           <label style={styles.check}>
             <input type="checkbox" checked={spell} onChange={(e) => setSpell(e.target.checked)} />
             Fingerspell a short unmatched word (a name, a code)
@@ -271,6 +337,18 @@ const styles: Record<string, CSSProperties> = {
   matchOk: { margin: 0, fontSize: 12, color: "#86efac", minHeight: 32, lineHeight: 1.35 },
   matchNo: { margin: 0, fontSize: 12, color: "#9ca3af", minHeight: 32, lineHeight: 1.35 },
   check: { display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, color: "#cbd5e1" },
+  off: { opacity: 0.45, cursor: "not-allowed" },
+  lockNote: { margin: 0, fontSize: 12, lineHeight: 1.4, color: "#ffd48a" },
+  confirmBox: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+    padding: "8px 10px",
+    borderRadius: 8,
+    border: "1px solid #ffb02e",
+    background: "#2a2210",
+  },
+  confirmText: { margin: 0, fontSize: 12.5, lineHeight: 1.4, color: "#ffe2a8" },
   help: {
     width: `min(100%, calc((100vh - ${2 * GAP + HEAD_H}px) * 16 / 9))`,
     marginTop: 14,
