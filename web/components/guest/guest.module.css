@@ -1,0 +1,750 @@
+/* Guest screen: light on navy, the lobby directory board (docs/app-plan.md 4.1).
+   Tokens and their contrast on navy: white 14.6:1, --mist 9.9:1, brass (navy text on it) 7.5:1,
+   lights 6.2 / 8.4 / 7.7 :1. Buttons at least 64 px tall. System fonts only (AS-24). */
+.root {
+  --navy: #0e2a47;
+  --navy-2: #16365a;
+  --navy-3: #234b77;
+  --white: #ffffff;
+  --mist: #c9d6e6;
+  --brass: #e2b33c;
+  --g-go: #66bb6a;
+  --g-wait: #ffb74d;
+  --g-missed: #b0bec5;
+  --alarm: #b3261e;
+  --tag-hole: var(--navy);
+  --tag-missed-text: var(--g-missed);
+  --tag-active: var(--white);
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: auto auto auto 1fr auto;
+  background: var(--navy);
+  color: var(--white);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 1.125rem;
+  line-height: 1.45;
+}
+
+.root :focus-visible {
+  outline: 3px solid var(--brass);
+  outline-offset: 3px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--navy-3);
+}
+
+.brand {
+  margin: 0;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--mist);
+}
+
+.center {
+  grid-row: 1 / 5;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 16px;
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 32px 16px;
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(1.75rem, 1.3rem + 2vw, 2.75rem);
+  line-height: 1.15;
+  font-weight: 700;
+  text-wrap: balance;
+}
+
+.lead {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.muted {
+  margin: 0;
+  color: var(--mist);
+}
+
+.small {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--mist);
+}
+
+.checkCode {
+  margin: 8px 0 0;
+  font-size: clamp(3rem, 2rem + 6vw, 5rem);
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+}
+
+.notice,
+.timeWarning {
+  margin: 0;
+  padding: 12px 16px;
+  font-weight: 600;
+}
+
+.notice {
+  background: var(--navy-2);
+  border-left: 6px solid var(--mist);
+}
+
+.timeWarning {
+  background: var(--white);
+  color: var(--navy);
+  border-left: 8px solid var(--brass);
+}
+
+.error {
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 4px solid var(--g-wait);
+  background: var(--navy-2);
+  color: var(--white);
+}
+
+/* First screen */
+.first {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 20px 16px 24px;
+  max-width: 80rem;
+  width: 100%;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+.choices {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-height: 88px;
+  padding: 16px 18px;
+  border: 2px solid var(--navy-3);
+  border-radius: 14px;
+  background: var(--navy-2);
+  color: var(--white);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.choice:hover:not(:disabled) {
+  border-color: var(--brass);
+}
+
+.choice:disabled {
+  cursor: not-allowed;
+  border-style: dashed;
+}
+
+.choiceStatic {
+  cursor: default;
+  align-items: center;
+  justify-content: center;
+}
+
+.choiceTitle {
+  font-size: 1.6rem;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.choiceText {
+  color: var(--mist);
+  font-size: 1.05rem;
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-height: 48px;
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
+.check input {
+  width: 28px;
+  height: 28px;
+  margin: 2px 0 0;
+  accent-color: var(--brass);
+  flex: none;
+}
+
+.about {
+  padding: 12px 16px;
+  border: 1px solid var(--navy-3);
+  border-radius: 12px;
+  background: var(--navy-2);
+}
+
+.about summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.about p {
+  margin: 10px 0 0;
+  max-width: 70ch;
+}
+
+/* Conversation */
+.conversation {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 24px;
+  padding: 16px;
+  align-content: start;
+}
+
+.deskSaid,
+.you {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 650;
+  color: var(--mist);
+}
+
+.subTitle {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 650;
+  color: var(--mist);
+}
+
+.captionLatest {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding-left: 14px;
+  border-left: 6px solid transparent;
+}
+
+.captionLatest[data-new] {
+  border-left-color: var(--brass);
+}
+
+.captionText {
+  margin: 0;
+  font-size: clamp(2rem, 1.25rem + 3vw, 4rem);
+  font-weight: 650;
+  line-height: 1.12;
+  text-wrap: pretty;
+}
+
+.captionOld {
+  padding-left: 20px;
+}
+
+.captionTextOld {
+  margin: 0;
+  font-size: clamp(1.2rem, 1rem + 1vw, 1.6rem);
+  color: var(--mist);
+}
+
+.newMark {
+  display: inline-block;
+  margin-left: 0.5em;
+  padding: 0.1em 0.45em;
+  border-radius: 6px;
+  background: var(--brass);
+  color: var(--navy);
+  font-size: 0.35em;
+  font-weight: 750;
+  vertical-align: middle;
+}
+
+.avatarArea {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.avatarBox {
+  position: relative;
+  width: 100%;
+  height: clamp(220px, 34dvh, 460px);
+  border-radius: 16px;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 50% 30%, var(--navy-3), var(--navy-2) 70%);
+}
+
+.avatarBox[data-hidden="true"] {
+  display: none;
+}
+
+.disclaimer {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--mist);
+}
+
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tagRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 1.2rem;
+}
+
+.signNames {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.linkButton {
+  min-height: 44px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--white);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  cursor: pointer;
+}
+
+.repairRow {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.repairButton {
+  min-height: 56px;
+  padding: 8px 12px;
+  border: 2px solid var(--navy-3);
+  border-radius: 12px;
+  background: var(--navy-2);
+  color: var(--white);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 16px;
+  background: var(--navy-2);
+  border: 2px solid var(--navy-3);
+}
+
+.cardTitle {
+  margin: 0;
+  font-weight: 700;
+  font-size: 1.2rem;
+}
+
+.cardText {
+  margin: 0;
+  font-size: 1.3rem;
+  font-weight: 600;
+}
+
+.proposalHeading {
+  margin: 0;
+  font-size: clamp(1.5rem, 1.1rem + 1.8vw, 2.4rem);
+  line-height: 1.2;
+  font-weight: 700;
+  text-wrap: balance;
+}
+
+.proposalHeading:focus {
+  outline: none;
+}
+
+.proposalHeading:focus-visible {
+  outline: 3px solid var(--brass);
+}
+
+.signRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  font-size: 1.15rem;
+}
+
+.signItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.framingOk,
+.framingAlert {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-weight: 650;
+  font-size: 1.2rem;
+}
+
+.framingOk {
+  border: 2px solid var(--g-go);
+}
+
+.framingAlert {
+  background: var(--white);
+  color: var(--navy);
+  border-left: 8px solid var(--g-wait);
+}
+
+.buttonRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.primary,
+.secondary,
+.quiet {
+  min-height: 64px;
+  padding: 10px 22px;
+  border-radius: 14px;
+  font: inherit;
+  font-size: 1.2rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primary {
+  flex: 1 1 12rem;
+  border: 2px solid var(--brass);
+  background: var(--brass);
+  color: var(--navy);
+}
+
+.secondary {
+  flex: 1 1 8rem;
+  border: 2px solid var(--white);
+  background: transparent;
+  color: var(--white);
+}
+
+.secondary[aria-pressed="true"] {
+  background: var(--white);
+  color: var(--navy);
+}
+
+.quiet {
+  align-self: flex-start;
+  min-height: 48px;
+  padding: 6px 4px;
+  border: 0;
+  background: none;
+  color: var(--mist);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.primary:disabled,
+.secondary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.sentenceButton {
+  min-height: 64px;
+  padding: 12px 18px;
+  border: 2px solid var(--brass);
+  border-radius: 14px;
+  background: var(--navy);
+  color: var(--white);
+  font: inherit;
+  font-size: 1.3rem;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+
+.phrases {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  max-height: 46dvh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.phraseButton {
+  min-height: 56px;
+  padding: 10px 16px;
+  border: 2px solid var(--navy-3);
+  border-radius: 12px;
+  background: var(--navy-2);
+  color: var(--white);
+  font: inherit;
+  font-size: 1.15rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.phraseButton:hover,
+.repairButton:hover,
+.sentenceButton:hover {
+  border-color: var(--brass);
+}
+
+.phraseKey {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.phraseKey li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.pickList {
+  margin: 0;
+  padding-left: 1.4em;
+  font-size: 1.3rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field label {
+  font-weight: 650;
+}
+
+.input,
+.textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 56px;
+  padding: 12px 14px;
+  border: 2px solid var(--mist);
+  border-radius: 12px;
+  background: var(--white);
+  color: var(--navy);
+  font: inherit;
+  font-size: 1.25rem;
+}
+
+.textarea {
+  resize: vertical;
+}
+
+.link {
+  color: var(--white);
+  font-weight: 650;
+}
+
+/* More menu */
+.more {
+  position: relative;
+}
+
+.moreButton {
+  min-height: 48px;
+  min-width: 96px;
+  padding: 6px 18px;
+  border: 2px solid var(--white);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--white);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.moreButton[aria-expanded="true"] {
+  background: var(--white);
+  color: var(--navy);
+}
+
+.morePanel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(26rem, calc(100vw - 32px));
+  max-height: 70dvh;
+  overflow-y: auto;
+  padding: 16px;
+  box-sizing: border-box;
+  border: 2px solid var(--navy-3);
+  border-radius: 16px;
+  background: var(--navy);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+}
+
+.dialog {
+  max-width: min(32rem, calc(100vw - 32px));
+  padding: 24px;
+  border: 2px solid var(--brass);
+  border-radius: 16px;
+  background: var(--navy);
+  color: var(--white);
+}
+
+.dialog::backdrop {
+  background: rgba(5, 15, 28, 0.75);
+}
+
+.dialogTitle {
+  margin: 0 0 8px;
+  font-size: 1.6rem;
+}
+
+/* Help: its own full-width row, always at the bottom (A11Y-6). */
+.helpRow {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+  background: var(--navy);
+  border-top: 1px solid var(--navy-3);
+}
+
+.helpButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 68px;
+  border: 3px solid var(--alarm);
+  border-radius: 14px;
+  background: var(--white);
+  color: var(--alarm);
+  font: inherit;
+  font-size: 1.35rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.helpIcon {
+  width: 1.4em;
+  height: 1.4em;
+}
+
+.helpStatus,
+.waveText {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 650;
+  text-align: center;
+}
+
+@media (min-width: 900px) {
+  .root {
+    font-size: 1.2rem;
+  }
+
+  .header {
+    padding: 16px 40px;
+  }
+
+  .first {
+    padding: 40px;
+    gap: 28px;
+  }
+
+  .choices {
+    grid-template-columns: repeat(4, 1fr);
+  }
+
+  .choice {
+    min-height: 220px;
+    justify-content: flex-start;
+  }
+
+  .conversation {
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+    gap: 40px;
+    padding: 24px 40px;
+  }
+
+  .you {
+    padding-left: 32px;
+    border-left: 1px solid var(--navy-3);
+  }
+
+  .repairRow {
+    grid-template-columns: repeat(4, auto);
+    justify-content: start;
+  }
+
+  .phrases {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .helpRow {
+    padding: 14px 40px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .root * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
