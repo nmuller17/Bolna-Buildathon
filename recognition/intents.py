@@ -39,6 +39,9 @@ GUEST_INTENTS = [
     (["WHERE", "RESTAURANT"], "Where is the restaurant?"),
     (["RESTAURANT", "TIME"], "When is the restaurant open?"),
     (["NO", "THANK-YOU"], "No, that's all, thank you."),
+    # Demo: the guest answers the reservation question with their name, fingerspelled after NAME
+    # (S-A-M is not a classifier class: its windows are absorbed by the NAME segment).
+    (["YES", "NAME"], "Yes, my name is Sam."),
 ]
 MIN_PROB = 0.0
 

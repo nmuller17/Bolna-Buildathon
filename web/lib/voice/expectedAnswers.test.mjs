@@ -11,10 +11,10 @@ const intentsOf = (text) =>
   // same split as components/speechToSigns.ts: one /api/gloss call per sentence
   (text.match(/[^.!?]+[.!?]*/g) ?? []).flatMap((s) => mapStaffTextToGloss(s.trim()).matches.map((m) => m.intentId));
 
-test("the 20 guest answers are exactly docs/vocabulary.md section 2", () => {
+test("the guest answers are exactly docs/vocabulary.md section 2", () => {
   const section = vocabulary.split("## 2. Guest to staff")[1].split("## 3.")[0];
   const fromDoc = [...section.matchAll(/^\| \d+ \| `([^`]+)`/gm)].map((m) => m[1].replace(/ \+.*/, "").split(" "));
-  assert.equal(fromDoc.length, 20);
+  assert.equal(fromDoc.length, Object.keys(GUEST_ANSWERS).length);
   assert.deepEqual(new Set(Object.values(GUEST_ANSWERS).map((a) => a.join(" "))), new Set(fromDoc.map((a) => a.join(" "))));
 });
 
@@ -32,8 +32,9 @@ test("every receptionist intent has a rule", () => {
 });
 
 test("the question decides, not the greeting before it", () => {
-  assert.deepEqual(expectedAfter(intentsOf("Welcome! Do you have a reservation?")), [["YES"], ["NO"], ["YES", "RESERVATION"]]);
-  assert.deepEqual(expectedAfter(intentsOf("Welcome, what's your name?")), [["NAME"]]);
+  assert.deepEqual(expectedAfter(intentsOf("Welcome! Do you have a reservation?")),
+    [["YES"], ["NO"], ["YES", "RESERVATION"], ["YES", "NAME"]]);
+  assert.deepEqual(expectedAfter(intentsOf("Welcome, what's your name?")), [["NAME"], ["YES", "NAME"]]);
 });
 
 test("repeat keeps the previous answers, unknown and numbers do not restrict", () => {

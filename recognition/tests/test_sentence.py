@@ -2,6 +2,7 @@
 import numpy as np
 
 from recognition.labels import CLASSES, INDEX
+from recognition.intents import GUEST_INTENTS
 from recognition.sentence import candidate_intents, decode_continuous
 
 
@@ -37,7 +38,8 @@ def test_expected_answers_restrict_the_choice():
 
 
 def test_unknown_or_empty_candidates_fall_back_to_all():
-    assert len(candidate_intents(None)) == 20
-    assert len(candidate_intents([])) == 20
-    assert len(candidate_intents([["NOT-A-SENTENCE"]])) == 20
+    n = len(GUEST_INTENTS)
+    assert len(candidate_intents(None)) == n
+    assert len(candidate_intents([])) == n
+    assert len(candidate_intents([["NOT-A-SENTENCE"]])) == n
     assert len(candidate_intents([["YES"], ["NO", "THANK-YOU"]])) == 2

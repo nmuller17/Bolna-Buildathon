@@ -5,7 +5,7 @@
 // ("Welcome! Do you have a reservation?" -> answers to the question, not to the greeting).
 import type { StaffIntentId } from "./intents";
 
-/** The 20 guest sentences (docs/vocabulary.md section 2), as classifier label lists. */
+/** The 21 guest sentences (docs/vocabulary.md section 2), as classifier label lists. */
 export const GUEST_ANSWERS = {
   yes: ["YES"],
   no: ["NO"],
@@ -27,6 +27,7 @@ export const GUEST_ANSWERS = {
   where_restaurant: ["WHERE", "RESTAURANT"],
   restaurant_time: ["RESTAURANT", "TIME"],
   no_thanks: ["NO", "THANK-YOU"],
+  yes_name: ["YES", "NAME"], // "Yes, my name is Sam." (name fingerspelled after NAME)
 } as const satisfies Record<string, readonly string[]>;
 
 export type GuestAnswerId = keyof typeof GUEST_ANSWERS;
@@ -45,8 +46,8 @@ const REQUESTS: GuestAnswerId[] = [
  */
 export const EXPECTED_AFTER: Record<StaffIntentId, GuestAnswerId[] | "previous" | "any"> = {
   welcome: ["yes_reservation", "thank_you", "help"],                       // "Welcome!"
-  reservation_question: ["yes", "no", "yes_reservation"],                 // "Do you have a reservation?"
-  name_question: ["name"],                                                // "What's your name?"
+  reservation_question: ["yes", "no", "yes_reservation", "yes_name"],     // "Do you have a reservation?"
+  name_question: ["name", "yes_name"],                                    // "What's your name?"
   id_please: ["yes", "no"],                                               // "Can I see your ID?"
   nights_question: "any",                                                 // "How many nights?" (a number: not signable)
   room_number: ["thank_you", "where_room", "where_elevator"],             // "You're in room 412."
@@ -93,8 +94,9 @@ export type ScriptStep = { staff: string; triggers: StaffIntentId[]; answer: Gue
  * Each answer is also allowed by EXPECTED_AFTER for that step's last intent (checked by the tests).
  */
 export const DEMO_SCRIPT: ScriptStep[] = [
-  { staff: "Welcome! Do you have a reservation?", triggers: ["reservation_question"], answer: "yes_reservation" },
-  { staff: "You're in room 412. Here is your key card.", triggers: ["key_card"], answer: "wifi_password" },
+  { staff: "Welcome! Do you have a reservation?", triggers: ["reservation_question"], answer: "yes_name" },
+  { staff: "You're in room 412. Here is your key card.", triggers: ["key_card"], answer: "where_elevator" },
+  { staff: "The elevator is on your left.", triggers: ["elevator_left"], answer: "wifi_password" },
   { staff: "The Wi-Fi password is on your key card.", triggers: ["wifi_password"], answer: "breakfast_time" },
   { staff: "Breakfast is from 7 to 10.", triggers: ["breakfast_time"], answer: "thank_you" },
   { staff: "Anything else?", triggers: ["anything_else"], answer: "more_towels" },
