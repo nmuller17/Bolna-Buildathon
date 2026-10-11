@@ -1,0 +1,44 @@
+/* P4: app-wide tokens. Hotel look: navy and white, gold for the main action. Pages style themselves with CSS modules. */
+:root {
+  --navy-950: #060c1a;
+  --navy-900: #0a1428;
+  --navy-800: #111f3d;
+  --navy-700: #1a2d55;
+  --navy-600: #284073;
+  --line: rgba(214, 226, 255, 0.12);
+  --ink: #f7f8fb;
+  --ink-soft: #c9d1e2;
+  --ink-muted: #8792ab;
+  --gold: #d9b45f;
+  --gold-strong: #eccb7a;
+  --gold-ink: #1f1605;
+  --alert: #f2a594;
+  --ok: #8fdcc0;
+  --radius: 16px;
+  --font: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--navy-950);
+  color: var(--ink);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input {
+  font: inherit;
+}
