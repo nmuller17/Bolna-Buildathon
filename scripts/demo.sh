@@ -4,12 +4,16 @@
 #   scripts/demo.sh                 # app + live_key recognizer (key mode, the team's demo path)
 #   scripts/demo.sh --no-recognizer # app only: typing, quick replies, avatar; guest is told signing is off
 #   scripts/demo.sh --camera 1 --port 3000 --no-open
+#   scripts/demo.sh --no-stt        # no live captions on this laptop (staff type or use quick replies)
 #
 # What it does, in order:
 #   1. checks Node (>= 22.18) and installs web/node_modules once (npm ci) if missing;
 #   2. builds the app once (next build) only when the source is newer than the last build;
 #   3. makes a fresh BRIDGE_KEY for this run unless one is set (kept in memory, never written or printed);
 #   4. starts the app server in production mode on 127.0.0.1 only (no LAN listener, decision D3);
+#   4a. starts web/stt/local_stt.py (live captions "On this laptop": faster-whisper, 127.0.0.1 only,
+#      offline) when its venv /Users/trehman/.venvs/signbridge-stt (or $STT_PYTHON) exists, with a fresh
+#      LOCAL_STT_KEY kept in memory (environment only, never on a command line or in a file);
 #   5. starts recognition/live_key.py with --control-port, so the guest screen's Record button drives
 #      the desk camera (skipped with a clear message when Python, the model or the landmarker is missing);
 #   6. opens the one-time staff link in Chrome on this laptop (--no-open prints it only);
@@ -24,18 +28,22 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WEB="$ROOT/web"
 PORT=3000
 CONTROL_PORT=8766
+STT_PORT=8790
+STT=1
 CAMERA=""
 RECOGNIZER=1
 OPEN=1
 PROFILE="${SB_PROFILE:-stage}"
 
-usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --port) PORT="$2"; shift 2 ;;
     --camera) CAMERA="$2"; shift 2 ;;
     --control-port) CONTROL_PORT="$2"; shift 2 ;;
     --no-recognizer) RECOGNIZER=0; shift ;;
+    --no-stt) STT=0; shift ;;
+    --stt-port) STT_PORT="$2"; shift 2 ;;
     --no-open) OPEN=0; shift ;;
     --profile) PROFILE="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -92,10 +100,45 @@ cleanup() {
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT TERM
 
+# ---- 4a. Live captions on this laptop (faster-whisper, 127.0.0.1 only, offline) ----
+STT_NOTE="off (--no-stt): staff type or use quick replies; captions badge says Typed."
+if [[ "$STT" == 1 ]]; then
+  STT_PY="${STT_PYTHON:-/Users/trehman/.venvs/signbridge-stt/bin/python}"
+  if [[ ! -x "$STT_PY" ]]; then
+    STT=0
+    STT_NOTE="off: no speech-to-text venv at $STT_PY (see web/stt/README.md). Captions are typed."
+  elif port_busy "$STT_PORT"; then
+    STT=0
+    STT_NOTE="off: port $STT_PORT is in use (use --stt-port). Captions are typed."
+  else
+    # A fresh key per run, in the environment only (never argv, never a file, never printed).
+    LOCAL_STT_KEY="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(36).toString("base64url"))')"
+    export LOCAL_STT_KEY
+    (cd "$ROOT" && exec "$STT_PY" web/stt/local_stt.py --port "$STT_PORT") >"$LOG_DIR/stt.log" 2>&1 &
+    STT_PID=$!
+    PIDS+=("$STT_PID")
+    for _ in $(seq 1 90); do
+      grep -q "ready in" "$LOG_DIR/stt.log" 2>/dev/null && break
+      kill -0 "$STT_PID" 2>/dev/null || break
+      sleep 0.5
+    done
+    if grep -q "ready in" "$LOG_DIR/stt.log" 2>/dev/null; then
+      STT_NOTE="on this laptop (PID $STT_PID, 127.0.0.1:$STT_PORT, faster-whisper small.en, offline)."
+    elif kill -0 "$STT_PID" 2>/dev/null; then
+      STT_NOTE="loading (PID $STT_PID); the badge switches to 'On this laptop' when ready."
+    else
+      STT_NOTE="EXITED at start: $(tail -2 "$LOG_DIR/stt.log" | tr '\n' ' '). Captions are typed."
+      STT=0
+    fi
+  fi
+fi
+
 # ---- 4. The app server (loopback only) ----
 say "Starting the app on http://127.0.0.1:$PORT (profile $PROFILE, loopback only)"
 APP_ENV=(SB_PROFILE="$PROFILE" MODE0_GUEST_INPUT=1 PORT="$PORT")
 [[ "$RECOGNIZER" == 1 ]] && APP_ENV+=(LIVE_KEY_CONTROL_PORT="$CONTROL_PORT")
+# The app reads LOCAL_STT_KEY from the exported environment (not from this argument list).
+[[ "$STT" == 1 ]] && APP_ENV+=(LOCAL_STT_PORT="$STT_PORT")
 (cd "$WEB" && exec env "${APP_ENV[@]}" node server.mjs --production) >"$LOG_DIR/app.log" 2>&1 &
 APP_PID=$!
 PIDS+=("$APP_PID")
@@ -125,7 +168,7 @@ if [[ "$RECOGNIZER" == 1 ]]; then
   else
     REC_ARGS=(-m recognition.live_key --no-preview --control-port "$CONTROL_PORT" --post "http://127.0.0.1:$PORT/api/guest/signs")
     [[ -n "$CAMERA" ]] && REC_ARGS+=(--camera "$CAMERA")
-    (cd "$ROOT" && exec "$PY" "${REC_ARGS[@]}") >"$LOG_DIR/live_key.log" 2>&1 &
+    (unset LOCAL_STT_KEY; cd "$ROOT" && exec "$PY" "${REC_ARGS[@]}") >"$LOG_DIR/live_key.log" 2>&1 &
     REC_PID=$!
     PIDS+=("$REC_PID")
     sleep 4
@@ -140,10 +183,11 @@ fi
 # ---- 6. Open the staff screen ----
 say "Ready"
 echo "Recognizer: $REC_NOTE"
+echo "Live captions: $STT_NOTE"
 echo "Staff screen (one-time link, do not project this terminal):"
 echo "  $STAFF_LINK"
 echo "Then: Start desk -> New guest -> Open guest window (drag it to the guest display)."
-echo "Logs: $LOG_DIR   (app.log, live_key.log)"
+echo "Logs: $LOG_DIR   (app.log, live_key.log, stt.log; no request or caption text is logged)"
 if [[ "$OPEN" == 1 ]] && command -v open >/dev/null; then
   if open -Ra "Google Chrome" 2>/dev/null; then open -a "Google Chrome" "$STAFF_LINK"; else open "$STAFF_LINK"; fi
 fi
