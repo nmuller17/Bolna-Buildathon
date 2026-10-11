@@ -26,6 +26,8 @@ import {
   type SessionEndReason,
 } from "@/lib/app/types";
 
+export type TimeWarn = { until: number; canAskForTime: boolean };
+
 export type GuestConn = "connecting" | "no_session" | "link_used" | "live" | "lost" | "ended";
 
 export type CaptionItem = { cap: GuestStaffUtterance; seq: number; isNew: boolean };
@@ -59,7 +61,11 @@ export type GuestUi = {
   /** "failed" = the alert did not reach the server; the screen says to wave or knock (OPS-1). */
   help: { state: "none" | "sent" | "acked" | "failed"; at: number | null };
   interpreter: "none" | "sent" | "acked";
-  warning: { kind: "idle" | "cap"; until: number; canAskForTime: boolean } | null;
+  /**
+   * Idle and cap warnings in their own slots (UX review 7: one shared slot showed the cap reason with
+   * the idle deadline). The screen shows whichever ends first.
+   */
+  warnings: { idle: TimeWarn | null; cap: TimeWarn | null };
   signingAvailable: boolean;
   paused: boolean;
   pairedWith: string | null;
@@ -85,7 +91,7 @@ const INITIAL: GuestUi = {
   echo: null,
   help: { state: "none", at: null },
   interpreter: "none",
-  warning: null,
+  warnings: { idle: null, cap: null },
   signingAvailable: false,
   paused: false,
   pairedWith: null,
@@ -101,6 +107,10 @@ type Act =
   | { t: "help_failed" }
   | { t: "interpreter_sent" }
   | { t: "captions_seen" }
+  /** The guest's Fix (or a 409 on Say it) closed this sentence on the server; the card must go (UX review 1). */
+  | { t: "proposal_closed"; proposalId: string; notice?: string }
+  /** The guest tapped Sign again on a repeat request: the request and the rejected attempt are finished with. */
+  | { t: "repeat_dismissed" }
   | { t: "local_end"; reason: SessionEndReason; pendingLost: boolean };
 
 function settingsNotice(prev: GuestSettings, next: GuestSettings): string | null {
@@ -148,6 +158,12 @@ function reduce(ui: GuestUi, a: Act): GuestUi {
       return { ...ui, interpreter: ui.interpreter === "acked" ? "acked" : "sent" };
     case "captions_seen":
       return ui.captions.some((c) => c.isNew) ? { ...ui, captions: ui.captions.map((c) => ({ ...c, isNew: false })) } : ui;
+    case "proposal_closed":
+      return ui.pending?.proposalId === a.proposalId
+        ? { ...ui, pending: null, live: [], liveClosed: true, capture: null, notice: a.notice ? { text: a.notice, at: Date.now() } : ui.notice }
+        : ui;
+    case "repeat_dismissed":
+      return ui.repeat ? { ...ui, repeat: null, live: [], liveClosed: true } : ui;
     case "local_end":
       return { ...INITIAL, conn: "ended", hello: ui.hello, end: { reason: a.reason, pendingLost: a.pendingLost } };
     case "env":
@@ -172,6 +188,10 @@ function reduce(ui: GuestUi, a: Act): GuestUi {
         framing: msg.framing,
         signingAvailable: msg.signingAvailable,
         help: msg.emergencyPending ? { state: "sent", at: ui.help.at ?? at } : ui.help.state === "sent" ? { state: "none", at: null } : ui.help,
+        warnings: {
+          idle: msg.warnings.idleSecondsLeft === null ? null : { until: at + msg.warnings.idleSecondsLeft * 1000, canAskForTime: false },
+          cap: msg.warnings.capSecondsLeft === null ? null : { until: at + msg.warnings.capSecondsLeft * 1000, canAskForTime: false },
+        },
       };
     }
     case "settings": {
@@ -186,7 +206,7 @@ function reduce(ui: GuestUi, a: Act): GuestUi {
         ...ui,
         captions: pushCaption(ui.captions, msg, seq),
         record: addRecord(ui.record, deskItem(msg, at)),
-        warning: ui.warning?.kind === "idle" ? null : ui.warning,
+        warnings: { ...ui.warnings, idle: null },
       };
     case "live_sign": {
       const live = ui.liveClosed ? [msg] : [...ui.live, msg].slice(-LIMITS.maxSigns);
@@ -220,9 +240,11 @@ function reduce(ui: GuestUi, a: Act): GuestUi {
       if (msg.about === "interpreter") return { ...ui, interpreter: "acked" };
       return ui;
     case "idle_warning":
-      return { ...ui, warning: { kind: "idle", until: at + msg.secondsLeft * 1000, canAskForTime: msg.canAskForTime } };
+      return { ...ui, warnings: { ...ui.warnings, idle: { until: at + msg.secondsLeft * 1000, canAskForTime: msg.canAskForTime } } };
     case "cap_warning":
-      return { ...ui, warning: { kind: "cap", until: at + msg.secondsLeft * 1000, canAskForTime: msg.canAskForTime } };
+      return { ...ui, warnings: { ...ui.warnings, cap: { until: at + msg.secondsLeft * 1000, canAskForTime: msg.canAskForTime } } };
+    case "warning_cleared":
+      return { ...ui, warnings: { ...ui.warnings, [msg.kind]: null } };
     case "session_paused":
       return { ...ui, paused: true };
     case "signing_available":
@@ -233,16 +255,16 @@ function reduce(ui: GuestUi, a: Act): GuestUi {
   return ui;
 }
 
-export type ActionOutcome = { ok: true } | { ok: false; message: string; field?: "name" | "text" };
+export type ActionOutcome = { ok: true } | { ok: false; status: number; message: string; field?: "name" | "text" };
 
 function outcomeOf(status: number, data: unknown): ActionOutcome {
   if (status === 200) return { ok: true };
   const err = (data ?? null) as ApiError | null;
-  if (status === 0) return { ok: false, message: "This screen lost its connection to the desk. Wave to the desk." };
-  if (status === 429) return { ok: false, message: "Please wait a moment, then try again." };
-  if (status === 409) return { ok: false, message: "That choice is no longer waiting. Please sign again or type." };
-  if (status === 401) return { ok: false, message: "This screen is no longer connected. Ask the desk to reconnect." };
-  return { ok: false, message: err?.message || "That did not go through. Please try again.", field: err?.field };
+  if (status === 0) return { ok: false, status, message: "This screen lost its connection to the desk. Wave to the desk." };
+  if (status === 429) return { ok: false, status, message: "Please wait a moment, then try again." };
+  if (status === 409) return { ok: false, status, message: "That choice is no longer waiting. Please sign again or type." };
+  if (status === 401) return { ok: false, status, message: "This screen is no longer connected. Ask the desk to reconnect." };
+  return { ok: false, status, message: err?.message || "That did not go through. Please try again.", field: err?.field };
 }
 
 let joinPromise: Promise<PostResult<GuestJoinResponse> | null> | null = null;
@@ -389,6 +411,8 @@ export function useGuestSession() {
   }, [finishLocally]);
 
   const captionsSeen = useCallback(() => dispatch({ t: "captions_seen" }), []);
+  const closeProposal = useCallback((proposalId: string, notice?: string) => dispatch({ t: "proposal_closed", proposalId, notice }), []);
+  const dismissRepeat = useCallback(() => dispatch({ t: "repeat_dismissed" }), []);
 
-  return { ui, hidden, act, emergency, requestInterpreter, finish, captionsSeen, unsentRef };
+  return { ui, hidden, act, emergency, requestInterpreter, finish, captionsSeen, closeProposal, dismissRepeat, unsentRef };
 }

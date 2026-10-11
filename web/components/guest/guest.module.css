@@ -574,6 +574,20 @@
   font-weight: 650;
 }
 
+/* .primary grows to 12rem along a row; in a column field that made Send ~190 px tall (UX review 4). */
+.field > .primary {
+  flex: none;
+}
+
+.echoSlot:empty {
+  display: none;
+}
+
+/* Help inside the End dialog (the modal makes the page's own Help row inert, UX review 6). */
+.dialogHelp {
+  margin-top: 16px;
+}
+
 .input,
 .textarea {
   width: 100%;
@@ -1121,5 +1135,37 @@
     align-self: start;
     max-height: calc(100dvh - 140px);
     overflow-y: auto;
+  }
+}
+
+/* Landscape phone and other short screens (UX review 2): a compact Help row, one line, so it never
+   covers the answer buttons (it took 24-33% of an 844x390 screen). Still at least 48 px tall. */
+@media (max-height: 520px) {
+  :global(html):has(.root) {
+    scroll-padding-bottom: 84px;
+  }
+
+  .helpRow {
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 16px calc(6px + env(safe-area-inset-bottom));
+  }
+
+  .helpButton {
+    flex: 0 0 auto;
+    width: auto;
+    min-height: 48px;
+    padding: 4px 20px;
+    font-size: 1.1rem;
+    margin-left: auto;
+    order: 2;
+  }
+
+  .helpStatus,
+  .waveText {
+    flex: 1 1 auto;
+    font-size: 1rem;
+    text-align: left;
   }
 }

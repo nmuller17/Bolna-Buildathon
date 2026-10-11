@@ -102,7 +102,7 @@ export default function GuestApp() {
       <LiveRegions ui={ui} />
       <GuestBody u={ui2} />
       <HelpRow session={session} />
-      {!displayOnly && <FinishDialog dialogRef={finishRef} onFinish={() => void session.finish()} />}
+      {!displayOnly && <FinishDialog dialogRef={finishRef} onFinish={() => void session.finish()} onHelp={() => void session.emergency()} />}
     </main>
   );
 }
@@ -138,7 +138,7 @@ function GuestBody({ u }: { u: Ui }) {
   return (
     <>
       <Header u={u} />
-      {ui.warning && <TimeWarning warning={ui.warning} />}
+      <TimeWarning warnings={ui.warnings} />
       {ui.notice && <Notice text={ui.notice.text} at={ui.notice.at} />}
       {ui.interpreter !== "none" && ui.settings.guestMode !== "interpreter" && ui.settings.guestMode !== "choosing" && (
         // Asked from the More menu while typing or signing: the guest still sees that the request went
@@ -215,8 +215,8 @@ function LiveRegions({ ui }: { ui: GuestUi }) {
     if (ui.help.state === "failed") setAssertive("This screen could not reach the desk. Wave or knock at the desk.");
   }, [ui.help.state]);
   useEffect(() => {
-    if (ui.warning) setAssertive("This session will end soon unless the desk keeps it open.");
-  }, [ui.warning]);
+    if (ui.warnings.idle || ui.warnings.cap) setAssertive("This session will end soon unless the desk keeps it open.");
+  }, [ui.warnings.idle, ui.warnings.cap]);
   useEffect(() => {
     if (!ui.end) return;
     // The wipe also clears the polite region: it may still hold the guest's last typed or signed
@@ -241,10 +241,12 @@ function HelpRow({ session }: { session: Session }) {
   const { ui, emergency } = session;
   const now = useNow();
   const displayOnly = ui.hello?.displayOnly ?? false;
-  if (displayOnly || ui.conn === "lost" || ui.conn === "no_session" || ui.conn === "link_used") {
+  // After the session ends the alert has nowhere to go (the cookie is gone, the server answers 401), so the
+  // end screen says what does work instead of offering a button that cannot reach staff (UX review 3).
+  if (displayOnly || ui.conn === "ended" || ui.conn === "lost" || ui.conn === "no_session" || ui.conn === "link_used") {
     return (
       <footer className={s.helpRow}>
-        <p className={s.waveText}>Need staff? Wave to the desk.</p>
+        <p className={s.waveText}>{ui.conn === "ended" ? "Need staff? Wave or knock at the desk." : "Need staff? Wave to the desk."}</p>
       </footer>
     );
   }
@@ -286,15 +288,20 @@ function Notice({ text, at }: { text: string; at: number }) {
   return <p className={s.notice}>{text}</p>;
 }
 
-function TimeWarning({ warning }: { warning: NonNullable<GuestUi["warning"]> }) {
+/** Shows the warning that ends first, with its own reason (idle and cap are separate slots). */
+function TimeWarning({ warnings }: { warnings: GuestUi["warnings"] }) {
   const now = useNow();
-  const left = Math.max(0, Math.round((warning.until - now) / 1000));
-  if (left === 0) return null;
+  const due = (["idle", "cap"] as const)
+    .flatMap((kind) => (warnings[kind] ? [{ kind, until: warnings[kind]!.until }] : []))
+    .filter((w) => w.until - now >= 500)
+    .sort((a, b) => a.until - b.until)[0];
+  if (!due) return null;
+  const left = Math.max(1, Math.round((due.until - now) / 1000));
   const when = left >= 90 ? `${Math.round(left / 60)} minutes` : `${left} seconds`;
   return (
     <p className={s.timeWarning}>
       This session will end soon: in {when}, unless the desk keeps it open.{" "}
-      <span className={s.timeWarningSub}>{warning.kind === "cap" ? "It has reached the time limit for one conversation." : "Nobody at the desk has used it for a while."}</span>
+      <span className={s.timeWarningSub}>{due.kind === "cap" ? "It has reached the time limit for one conversation." : "Nobody at the desk has used it for a while."}</span>
     </p>
   );
 }
@@ -311,7 +318,7 @@ function EndScreen({ reason, pendingLost }: { reason: keyof typeof END_REASON_GU
   );
 }
 
-function FinishDialog({ dialogRef, onFinish }: { dialogRef: React.RefObject<HTMLDialogElement | null>; onFinish: () => void }) {
+function FinishDialog({ dialogRef, onFinish, onHelp }: { dialogRef: React.RefObject<HTMLDialogElement | null>; onFinish: () => void; onHelp: () => void }) {
   return (
     <dialog ref={dialogRef} className={s.dialog} aria-labelledby="finish-title">
       <h2 id="finish-title" className={s.dialogTitle}>
@@ -333,6 +340,17 @@ function FinishDialog({ dialogRef, onFinish }: { dialogRef: React.RefObject<HTML
           Keep talking
         </button>
       </div>
+      {/* The modal dialog makes the page behind it inert, so Help must live inside it too (UX review 6). */}
+      <button
+        type="button"
+        className={`${s.helpButton} ${s.dialogHelp}`}
+        onClick={() => {
+          dialogRef.current?.close();
+          onHelp();
+        }}
+      >
+        {HELP_LABEL}
+      </button>
     </dialog>
   );
 }
@@ -577,9 +595,16 @@ function SignRow({ signs, simulated }: { signs: GuestSignView[]; simulated: bool
 }
 
 function SignPanel({ session }: { session: Session }) {
-  const { ui, act } = session;
-  const [dismissedRepeat, setDismissedRepeat] = useState<GuestUi["repeat"]>(null);
+  const { ui, act, dismissRepeat } = session;
   const isMode0 = ui.hello?.mode === "mode0";
+  const repeatActions = useRef<HTMLDivElement>(null);
+  // A repeat request needs the guest now: keep its buttons above the sticky Help row (UX review 2).
+  useEffect(() => {
+    if (!ui.repeat) return;
+    // The whole card when it fits, and in any case its buttons.
+    repeatActions.current?.parentElement?.scrollIntoView({ block: "nearest" });
+    repeatActions.current?.scrollIntoView({ block: "nearest" });
+  }, [ui.repeat]);
 
   if (!ui.signingAvailable) {
     return (
@@ -592,7 +617,7 @@ function SignPanel({ session }: { session: Session }) {
     );
   }
 
-  const repeat = ui.repeat && ui.repeat !== dismissedRepeat ? ui.repeat : null;
+  const repeat = ui.repeat;
   const framingNotOk = ui.framing && ui.framing !== "OK";
   const keyTrigger = ui.hello?.signTrigger === "key";
   // BT-26: after two framing misses in a row, or three misses of any kind, typing comes first.
@@ -614,7 +639,7 @@ function SignPanel({ session }: { session: Session }) {
         </p>
       )}
 
-      {keyTrigger && !repeat && <KeyCapture session={session} onRecord={() => setDismissedRepeat(ui.repeat)} />}
+      {keyTrigger && !repeat && <KeyCapture session={session} onRecord={dismissRepeat} />}
 
       {ui.live.length > 0 && !repeat && !ui.echo && (
         <div className={s.liveBlock}>
@@ -628,19 +653,19 @@ function SignPanel({ session }: { session: Session }) {
           <p className={s.cardText}>{REPEAT_TEXT}</p>
           {repeat.signs.length > 0 && <SignRow signs={repeat.signs} simulated={false} />}
           {repeat.framingText && <p className={s.framingAlert}>{repeat.framingText}</p>}
-          <div className={s.buttonRow}>
+          <div className={s.buttonRow} ref={repeatActions}>
             {typeFirst ? (
               <>
                 <button type="button" className={s.primary} onClick={() => void act({ type: "guest_choice", choice: "type" })}>
                   Type instead
                 </button>
-                <button type="button" className={s.secondary} onClick={() => setDismissedRepeat(repeat)}>
+                <button type="button" className={s.secondary} onClick={dismissRepeat}>
                   Sign again
                 </button>
               </>
             ) : (
               <>
-                <button type="button" className={s.primary} onClick={() => setDismissedRepeat(repeat)}>
+                <button type="button" className={s.primary} onClick={dismissRepeat}>
                   Sign again
                 </button>
                 <button type="button" className={s.secondary} onClick={() => void act({ type: "guest_choice", choice: "type" })}>
@@ -890,7 +915,7 @@ function ConfirmCard(props: {
       {testMode && <p className={s.framingAlert}>Test mode: these signs were invented by a test program and will not be spoken.</p>}
       {item.needsName && <NameField name={name} setName={setName} error={nameErr} setError={setNameErr} kiosk={ui.hello?.kiosk ?? true} />}
       {signs && signs.length > 0 && <p className={s.small}>{GUEST_HONEST_LINES.face}</p>}
-      <div className={s.confirmButtons} data-count={speak ? 3 : 2}>
+      <div className={s.confirmButtons} data-count={speak ? 3 : 2} data-actions="">
         {speak && (
           <button type="button" className={s.primary} disabled={busy || testMode} onClick={() => void send(true)}>
             Say it
@@ -925,23 +950,36 @@ function ConfirmCard(props: {
 }
 
 function ProposalView({ session, proposal }: { session: Session; proposal: GuestProposal }) {
-  const { ui, act, emergency } = session;
+  const { ui, act, emergency, closeProposal } = session;
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
   const [chosen, setChosen] = useState<Candidate | null>(proposal.kind === "proposal" ? (proposal.candidates[0] ?? null) : null);
   const [error, setError] = useState<string | null>(null);
   const first = proposal.candidates[0] ?? null;
 
   useEffect(() => {
-    if (!isTyping()) headingRef.current?.focus();
+    if (isTyping()) return;
+    headingRef.current?.focus({ preventScroll: true });
+    // The answer buttons, not just the heading, must clear the sticky Help row (landscape phone, UX review 2).
+    const actions = cardRef.current?.querySelector<HTMLElement>("[data-actions]");
+    cardRef.current?.scrollIntoView({ block: "nearest" });
+    actions?.scrollIntoView({ block: "nearest" });
   }, [proposal.proposalId, chosen]);
 
+  // The server has closed this sentence (Fix accepted), or it is no longer waiting (409): the card goes,
+  // so the guest is never left on a sentence nothing can act on (UX review 1).
   const fix = async (action: "sign_again" | "type" | "interpreter" | "not_this") => {
     setError(null);
     const r = await act({ type: "guest_fix", proposalId: proposal.proposalId, action });
-    if (!r.ok) setError(r.message);
+    if (r.ok) return closeProposal(proposal.proposalId);
+    if (r.status === 409) return closeProposal(proposal.proposalId, "That sentence is no longer waiting. Please sign again or type.");
+    setError(r.message);
   };
-  const confirm = (c: Candidate) => (how: SendHow) =>
-    act({ type: "guest_confirm", proposalId: proposal.proposalId, candidateId: c.candidateId, voice: how.voice, ...(how.name ? { name: how.name } : {}) });
+  const confirm = (c: Candidate) => async (how: SendHow) => {
+    const r = await act({ type: "guest_confirm", proposalId: proposal.proposalId, candidateId: c.candidateId, voice: how.voice, ...(how.name ? { name: how.name } : {}) });
+    if (!r.ok && r.status === 409 && !proposal.testMode) closeProposal(proposal.proposalId, "That sentence is no longer waiting. Please sign again or type.");
+    return r;
+  };
 
   const fixOptions = [
     ...(proposal.candidates.length > 1 && chosen ? [{ label: "Choose another", run: () => setChosen(null) }] : []),
@@ -953,7 +991,7 @@ function ProposalView({ session, proposal }: { session: Session; proposal: Guest
   // A sentence is chosen (a confident proposal, or the guest picked one): confirm it (BN-1).
   if (chosen && proposal.kind !== "did_you_mean_help") {
     return (
-      <div className={s.card} data-kind={proposal.kind}>
+      <div className={s.card} data-kind={proposal.kind} ref={cardRef}>
         <ConfirmCard
           ui={ui}
           item={chosen}
@@ -971,7 +1009,7 @@ function ProposalView({ session, proposal }: { session: Session; proposal: Guest
   }
 
   return (
-    <div className={s.card} data-kind={proposal.kind}>
+    <div className={s.card} data-kind={proposal.kind} ref={cardRef}>
       {proposal.signs.length > 0 && <SignRow signs={proposal.signs} simulated={proposal.simulated} />}
       {proposal.testMode && <p className={s.framingAlert}>Test mode: these signs were invented by a test program and will not be spoken.</p>}
       <h3 ref={headingRef} tabIndex={-1} className={s.proposalHeading}>
@@ -979,7 +1017,7 @@ function ProposalView({ session, proposal }: { session: Session; proposal: Guest
       </h3>
 
       {proposal.kind === "did_you_mean" && first && (
-        <div className={s.buttonRow}>
+        <div className={s.buttonRow} data-actions="">
           <button type="button" className={s.primary} onClick={() => setChosen(first)}>
             Yes
           </button>
@@ -993,7 +1031,7 @@ function ProposalView({ session, proposal }: { session: Session; proposal: Guest
       )}
 
       {proposal.kind === "did_you_mean_help" && (
-        <div className={s.buttonRow}>
+        <div className={s.buttonRow} data-actions="">
           <button
             type="button"
             className={s.alarmButton}
@@ -1024,7 +1062,7 @@ function ProposalView({ session, proposal }: { session: Session; proposal: Guest
             ))}
           </div>
           <p className={s.small}>None of these:</p>
-          <div className={s.buttonRow}>
+          <div className={s.buttonRow} data-actions="">
             <button type="button" className={s.secondary} onClick={() => void fix("type")}>
               Type
             </button>
@@ -1077,10 +1115,23 @@ function TypePanel({ session }: { session: Session }) {
   const [sent, setSent] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const phrase = useMemo(() => GUEST_PHRASES.find((p) => p.id === picked) ?? null, [picked]);
+  const fieldRef = useRef<HTMLDivElement>(null);
+  const echoRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     unsentRef.current = text.trim().length > 0 || picked !== null;
   }, [text, picked, unsentRef]);
+
+  // UX review 4: on a phone the typing box sat 1.5 screens down, below the avatar and the 20 phrases.
+  // The box now comes before the phrases, and switching to Type brings it into view (no focus, so the
+  // on-screen keyboard does not jump up by itself).
+  useEffect(() => {
+    if (ui.settings.guestMode === "type") fieldRef.current?.scrollIntoView({ block: "nearest" });
+  }, [ui.settings.guestMode]);
+  // After Send, the confirmation is what the guest needs to see, not an empty box.
+  useEffect(() => {
+    if (sent || ui.echo) echoRef.current?.scrollIntoView({ block: "nearest" });
+  }, [sent, ui.echo]);
 
   const sendText = async () => {
     const problem = typedProblem(text);
@@ -1097,60 +1148,19 @@ function TypePanel({ session }: { session: Session }) {
   return (
     <div className={s.stack}>
       {ui.settings.guestMode === "text_only" && <p className={s.muted}>Text only: the desk&apos;s words appear as text, with no avatar.</p>}
-      {ui.echo && <Echo echo={ui.echo} />}
-      {sent && !ui.echo && (
-        <div className={s.echo} role="status">
-          <p className={s.cardTitle}>Sent to the front desk</p>
-          <p className={s.cardText}>The desk received: &ldquo;{sent}&rdquo;</p>
-          <p className={s.small}>Shown on the desk screen. Staff choose whether to read it aloud.</p>
-        </div>
-      )}
-
-      {phrase ? (
-        <div className={s.card}>
-          <ConfirmCard
-            ui={ui}
-            item={{ text: phrase.text, needsName: phrase.needsName }}
-            signs={null}
-            simulated={false}
-            testMode={false}
-            heading="You picked:"
-            onSend={async (how) => {
-              const r = await act({ type: "guest_phrase", intentId: phrase.id, voice: how.voice, ...(how.name ? { name: how.name } : {}) });
-              if (r.ok) setPicked(null);
-              return r;
-            }}
-            fixOptions={[
-              { label: "Pick another", run: () => setPicked(null) },
-              { label: "Type it myself", run: () => setPicked(null) },
-            ]}
-          />
-        </div>
-      ) : (
-        <>
-          <h3 className={s.subTitle}>Common requests</h3>
-          <div className={s.phrases}>
-            {GUEST_PHRASES.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                className={s.phraseButton}
-                disabled={busy}
-                onClick={() => {
-                  setPicked(p.id);
-                  setSent(null);
-                  setTextErr(null);
-                }}
-              >
-                {p.text}
-              </button>
-            ))}
+      <div ref={echoRef} className={s.echoSlot}>
+        {ui.echo && <Echo echo={ui.echo} />}
+        {sent && !ui.echo && (
+          <div className={s.echo} role="status">
+            <p className={s.cardTitle}>Sent to the front desk</p>
+            <p className={s.cardText}>The desk received: &ldquo;{sent}&rdquo;</p>
+            <p className={s.small}>Shown on the desk screen. Staff choose whether to read it aloud.</p>
           </div>
-        </>
-      )}
+        )}
+      </div>
 
-      <div className={s.field}>
-        <label htmlFor="guest-text">Or type your own message</label>
+      <div className={s.field} ref={fieldRef}>
+        <label htmlFor="guest-text">Type your message</label>
         <textarea
           id="guest-text"
           className={s.textarea}
@@ -1177,6 +1187,49 @@ function TypePanel({ session }: { session: Session }) {
           Send to the desk
         </button>
       </div>
+
+      {phrase ? (
+        <div className={s.card}>
+          <ConfirmCard
+            ui={ui}
+            item={{ text: phrase.text, needsName: phrase.needsName }}
+            signs={null}
+            simulated={false}
+            testMode={false}
+            heading="You picked:"
+            onSend={async (how) => {
+              const r = await act({ type: "guest_phrase", intentId: phrase.id, voice: how.voice, ...(how.name ? { name: how.name } : {}) });
+              if (r.ok) setPicked(null);
+              return r;
+            }}
+            fixOptions={[
+              { label: "Pick another", run: () => setPicked(null) },
+              { label: "Type it myself", run: () => setPicked(null) },
+            ]}
+          />
+        </div>
+      ) : (
+        <>
+          <h3 className={s.subTitle}>Or tap a common request</h3>
+          <div className={s.phrases}>
+            {GUEST_PHRASES.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className={s.phraseButton}
+                disabled={busy}
+                onClick={() => {
+                  setPicked(p.id);
+                  setSent(null);
+                  setTextErr(null);
+                }}
+              >
+                {p.text}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
