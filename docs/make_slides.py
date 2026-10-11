@@ -175,7 +175,7 @@ lane(346, 124, "GUEST → RECEPTIONIST   ASL to speech", GREEN, [
     ("2", "Landmarks", "MediaPipe Holistic 1.1.0, on-device", [
         "33 pose + 2 × 21 hand + 26 face points",
         "shoulder-normalized, 30 fps; no video leaves the laptop"], False),
-    ("3", "Sign classifier", "PyTorch, 22 classes (21 signs + NONE)", [
+    ("3", "Sign classifier", "PyTorch · logistic regression, 22 classes", [
         "trained on the team's 1,320 takes (see below)",
         "scores sliding 1 s windows (step 0.13 s)"], False),
     ("4", "INTENT DECODER", "22 guest sentences = guest intents", [
@@ -198,9 +198,10 @@ for i, (title, tool, items, color, intent) in enumerate([
         "deterministic, unit-tested: 20 / 20 vocabulary sentences"], ORANGE, True),
     ("Sign classifier", "Trained · PyTorch · on our own data", [
         "data: 1,320 takes = 5 signers × 22 classes × 12, MediaPipe (capture/train_session.py)",
-        "features: 141 per frame (hand shape relative to the wrist, upper body, nose), 32 time steps",
-        "model kept: logistic regression on per-take statistics (mean, std, min, max, thirds), L-BFGS, temperature-calibrated",
-        "vs a 2-layer BiGRU (AdamW, augmentation): the simpler model won, 89.8 % vs 87.9 % (leave-one-signer-out)"],
+        "input: 32 steps × 141 features → 7 stats each (mean, std, min, max, 3 thirds) = 987 values, standardized",
+        "model: multinomial logistic regression = 1 linear layer 987 → 22 (21,736 params), softmax + cross-entropy",
+        "training: L-BFGS (300 it.), L2 λ = 0.001, temperature 1.53 fitted on a held-out signer",
+        "beat a 2-layer BiGRU (AdamW, augmentation): 89.8 % vs 87.9 % (leave-one-signer-out)"],
      GREEN, False),
     ("Intent decoder — guest", "Algorithm · Python / NumPy · no training", [
         "input: classifier probabilities on sliding 1 s windows",
