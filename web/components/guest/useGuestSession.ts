@@ -128,6 +128,7 @@ function settingsNotice(prev: GuestSettings, next: GuestSettings): string | null
       choosing: null,
       sign: "Signing is now on.",
       type: "Typing is now on.",
+      tap: "Pictures are now on.",
       interpreter: "Interpreter request is on.",
       text_only: "Text only is now on.",
     };

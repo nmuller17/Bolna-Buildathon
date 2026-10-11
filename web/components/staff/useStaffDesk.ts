@@ -116,6 +116,7 @@ const MODE_WORDS: Record<GuestMode, string> = {
   choosing: "Guest is back on the first screen",
   sign: "Guest chose to sign",
   type: "Guest chose to type",
+  tap: "Guest chose to tap pictures",
   interpreter: "Guest asked for a human interpreter",
   text_only: "Guest chose text only",
 };
