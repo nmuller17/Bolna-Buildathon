@@ -1,8 +1,31 @@
-# SignBridge app plan (P4, branch p4-app)
+# SignBridge app plan (P4, branch p4-app): the build plan for this build
 
-This is the build plan for the SignBridge web app: the staff screen on the laptop, the guest screen on a phone or a second laptop, the server that connects them, and the security and privacy controls around them. Two builders should be able to work in parallel from this document and from the shared types in `web/lib/app/types.ts`. Where this plan changes a protected contract from CLAUDE.md section 6, the change is listed in section 15 and logged in `docs/requests.md`.
+This is the plan two builders follow to turn the placeholder `/staff` and `/guest` pages into the working app. It replaces the earlier draft (pushed as `89e0bdf`) and folds in everything that has been decided since: the red-team requirements RT1 to RT14, the compromised-device requirements AS-1 to AS-26, the engagement decision record D1 to D11, the TLS and pairing controls LT-01 to LT-31, the "build today" items from the slide work, and the product features Talha asked for. The shared types for both builders are in `web/lib/app/types.ts`, which was rewritten together with this plan.
+
+Where documents disagree, the order of precedence is: the engagement decision record (`CamelHack-handoff/engagement/decision_record.md`) first, then this plan, then everything else. Where this plan changes a protected contract from CLAUDE.md section 6, the change is listed in section 14 and logged in `docs/requests.md`.
 
 Throughout the product and this plan, SignBridge is a "front-desk communication aid". The software is never called an "interpreter"; the only interpreter is the human one the guest can ask for.
+
+---
+
+## 0. What changed from the draft, in one table
+
+| Topic | Draft said | This plan says | Why |
+|---|---|---|---|
+| Guest link | Plain HTTP on the LAN, HTTPS a stretch | No plain HTTP off loopback, ever. Mode 0 (wired second display) or Mode C (one Ethernet cable plus HTTPS on `LAN_IP:3443`); Mode W (router) only if gate G2 passes | Decision record D3, RT2, AS-17 |
+| Certificates | mkcert | Name-constrained event CA whose key is destroyed after issuing one leaf | D5 (mkcert's root can sign for any website) |
+| Pairing code | 5 minutes, in `?s=` | 120 seconds, in the URL fragment `#p=`, QR drawn only after "Guest is here", full-screen, hidden on join | D6, AS-9 |
+| Device check | None | 6-digit check code shown on the guest device and typed by staff, 3 tries | D6, AS-10 |
+| Guest token | `sessionStorage` plus `X-Session-Token` and `?s=` on the stream | Only the `__Host-sb_g` cookie (Secure, HttpOnly, SameSite=Strict), rotated on reconnect | D6, AS-3, AS-4, AS-5 |
+| Staff access | Loopback alone | Loopback plus a one-time staff capability cookie | D6, LT-30 |
+| Security headers | `next.config.ts` `headers()`, `'unsafe-inline'` scripts | `server.mjs` alone sets them, with a per-response nonce CSP on `/guest` and `/staff` | D7, LT-27 |
+| Sign files on the guest device | Per-gloss `GET /signs/<dir>/<file>.json` | One fixed-size `GET /signs/bundle` at pairing; per-gloss fetches only on loopback | D6 (response sizes would leak the signed sentence) |
+| Recognizer input | `{signs: Prediction[]}` per utterance | The real bridge contract from `recognition/live.py --post`: `sign`, `utterance`, `framing` and `status` events with timestamps | `recognition/README.md` "App bridge" |
+| Idle timer | Any guest tap resets it | Only staff actions and accepted sign batches reset it; 15-minute hard cap with staff-only "Extend 5 minutes" | AS-16 |
+| Name sentence | Spoken on the guest's "Say it" | Shown on the staff screen first; spoken only after staff tap "Speak name", with an on-device voice | AS-13 |
+| Gate | 0.6 for every sign | 0.6 by default, a higher bar for YES, NO, NAME, ROOM and HELP, traffic-light display, "Did you mean...?" and a top-3 picker | Slide "build today" item 3 |
+| Vendor keys | Optional | None during the attack window; the app must work fully offline | D8 |
+| `CHECKOUT` | `FS-CHECKOUT` | `LEAVE` (alias `FS-CHECKOUT` -> `LEAVE` until the recognizer is retrained) | `docs/vocabulary.md` |
 
 ---
 
@@ -10,192 +33,313 @@ Throughout the product and this plan, SignBridge is a "front-desk communication 
 
 ### Goals
 
-The app has to carry the CLAUDE.md section 9 demo end to end on two devices. The receptionist works on the laptop at `http://127.0.0.1:3000/staff`. The guest scans a QR code from the staff screen and follows the conversation on their own phone, or on a second laptop. A desk camera on the laptop feeds Python MediaPipe and P3's classifier, which posts recognized signs to the app over loopback. The guest device only displays and takes taps and typing; it never uses a camera or a microphone.
+The app has to carry the CLAUDE.md section 9 demo end to end. The receptionist works on the laptop at `http://127.0.0.1:3000/staff`. The guest follows the conversation on a second screen: a wired second display in Mode 0, or a team-owned iPad, phone or wiped laptop joined by one Ethernet cable in Mode C. A desk camera on the laptop feeds Python MediaPipe and P3's classifier, and `recognition/live.py --post` sends recognised signs to the app over loopback. The guest device only displays the conversation and takes taps and typing. It never uses a camera or a microphone, and no video ever leaves the laptop.
 
-The scripted path must be reliable without any cloud service. Every one of the 20 receptionist sentences can be sent with one tap (a quick reply), and every one of the 20 guest requests is matched from a fixed table, so the whole demo can run with no network vendor at all. Speech-to-text, the gloss service, ElevenLabs and Claude are improvements on top of that path, never requirements for it.
+The scripted path must work with no cloud service at all. Every one of the 20 receptionist sentences can be sent with one tap, every one of the 20 guest requests is matched from a fixed table, and guest sentences are voiced by Piper or by an on-device browser voice. Speech-to-text, ElevenLabs and Claude are improvements on top of that path, never requirements for it, and during the security engagement window no vendor key is present on the laptop at all.
 
-The guest stays in control. Recognized signs are shown to the guest as words with their confidence, and nothing is spoken at the desk until the guest taps "Say it". The guest's first screen offers signing, typing and a human interpreter as equal choices, and typing and an emergency button stay visible on every guest screen.
+The guest stays in control. Every recognised sign is shown to the guest as a word with a traffic-light confidence, and nothing is spoken at the desk until the guest taps "Say it". The guest's first screen offers Sign, Type, Ask for a human interpreter and Text only as equal choices, and the Help button stays visible on every guest screen.
 
-The security and privacy claims must be real and testable: staff functions only from the laptop itself, guest functions only with a valid, expiring, single-device token, no secrets in the browser, nothing written to disk, nothing logged about what people said, and a privacy panel whose numbers come from real counters.
+The receptionist gets a co-pilot. The staff screen shows which standard check-in items have actually reached the guest, flags the ones that have not with gentle wording, and shows the evidence behind every recognised sign: its confidence, its timestamps and a skeleton snapshot, never video.
+
+The security and privacy claims must be real and testable. Staff functions are reachable only from the laptop itself with a staff capability. Guest functions are reachable only with a valid, expiring, single-device cookie over HTTPS. There are no secrets in the browser, nothing is written to disk, nothing about what people said is logged, and the privacy and latency panels show numbers that come from real counters and real timestamps.
 
 ### Non-goals
 
-The app does not handle video. There is no `<video>` element and no camera permission anywhere in the web app; the desk camera belongs to P3's Python process. The app does not run sign recognition, train models or render the avatar itself; it consumes P3's predictions and P2's `playGloss` when they exist and falls back otherwise. It does not persist anything: there is no database, no file, and no browser storage of conversation content. It does not support more than one guest at a time, more than one desk, user accounts, or HTTPS (HTTPS via mkcert is a documented stretch in section 13). It does not translate free signing; recognition is the closed 22-label vocabulary.
+The app does not handle video. There is no `<video>` element, no `getUserMedia` call and no camera or microphone permission anywhere in the guest page; the desk camera belongs to P3's Python process, and the staff page uses only the microphone for P1's hold-to-talk. The app does not run sign recognition or train models, and it does not render the avatar itself; it consumes P3's bridge events and P2's `mountAvatar`/`playGloss`. It persists nothing: there is no database, no file and no browser storage of conversation content. It supports one guest at a time at one desk, with no user accounts. It does not translate free signing; recognition is the closed vocabulary of 21 signs plus `NONE`. It does not detect spyware and never claims to; the device-health hint is a load indicator only. The local vision-model fallback is a reserved slot and a disabled UI in this build, not a working feature. The pager panel is a mock, built only if time remains.
 
 ---
 
-## 2. Devices, network and process layout
+## 2. Deployment modes, devices and listeners
+
+### 2.1 The three modes (decision record D3)
+
+The rule is that nothing listens off loopback over plain HTTP, ever. There is no switch that allows it.
+
+| Mode | Guest device | Network | Guest listener | When it is used |
+|---|---|---|---|---|
+| **Mode 0, display only** | A second browser window on a **wired** second display (HDMI or USB-C, never AirPlay or Sidecar) attached to the demo laptop | None. Wi-Fi and Bluetooth off | None. The guest window uses the loopback listener | Always available. It is the fallback whenever a gate fails, and what runs if anything goes wrong. It is a degraded mode: the guest reads the proposal and nods or points, and the receptionist presses "Say it for the guest" on the staff screen. The documents and the staff screen say so |
+| **Mode C, cable** (default for the attack window, if gate G1 passes) | A team-owned iPad (USB-C Ethernet adapter), a team phone with an adapter, or a wiped team laptop | One Ethernet cable, laptop `10.77.0.1/30`, guest `10.77.0.2/30`. Wi-Fi and Bluetooth off on both | HTTPS on `10.77.0.1:3443`, TLS 1.3, event CA certificate | The normal demo with a separate guest device |
+| **Mode W, Wi-Fi** | Team guest device, plus testers' own phones only in scenario S3b | Team-owned travel router with two networks, WPA3-SAE, PMF required, client isolation (decision record D3) | HTTPS on `192.168.8.10:3443` | Only as an announced, separate scenario, and only if gate G2 passes by T minus 1 day |
+
+The iPhone Personal Hotspot is rejected for every mode, and tunnels such as ngrok are never allowed. Talha's development Mac never runs the demo during the engagement and is never joined to the event network (D1, D2); the system under test is a wiped, unmanaged Apple-silicon loaner.
+
+### 2.2 One process, two listeners
 
 ```
- LAPTOP (front desk)                                                     GUEST DEVICE
- ┌──────────────────────────────────────────────────────────────┐        (phone or 2nd laptop)
- │ Desk camera ─► Python MediaPipe + classifier (P3)            │        ┌──────────────────┐
- │                 │  POST /api/guest/signs  (loopback,          │        │ /guest page      │
- │                 │  X-Bridge-Key)                               │        │ captions, sign   │
- │                 ▼                                              │  LAN   │ cards or avatar, │
- │ node web/server.mjs ──► Next.js 16 app (one process)  ◄────────┼────────┤ proposal + Say it│
- │   binds 127.0.0.1 (default) or 0.0.0.0 (GUEST_LAN=1)          │ HTTP   │ Type, Emergency  │
- │                 ▲  SSE + POST (loopback)                      │        └──────────────────┘
- │ Browser: /staff (mic, speaker, quick replies, dashboard)     │
- │ Recognizer health: GET RECOGNITION_URL/health (127.0.0.1:8000)│
- └──────────────────────────────────────────────────────────────┘
-          │ optional, staff data only unless stated: OpenAI (P1 transcribe),
-          ▼ Anthropic (P1 gloss; P4 english fallback, OFF by default), ElevenLabs (P4 tts, fixed ids)
+ DEMO LAPTOP (loaner, standard user)                                           GUEST DEVICE (Mode C/W)
+ ┌──────────────────────────────────────────────────────────────────────┐      ┌──────────────────────┐
+ │ Desk camera ─► recognition/live.py (P3, Python MediaPipe, local)      │      │ /guest (HTTPS only)  │
+ │                 │ POST /api/guest/signs, X-Bridge-Key, events only    │      │ captions, avatar,    │
+ │                 ▼ (no video, no landmarks except the opt-in skeleton) │      │ live signs, Say it / │
+ │ node web/server.mjs (one process, one Next app, two listeners)        │      │ Fix, Type, Help      │
+ │   ├─ STAFF listener  http://127.0.0.1:3000   (loopback only) ◄──────┐ │      └──────────▲───────────┘
+ │   │    /staff, staff APIs and stream, bridge ingest, simulator,     │ │                 │ TLS 1.3, cookie
+ │   │    P1 routes, english/tts, per-gloss /signs; in Mode 0 also    │ │                 │ __Host-sb_g
+ │   │    the guest window                                             │ │                 │
+ │   └─ GUEST listener  https://LAN_IP:3443     (Mode C/W only) ───────┼─┼─────────────────┘
+ │        D6 path list only; role "guest" whatever the socket address  │ │
+ │ Browser: /staff (mic for hold-to-talk, speaker) ─────────────────────┘ │
+ │ Recognizer server (optional) http://127.0.0.1:8000, loopback only      │
+ └──────────────────────────────────────────────────────────────────────┘
+        │ optional, never during the engagement window (D8):
+        ▼ OpenAI (P1 transcribe, staff audio), Anthropic (english fallback, labels only), ElevenLabs (fixed sentences)
 ```
 
-For the demo the laptop and the guest device share an isolated network, preferably a phone hotspot or a travel router that nobody else joins. Guest traffic crosses that network as plain HTTP, which is acceptable only because the network is isolated and the guest device carries no camera data; section 13 describes the HTTPS stretch. Tunnels such as ngrok are not allowed.
+The **listener decides the role**, not the socket address. Every request that arrives on the guest listener is treated as a guest request (`x-sb-loopback: 0`), even in a test where the guest listener is bound to 127.0.0.1, and only the decision record D6 path list is served there. The staff listener binds only 127.0.0.1 and computes loopback from the socket as today.
 
-Two practical points must be tested early. First, macOS asks whether Node may accept incoming connections the first time the server binds `0.0.0.0`; allow it. Second, a phone that is itself the hotspot can usually reach the laptop on that hotspot, but this should be checked on the actual phones in hour one (open question 6).
+The guest listener starts only when `npm run start:guest-tls` is used. It refuses to start unless `LAN_IP` is set explicitly, lies inside `LAN_NET`, and `TLS_KEY_FILE` and `TLS_CERT_FILE` exist; there is no automatic address choice and no plain-HTTP fallback. Today's `--lan` plain-HTTP listener on `LAN_IP:3000` and its `firstLanIPv4()` fallback are removed in build step 4. Development mode (`npm run dev`) is never reachable from a network: it has the staff listener only. Builders test the guest layout on loopback in a 390x844 browser window; real-device tests happen on the isolated test machine (`docs/security-testing.md`).
 
----
-
-## 3. Design direction
-
-The visual idea is hotel lobby wayfinding signage: the deep navy and white of a lobby directory board with brass key-tag details. It belongs to the hotel world rather than to a generic dashboard.
-
-| Token | Value | Use |
+| Script | Listeners | Use |
 |---|---|---|
-| `--navy` | `#0E2A47` | Guest screen background; staff headers |
-| `--white` | `#FFFFFF` | Guest text (contrast with navy about 14:1) |
-| `--brass` | `#E2B33C` | Primary guest action ("Say it") with navy text; the 0.6 threshold line; key-tag fill |
-| `--ink` | `#142235` | Staff body text on white |
-| `--paper` | `#FFFFFF` with `--rule` `#D5DCE5` | Staff background and dividers |
-| `--alarm` | `#B3261E` | Emergency only, always with white text and an icon plus words |
+| `npm run dev` | Staff 127.0.0.1:3000, development | Building |
+| `npm run build` then `npm run start` | Staff 127.0.0.1:3000, production | Mode 0 demo |
+| `npm run build` then `npm run start:guest-tls` | Staff 127.0.0.1:3000 plus guest `LAN_IP:3443` HTTPS, production | Mode C and Mode W |
+| `npm run test:security`, `npm run test:unit` | Test listeners on 127.0.0.1 only | Regression suites |
 
-The single memorable element is the key tag. Every sign gloss, whether in the staff-to-guest sign cards or in the recognized signs on the guest screen, is drawn as a brass hotel key tag: a rounded rectangle with a punched hole at the left and the gloss word in capitals. Everything else stays quiet and disciplined.
+---
 
-The typeface is Atkinson Hyperlegible Next, designed by the Braille Institute for legibility, loaded through `next/font/google`, which self-hosts the files at build time so the guest page makes no request to Google at run time; the fallback stack is `system-ui, sans-serif`. Guest captions are set with `clamp(2rem, 7vw, 4rem)` on phones and up to 4rem on laptops, with line length capped at about 28 characters per line on phones; guest buttons are at least 64 px tall. Staff body text is 16 px and the confirmed guest sentence on the staff screen is 40 px.
+## 3. Teammate APIs this build uses (as merged on p4-app)
 
-Information is never carried by colour or sound alone. A confidence bar below 0.6 is hatched and labelled "below 0.6", alerts flash a banner with words and an icon in addition to any tone, and `prefers-reduced-motion` turns flashing into a solid banner. Copy is plain English in sentence case; gloss tokens are the one place capitals are used, and the guest screen explains them once: "Words in capitals are sign names."
+| Owner | API | How the app uses it |
+|---|---|---|
+| P1 (Maya) | `POST /api/transcribe`: multipart field `audio`, returns `{ text }`; 503 without `OPENAI_API_KEY`; errors `{ error }` | Staff hold-to-talk. The staff page records with `web/lib/voice/recorder.ts` and posts the blob. Without a key the button is disabled with "Speech-to-text is off (no vendor key); type or use a quick reply" |
+| P1 | `POST /api/gloss`: `{ text }` -> `{ gloss: string[] }`; local mapping, no vendor call | Gloss for typed or transcribed staff text. The server re-validates every token (REQ CAP-2) |
+| P1 | `web/lib/voice/intents.ts`: `mapStaffTextToIntent`, `mapStaffTextToGloss`, `fallbackGlossFromText`, `numberTokens`, `STAFF_INTENTS` (20 string ids such as `"checkout_time"`) | Server-side fallback when `/api/gloss` fails, and the intent key of each staff line for the co-pilot checklist. Our quick replies use the same 20 string ids (`STAFF_INTENT_KEYS` in `types.ts`) |
+| P2 (Cosme) | `mountAvatar(container, { style })` -> `{ webgl, unmount }`; `playGloss(gloss, { onToken })`, a newer call interrupts the older one; `setAvatarStyle`; `getAvatarFps`; `lookup.ts` `loadIndex`, `resolveToken` | Guest screen avatar. Captions come first; `onToken` drives the highlighted gloss word |
+| P2 | `web/components/AvatarCaptions.tsx` default export `{ text?, gloss, activeIndex, large? }` | Captions under the avatar on the guest screen |
+| P2 | `/avatar/bellhop.glb` (8 MB, static) | Avatar model. On the guest listener it is served only if Talha accepts the proposed D6 amendment (section 8); otherwise the guest uses the `hologram` style, which needs no model file |
+| Nath (P4 teammate) | `POST /api/tts`: `{ text }` (one plain sentence, at most 300 characters) -> `audio/wav`; ElevenLabs if a key is set, otherwise Piper; only the 19 fixed guest sentences are cached | Voicing a confirmed **fixed** guest sentence. The staff browser only ever sends the fixed table sentence that the server put in the speak plan; names and typed text never go to this route. RT5 asks Nath to accept `{ id }` instead |
+| Nath | `POST /api/english`: `{ signs: Prediction[] }` -> `{ text }`; fixed table first, Claude for other sequences | Not on the scripted path. The app matches intents itself (order-insensitive, which `/api/english` is not). The Claude path is the LATER `ENGLISH_FALLBACK` item |
+| Nath | `web/components/speakSigns.ts` `warmUpVoice()` | Called once by the staff page after "Start desk", so Piper pre-generates the fixed sentences before the guest arrives |
+| P3 (Talha) | `recognition/live.py --post http://127.0.0.1:3000/api/guest/signs`, header `X-Bridge-Key` (at least 32 characters), events `sign`, `utterance`, `framing`, `status`, each with `t_sent` | The only source of recognised signs (section 6) |
 
 ---
 
 ## 4. Screen-by-screen specification
 
-### 4.1 Staff screen (`/staff`, laptop 1440x900, loopback only)
+### 4.1 Design direction
 
-The staff screen is a three-column dashboard that a receptionist can read at a glance. The left column is for talking to the guest, the middle column is the conversation, and the right column is the status of the system.
+The visual idea stays the hotel lobby directory board: deep navy and white with brass key-tag details. Every gloss word, whether in a caption's sign cards, the live sign strip or a proposal, is drawn as a brass hotel key tag with a punched hole and the word in capitals. The typeface is the system font stack only (`system-ui, -apple-system, "Segoe UI", sans-serif`), because AS-24 asks for system fonts and the nonce CSP has no font host. Guest captions use `clamp(2rem, 7vw, 4rem)`; guest buttons are at least 64 px tall.
 
-```
-+--------------------------------------------------------------------------------------------------+
-| SignBridge  front-desk communication aid      Guest phone: connected   Recognizer: up   [End guest] |
-|                                               Idle wipe in 1:42                                    |
-+-------------------------------+----------------------------------------+-------------------------+
-| Talk to the guest             | Conversation (memory only)             | Last signs              |
-| [   Hold to talk   ]          | 10:02 You   Welcome!                    | WHERE     ████████|  .92|
-| or type: [______________][Send]          [HELLO][WELCOME]  quick reply | ELEVATOR  █████▋  |  .71|
-| Speech-to-text: OpenAI (P1)   | 10:02 Guest Yes, I have a reservation. |  alternatives: TIME .12 |
-|                               |       YES .94  RESERVATION .88          |           0.6 line ↑    |
-| Quick replies                 | 10:03 Sign again requested (unclear)   | Repeats 1   Sign->shown |
-| [Welcome!]   [Reservation?]   |                                        | 140 ms (incl. return)   |
-| [Your name?] [See your ID?]   | +------------------------------------+ +-------------------------+
-| [How many nights?] [Room 412] | | Guest says                         | | Pair a guest            |
-| [Key card]   [Elevator left]  | | Where is the elevator?             | |  [QR 240px]  code valid |
-| [Breakfast 7-10] [Wi-Fi]      | | WHERE .92  ELEVATOR .71  [Speak again]| | 4:12  http://192.168.. |
-| [Checkout 11] [Late checkout] | +------------------------------------+ | [New code]              |
-| [Towels] [Parking] [Restaurant]|                                       +-------------------------+
-| [Taxi] [One moment] [Repeat?] |                                        | Privacy (this guest)    |
-| [Anything else?] [Enjoy stay] |                                        | Cloud calls: 0          |
-|                               |                                        | Guest data off laptop 0 B|
-| [Simulate guest signs ▸] (dev)|                                        | Messages relayed 14     |
-|                               |                                        | Files written: none     |
-|                               |                                        | Video: none in this app |
-|                               |                                        +-------------------------+
-|                               |                                        | Benchmark               |
-|                               |                                        | No real-data benchmark  |
-|                               |                                        | yet.                    |
-+-------------------------------+----------------------------------------+-------------------------+
-```
+| Token | Value | Use |
+|---|---|---|
+| `--navy` | `#0E2A47` | Guest background, staff headers |
+| `--white` | `#FFFFFF` | Guest text (about 14:1 on navy) |
+| `--brass` | `#E2B33C` | "Say it", key tags, threshold line |
+| `--ink` / `--paper` / `--rule` | `#142235` / `#FFFFFF` / `#D5DCE5` | Staff text, background, dividers |
+| `--go` / `--wait` / `--stop` | `#2E7D32` / `#B26A00` / `#B3261E` | Traffic lights, always with a word ("sure", "fairly sure", "unclear") and a shape (filled, half, hollow) |
+| `--alarm` | `#B3261E` | Help alerts only, always with an icon and words |
 
-Before anything else, the staff screen shows a single "Start desk" button. Pressing it is the user gesture that unlocks audio (speech synthesis, the alert tone and TTS playback), opens the staff event stream, and starts the recognizer health display. Without a guest session, the left and middle columns are disabled and the right column shows a large "New guest" button that creates a session and its QR code.
+Information is never carried by colour or sound alone. Copy is plain English in sentence case. `prefers-reduced-motion` turns flashing banners into solid ones.
 
-The left column holds the hold-to-talk button, a text field for typing a sentence, and the 20 quick-reply buttons for vocabulary.md section 1. A note under the talk button says where speech goes ("Speech-to-text: OpenAI, via the P1 route"), and if the Web Speech fallback is in use it says "Speech recognition: your browser's vendor (audio leaves this laptop)". The dev-only "Simulate guest signs" panel opens from the bottom of this column (section 4.5).
+**Traffic light.** Each recognised sign gets one light from its top-1 confidence and its label's bar (section 6.3): **green "sure"** at 0.8 or above; **amber "fairly sure"** from the label's bar up to 0.8; **red "unclear"** below the label's bar, for `NONE`, or when framing rejected the sign. The light is drawn as a filled, half-filled or hollow circle next to the word, with the percentage.
 
-The middle column is the conversation log, newest at the bottom, kept in memory only. Staff lines show the English text and the gloss as small key tags with the gloss source ("quick reply", "gloss service", "matched", "captions only"). Guest lines show the confirmed sentence, the signs with their confidences, and the source ("from table" or "suggested wording, confirmed by guest" for the LLM fallback). Typed guest messages and repeat requests appear as their own lines. Under the log, the latest guest sentence is shown at 40 px with a "Speak again" button.
+### 4.2 Staff dashboard (`/staff`, laptop 1440x900, staff listener only)
 
-The right column shows the last recognized signs as horizontal confidence bars with a brass line at 0.6 and the top-3 alternatives in small text, the repeat counter, the two latency figures, the pairing panel (QR code, the URL in groups of four characters for typing on a second laptop, the expiry countdown and "New code"), the privacy panel, and the benchmark card. A header strip shows guest-device connection, recognizer status, the idle-wipe countdown, a "SIMULATED" badge when the last signs came from the simulator, and the "End guest" button.
-
-Alerts take over the top of the screen. An emergency shows a full-width red banner, "Guest needs staff now", with a repeating tone until the receptionist presses "I'm coming", which sends `staff_ack` to the guest. An interpreter request shows a navy banner with the configured VRI name, link and phone number and an "I'm on it" button. A typed guest message shows a brass banner with the text.
-
-### 4.2 Pairing
-
-Pairing turns a QR code on the staff screen into a guest device that is bound to one session.
-
-1. Staff presses "New guest". The server ends any previous session, creates a new one, and returns a single-use pairing code of 128 random bits, valid for 5 minutes.
-2. The staff screen draws the QR code for `http://<host>:3000/guest?s=<code>` (the host is the LAN IP when `GUEST_LAN=1`) and prints the same URL in groups of four characters.
-3. The guest scans it, or types it on a second laptop. The guest page reads `s`, immediately removes it from the address bar with `history.replaceState`, and calls `POST /api/guest/join`.
-4. The server checks the code in constant time, burns it, and returns a fresh 256-bit guest token that only this device holds. The staff header changes to "Guest device connected".
-5. A second device that scans the same code gets "This code was already used. Ask the front desk for a new one." If the guest's device loses its token (for example the tab was closed), staff presses "New code" (`repair`), which revokes the old guest token and keeps the conversation.
-
-The guest token is kept in memory and in `sessionStorage` of that tab only (wrapped in try/catch), so a page reload reconnects; it is cleared on `session_end`. It is sent in the `X-Session-Token` header on POSTs and as the `s` query parameter on the event stream, because `EventSource` cannot send headers. The server never logs URLs, and every response sets `Referrer-Policy: no-referrer`.
-
-### 4.3 Guest first screen (`/guest`, phone 390x844 and laptop 1440x900)
+The staff screen is laptop-only; there is no phone layout for staff. Before anything else it shows one "Start desk" button. Pressing it is the user gesture that unlocks audio, claims the staff capability if the page was opened from the one-time `#k=` URL (section 9.6), opens the staff event stream and calls `warmUpVoice()`.
 
 ```
- PHONE 390x844                         LAPTOP 1440x900
-+----------------------------+        +-------------------------------------------------------------+
-| SignBridge · front desk    |        | SignBridge front desk                     [Emergency: staff] |
-|                            |        |                                                             |
-| How would you like to talk |        |  How would you like to talk with the front desk?            |
-| with the front desk?       |        |                                                             |
-|                            |        |  +----------------+ +----------------+ +------------------+ |
-| +------------------------+ |        |  | Sign           | | Type           | | Ask for a human  | |
-| | Sign                   | |        |  | The desk camera| | Your messages  | | interpreter      | |
-| | The desk camera reads  | |        |  | reads your     | | appear on the  | | Staff will set   | |
-| | your hands             | |        |  | hands          | | staff screen   | | up video relay   | |
-| +------------------------+ |        |  +----------------+ +----------------+ +------------------+ |
-| +------------------------+ |        |                                                             |
-| | Type                   | |        |  What happens to my data:                                   |
-| +------------------------+ |        |  Video stays on the desk laptop. Nothing is saved. You      |
-| +------------------------+ |        |  confirm every sentence before it is spoken.                |
-| | Ask for a human        | |        |                                                             |
-| | interpreter            | |        |                                                             |
-| +------------------------+ |        |                                                             |
-| What happens to my data ▸  |        |                                                             |
-|----------------------------|        |                                                             |
-| [ Emergency: need staff ]  |        |                                                             |
-+----------------------------+        +-------------------------------------------------------------+
++------------------------------------------------------------------------------------------------------------------+
+| SignBridge  front-desk communication aid   [MODE C: cable + HTTPS]                                 [ End guest ] |
+| Guest device: iPad, Safari  10.77.0.2   Paired with 960 792   Heard 2 s ago (o)   Streams 1   Idle wipe 1:42      |
+| Session ends in 12:10 [Extend 5 min]   Recognizer: ok, 27 fps   Safety: no warnings   Vendor keys: none (offline)  |
++------------------------------+-------------------------------------------------+---------------------------------+
+| TALK TO THE GUEST            | CONVERSATION (memory only, wiped at End guest)  | CHECK-IN CO-PILOT               |
+| [      Hold to talk      ]   | 10:02 You    Welcome!                           | (*) Greeting       shared 10:02 |
+| Speech-to-text is off        |              [HELLO][WELCOME]  shown on device  | (*) Reservation    shared 10:02 |
+| (no vendor key)              | 10:02 You    Do you have a reservation?         | (*) Guest name     shared 10:03 |
+|                              | 10:02 Guest  Yes, I have a reservation.          | ( ) ID checked  not shared yet  |
+| This text will appear on the |              YES (*).94  RESERVATION (*).88 said |                       [I saw it]|
+| guest's device:              | 10:03 Guest  My name is Ana Maria.               | (*) Room number    shared 10:04 |
+| [___________________] [Send] |              [Speak name]   not spoken yet       | (*) Key card       shared 10:04 |
+|                              | 10:04 You    You're in room 412.                 | (!) Wi-Fi  guest asked 10:05;   |
+| QUICK REPLIES                | ...                                              |            not answered yet     |
+| [Welcome!]  [Reservation?]   |                                                  | ( ) Breakfast   not shared yet  |
+| [Your name?] [See your ID?]  | LIVE SIGNS   MORE (*).91  TOWEL (/).72  PLEASE  | ( ) Checkout    not shared yet  |
+| [Nights?]   [Room 412]       |              ( ).41 unclear                     | ( ) Anything else? not asked    |
+| [Key card]  [Elevator left]  +-------------------------------------------------+ ( ) Farewell    not shared yet  |
+| [Breakfast 7-10] [Wi-Fi]     | GUEST SAYS (40 px)                              |                                 |
+| [Checkout 11] [Late checkout]| "Could I have more towels, please?"             | Gentle reminders only; nothing  |
+| [Towels] [Parking] [Restaur.]| confirmed by guest 10:06   [Speak again]        | here blocks the conversation.   |
+| [Taxi] [One moment] [Repeat?]|                                                 |                                 |
+| [Anything else?] [Enjoy stay]|                                                 |                                 |
++------------------------------+-------------------------------------------------+---------------------------------+
+| [Evidence] [Latency] [Privacy] [Safety] [Benchmark] [Device] [Simulator*]          (* only when SB_SIMULATE=1)    |
+| EVIDENCE  #7 TOWEL (/) fairly sure .72   moved 10:06:01.20-01.95   predicted +0.55 s   alternatives MORE .19, NONE .05 |
+|           +-------+   #6 MORE (*) sure .91 ...                                                                      |
+|           | o  o  |   skeleton snapshot (shoulders, arms, hands; no face; not video)                                |
+|           |  /|\  |                                                                                                  |
++------------------------------------------------------------------------------------------------------------------+
 ```
 
-The three choices are equal in size and order: Sign, Type, Ask for a human interpreter. Under them is a short data notice: the camera is on the desk laptop and the video stays there; nothing is saved; the guest confirms every sentence before it is spoken; typed messages and names never go to a cloud service; the conversation is wiped when the guest leaves or after two minutes without activity. The emergency button is always visible at the bottom.
+**Header strip.** It shows the deployment mode badge, the paired device as a parsed class and its address (never the raw User-Agent), the pairing state and check code once confirmed, the guest heartbeat ("Heard 2 s ago", amber after 20 s, red after 45 s), the number of guest streams, the idle-wipe countdown, the time left before the 15-minute cap with "Extend 5 min" during its last 2 minutes, the recognizer state (`ok`, `mock`, `no_model` or `down`) and frame rate, the count of open safety warnings, whether vendor keys are configured, and the End guest button. With no session it shows a large "New guest" button instead.
 
-Choosing "Sign" sends `guest_choice: sign`. Only after this choice does the server accept recognizer posts for the session (consent gate, section 10). Choosing "Type" opens the text field. Choosing "Ask for a human interpreter" alerts staff and shows the configured VRI provider name, link and phone number, with a note that a video relay call sends the guest's video to that provider. The guest can switch modes at any time from the bottom bar.
+**Left column.** Hold-to-talk with a note saying where speech goes, the free-text box labelled "This text will appear on the guest's device" (AS-26), and the 20 quick replies for `docs/vocabulary.md` section 1. Staff are briefed never to say or type the Wi-Fi password, card numbers or another guest's details while the guest can read them (RT13).
 
-Without a valid code or token, the page shows only "Scan the code at the front desk to start."
+**Middle column.** The conversation log, newest at the bottom, in memory only. Staff lines show the text, the gloss as small key tags, and whether the guest device has shown it ("shown on device" after its render acknowledgement). Guest lines show the confirmed sentence, each sign with its traffic light, and whether it was said aloud. A guest NAME line shows "Speak name" and "not spoken yet" until staff tap it; a typed guest message shows "Read aloud". Under the log, the live sign strip shows each sign the moment it is recognised, and the latest confirmed guest sentence is shown at 40 px with "Speak again". In Mode 0 a pending proposal also appears here with "Say it for the guest" and "The guest said no", labelled "Mode 0: confirm with the guest by looking at them".
 
-### 4.4 Guest conversation screen
+**Right column: the check-in co-pilot.** Thirteen standard check-in items (`CHECKIN_ITEMS` in `types.ts`): greeting, reservation, guest name, ID check, number of nights, room number, key card, elevator, Wi-Fi, breakfast, checkout time, anything else, farewell. An item is **shared** (filled circle, time) only when a staff line carrying one of its intents was rendered on the guest device, which the device acknowledges; **sent** (half circle) when it was sent but not yet acknowledged; and **not shared yet** (hollow circle, grey text) otherwise. When the guest asks about an item (for example `FS-WIFI PASSWORD`) before it was shared, the item shows "(!) guest asked 10:05; not answered yet". The ID check has an "I saw it" button because it happens on paper. The wording is gentle on purpose, and nothing in the checklist blocks or nags; it is a reminder, inspired by ProtoCopilot's per-step review.
+
+**Bottom panel tabs.**
+
+| Tab | What it shows | Source of every number |
+|---|---|---|
+| Evidence | For each recognised sign of this guest: number, label, traffic light, percentage, movement start and end time, delay to prediction, top-3 alternatives, and the skeleton snapshot drawn as dots and lines (shoulders, arms, hands; no face). Without a snapshot: "No skeleton snapshot from this recognizer build" | Bridge `sign` events (section 6) |
+| Latency | Per stage, the last value, the median and the count: movement end to prediction; prediction to the app; the app to the guest screen (round trip, "reported by the guest device"); utterance end to proposal on screen; "Say it" to speech starting at the desk. A stage with no data shows "no data yet" | Bridge timestamps, server receive times, guest acknowledgements (values outside 0 to 10 s dropped), staff-browser speech-start reports |
+| Privacy | For this guest and since start: vendor calls by destination with bytes (or "no vendor keys configured: 0 by construction"); guest-derived bytes off the laptop; messages relayed to the guest device; bridge events received ("labels and timestamps only"); skeleton snapshots held in memory now; face points received (always 0: the validator refuses them); video frames received by the app (always 0: no route accepts video); files written (always 0, checked by the hygiene test); time and reason of the last wipe and how many items it erased | Real counters in the server store |
+| Safety | Server-side hijack and abuse warnings (section 6.6) with gentle wording and the staff response card: "Go to the guest in person first. Then press End guest. If the guest is still there, start again with New guest and check the new number with them." | Server store |
+| Benchmark | "Accuracy figures: not yet audited." Only a report file marked `cleared: true` with an audit reference may replace that text, and then only with the fields it contains | `BENCHMARK_CLEARED_FILE`, never computed |
+| Device | The guest device's own load state where its browser supports the Compute Pressure API ("normal", "busy", "very busy", "overloaded", "reported by the guest device"), with "This only reflects how busy the device is. It is not a security check." Where unsupported: "Not available on this browser." The same for the staff laptop | `PressureObserver` reports |
+| Simulator | Rehearsal without the camera (section 6.7). Only when `SB_SIMULATE=1` | — |
+
+**Alerts.** Help from the guest takes over the top of the screen with a full-width red banner, "Guest needs staff now", a repeating tone and "I'm coming" (which sends `staff_ack` to the guest); repeated presses raise a count ("Help pressed 3 times") on the same banner. An interpreter request shows a navy banner with the VRI details and "I'm on it". A typed guest message shows a brass banner with the text and "Read aloud".
+
+### 4.3 Pairing (Mode C and Mode W)
 
 ```
- PHONE 390x844                         LAPTOP 1440x900
-+----------------------------+        +------------------------------+------------------------------+
-| Front desk said            |        | Front desk said              | You                          |
-| The elevator is on         |        | The elevator is on your      | Signing is on. The desk      |
-| your left.                 |        | left.                        | camera reads your hands.     |
-| (aria-live, 2-4rem)        |        |                              | [Stop signing]               |
-| [ELEVATOR][THERE][LEFT]    |        | [ELEVATOR] [THERE] [LEFT]    |                              |
-|  key-tag cards, or avatar  |        |  sign cards or avatar        | We saw these signs           |
-|----------------------------|        |                              | [WHERE] sure 92%             |
-| We saw these signs         |        | Words in capitals are sign   | [ELEVATOR] fairly sure 71%   |
-| [WHERE] sure 92%           |        | names.                       |                              |
-| [ELEVATOR] fairly sure 71% |        |                              | "Where is the elevator?"     |
-| "Where is the elevator?"   |        |                              | [   Say it   ] [   Fix   ]   |
-| [   Say it   ] [  Fix  ]   |        |                              |                              |
-|----------------------------|        |                              |                              |
-| [Type] [Sign] [Emergency]  |        | [Type] [Interpreter]         |         [Emergency: staff]   |
-+----------------------------+        +------------------------------+------------------------------+
+ STAFF 1440x900, full-screen overlay after "Guest is here"     GUEST PHONE 390x844 after joining
++------------------------------------------------------------+ +----------------------------+
+|                                                            | | SignBridge · front desk    |
+|            Open this on the guest device                   | |                            |
+|                                                            | | Show this number to the    |
+|                 +----------------------+                   | | receptionist:              |
+|                 |                      |                   | |                            |
+|                 |   QR 320 px          |                   | |      960 792               |
+|                 |   (drawn as rects)   |                   | |                            |
+|                 |                      |                   | | Waiting for the desk to    |
+|                 +----------------------+                   | | confirm.                   |
+|   https://10.77.0.1:3443/guest#p=....   new code in 0:48   | |                            |
+|                                                            | | [ Help: get staff now ]    |
+|   Nothing else is shown while this code is on screen.      | +----------------------------+
+|   [ Cancel ]                                               |
++------------------------------------------------------------+
+
+ STAFF after a device joins (overlay replaced)                  GUEST LAPTOP 1440x900 after joining
++------------------------------------------------------------+ +--------------------------------------------------+
+| A device joined: iPad, Safari, 10.77.0.2                   | | Show this number to the receptionist: 960 792    |
+| Check it is the device in the guest's hand.                | | Waiting for the desk to confirm.                 |
+| Type the number shown on it:  [ _ _ _  _ _ _ ]  [Confirm]  | |                         [ Help: get staff now ]  |
+| 3 tries. "That is not the number on the guest's screen."   | +--------------------------------------------------+
++------------------------------------------------------------+
 ```
 
-Captions come first. The latest staff sentence is the largest text on the page, inside an `aria-live="polite"` region, with the gloss below it as key-tag sign cards or the avatar. Older staff sentences scroll above in smaller type.
+The protocol follows `lan_tls_pairing.md` section 3.1 and decision record D6:
 
-The guest panel shows the signing state and the current proposal. A matched proposal shows the recognized signs as key tags with "sure" (at least 0.8), "fairly sure" (0.6 to 0.8) and the percentage, then the sentence in quotes, then two large buttons. "Say it" (brass) confirms and sends; "Fix" opens "Sign again" and "Type instead". For the NAME intent, the proposal shows "My name is ..." with a text field labelled "Type your name"; "Say it" is enabled once the name passes the sanitizer, and an invalid name shows "Use letters, spaces, hyphens or apostrophes, up to 40 characters." An unmatched result shows "We saw: TAXI WHERE" and the message "That doesn't match a request we know," with "Sign again" and "Type instead". A repeat request replaces the panel with "Please sign that again" and shows which sign was unclear; after three repeats in a row "Type instead" becomes the primary button. After "Say it", the panel shows "Sent to the front desk" and whether it was read aloud.
+1. Staff press "New guest". The server ends any old session and creates a session in state `WAITING_FOR_GUEST`. No code exists yet.
+2. When the guest is at the desk, staff press "Guest is here". The server creates a 128-bit pairing code, valid for 120 seconds, and the staff screen shows the QR code for `https://<LAN_IP>:3443/guest#p=<code>` as a full-screen overlay with nothing else visible. While waiting, the staff page asks for a fresh code every 60 seconds. In Mode C and Mode W with the team device, staff open the link on the device themselves; guests never scan anything in the default modes.
+3. The guest page reads the code from the fragment and removes it from the address bar with `history.replaceState` before any network request, then posts it to `/api/guest/join`.
+4. The server checks the source address against `GUEST_IPS` first (403, and the code is **not** burned), then the code in constant time against its stored SHA-256, then counts a failure against that address (5 a minute). A valid code is never refused by a rate limit and there is no server-wide ceiling. On success it burns the code, sets the `__Host-sb_g` cookie, records the device binding (address plus a hash of the User-Agent, and a parsed device class for display), creates a random 6-digit check code, and returns it to the guest page only. The session is now `PAIRED_UNCONFIRMED`, and the staff overlay closes.
+5. Staff look at the device in the guest's hand, check that it is the device the staff screen names, and type the 6 digits. A wrong number shows "That is not the number on the guest's screen" and leaves two more tries; the third wrong number ends the session with reason `pair_failed`.
+6. On a match the session becomes `ACTIVE`. Both screens show "Paired with 960 792", and the guest page says "Connected. The front-desk screen now shows 960 792. If it shows a different number, stop and tell the staff."
+7. Until step 6, the guest device may only send `emergency`, and every staff caption is refused with 409, so a device that wins a race for the code learns nothing.
 
-A small toggle in the guest panel, "Read my sentences aloud at the desk", defaults to on; when off, the staff laptop shows the text without speaking it. The bottom bar always holds Type, Sign or Stop signing, Interpreter and Emergency. Emergency shows "Staff has been alerted" and, once staff acknowledges, "Staff is coming", plus the configured text-to-911 note. When the session ends, every guest screen shows "This conversation has ended. Nothing was saved."
+**Mode 0.** Staff press "New guest", then "Open guest window". The staff page opens `/guest#p=<code>` in a new window, which staff drag to the wired display. The join arrives on the loopback listener from the laptop itself, so it is confirmed without a check code and the staff header shows "Guest window on this laptop (Mode 0)". The Mode 0 guest window is display-only (the guest has no keyboard or touch on it), so its proposal panel says "Nod or point if this is right", and the receptionist confirms on the staff screen.
 
-There is no autoplay sound on the guest device and nothing depends on hearing. On Android, alerts may also vibrate. The Screen Wake Lock API needs HTTPS, so for the demo the phone's auto-lock must be turned off by hand.
+### 4.4 Guest first screen (`/guest`, phone 390x844 and laptop 1440x900)
 
-### 4.5 Simulate guest signs (staff screen, loopback only, dev or `SB_SIMULATE=1`)
+```
+ PHONE 390x844                              LAPTOP 1440x900
++----------------------------+             +-------------------------------------------------------------------+
+| SignBridge · front desk    |             | SignBridge front desk                      [ Help: get staff now ] |
+|                            |             |                                                                   |
+| How would you like to talk |             |  How would you like to talk with the front desk?                  |
+| with the front desk?       |             |                                                                   |
+| +------------------------+ |             |  +--------------+ +--------------+ +--------------+ +-----------+ |
+| | Sign                   | |             |  | Sign         | | Type         | | Ask for a    | | Text only | |
+| | The desk camera reads  | |             |  | The desk     | | Your words   | | human        | | Read the  | |
+| | your hands             | |             |  | camera reads | | appear on    | | interpreter  | | desk's    | |
+| +------------------------+ |             |  | your hands   | | the staff    | | by video     | | words; no |
+| | Type                   | |             |  |              | | screen       | | relay        | | avatar,   | |
+| +------------------------+ |             |  +--------------+ +--------------+ +--------------+ | no voice  | |
+| | Ask for a human        | |             |                                                     +-----------+ |
+| | interpreter            | |             |  About this screen                                                |
+| +------------------------+ |             |  This page shows only this conversation. It stores nothing about  |
+| | Text only              | |             |  the conversation on your device, though your browser may keep    |
+| +------------------------+ |             |  the page address in its history. The conversation ends when the  |
+| About this screen  >       |             |  desk taps End, or after 15 minutes. We will never ask you for a   |
+|----------------------------|             |  password, card number or ID on this screen. The Help button is    |
+| [ Help: get staff now ]    |             |  not the only way to get help: you can always wave to the staff.   |
++----------------------------+             |  If you think your phone may be monitored, please use the hotel   |
+                                           |  tablet. Video stays on the desk laptop; nothing is spoken until  |
+                                           |  you tap "Say it".                                                |
+                                           +-------------------------------------------------------------------+
+```
 
-The simulator is a collapsible panel on the staff screen that lets the team rehearse without the camera. It has one button per guest intent (20) that injects that intent's signs at confidence 0.90 each, a "Shuffle order" switch (to show order-insensitive matching), a "Make one sign unclear" switch (sets one sign to 0.45), a "NONE" button, and a free picker of up to 8 labels with confidence sliders. It calls `POST /api/dev/simulate`, which runs the exact same validator, gate, matcher and event pipeline as `/api/guest/signs`, and marks the result `source: "simulated"` so the staff screen shows a "SIMULATED" badge. The route returns 404 when simulation is disabled.
+The four choices are equal in size and order. The notice text is exactly the one in `compromised_device.md` section 2.4 (AS-23), followed by two sentences about video and confirmation. No input on any guest screen ever asks for a password, card number or ID.
+
+- **Sign** sends `guest_choice: sign`. Only after this does the server accept recognizer events for the session (consent gate), and `GET /api/guest/signs` answers `{accepting: true}`.
+- **Type** opens the text field (`autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"`, AS-8).
+- **Ask for a human interpreter** alerts staff and shows the configured VRI name and phone number. A link is shown only when the device is not a kiosk (`hello.kiosk` is false, AS-25), with the note "A video relay call sends your video to that provider."
+- **Text only** shows the desk's words as captions without the avatar, and the guest's confirmed sentences appear as text at the desk without being spoken. The guest can change mode at any time from the bottom bar.
+
+Without a valid code or cookie, the page shows only "Ask the front desk to connect this screen."
+
+### 4.5 Guest conversation screen
+
+```
+ PHONE 390x844                              LAPTOP 1440x900
++----------------------------+             +----------------------------------+--------------------------------+
+| Front desk said            |             | Front desk said                  | You                            |
+| The elevator is on         |             | The elevator is on your left.    | Signing is on. Stand so your   |
+| your left.  (aria-live)    |             | (aria-live, largest text)        | head and waist are in the      |
+| +------------------------+ |             | +------------------------------+ | picture.          [Stop]       |
+| |   avatar (P2) or       | |             | |                              | |                                |
+| |   sign cards           | |             | |   avatar (P2) or sign cards  | | Signs we saw                   |
+| +------------------------+ |             | |                              | | [WHERE] (*) sure 92%           |
+| [ELEVATOR][THERE][LEFT]    |             | +------------------------------+ | [ELEVATOR] (/) fairly sure 71% |
+|----------------------------|             | [ELEVATOR] [THERE] [LEFT]        |                                |
+| Signs we saw               |             | Words in capitals are sign names.| "Where is the elevator?"       |
+| [WHERE] (*) sure 92%       |             |                                  | [    Say it    ] [   Fix   ]   |
+| [ELEVATOR] (/) 71%         |             |                                  |                                |
+| "Where is the elevator?"   |             |                                  | [x] Read my sentences aloud    |
+| [  Say it  ] [   Fix   ]   |             |                                  |     at the desk                |
+|----------------------------|             |                                  |                                |
+| [Type][Sign][Interpreter]  |             | [Type] [Interpreter] [Text only] | [ Help: get staff now ]        |
+| [ Help: get staff now ]    |             | [I'm finished]                   |                                |
++----------------------------+             +----------------------------------+--------------------------------+
+```
+
+Captions come first: the latest staff sentence is the largest text on the page, inside an `aria-live="polite"` region, with `AvatarCaptions` below it and the avatar (or text sign cards) in a container passed to `mountAvatar`. Older staff sentences are not kept on the device beyond the last few in memory (AS-1).
+
+The guest panel changes with the state of the conversation:
+
+| State | What the guest sees | Buttons |
+|---|---|---|
+| Signing, waiting | "Signing is on" plus the framing message while framing is not OK (section 6.4) | Stop |
+| Live signs | Each sign appears as a key tag with its traffic light the moment it is recognised | — |
+| **Proposal** (every sign at or above its bar, signs match one request) | The signs with lights, then the sentence in quotes | **Say it**, **Fix** (Fix opens Sign again, Type instead, Ask for an interpreter) |
+| **Proposal for NAME** | "My name is ..." with a field "Type your name" | Say it (enabled when the name passes the sanitizer). The name then appears on the staff screen, and is spoken only after staff tap "Speak name" |
+| **Did you mean...?** (one sign below its bar, and exactly one replacement from its top 3 matches a request) | "Did you mean: 'Could I have more towels, please?'" | **Yes**, **No, sign again**, Type instead |
+| **Did you mean HELP?** (a HELP sign below its bar) | "Did you mean HELP? Staff will come to you." | **Yes, get staff**, **No**. HELP below its bar never sends an alert on its own |
+| **Pick one** (two or three possible requests) | "Which one did you mean?" and up to three sentences as large buttons | Each sentence, then **None of these: Type / Sign again / Interpreter** |
+| **Not a request we know** (signs clear, no match) | "We saw: TAXI WHERE. That doesn't match a request we know." plus up to three nearest requests | Each nearest request, None of these |
+| **Please sign that again** (`NONE`, framing rejection, or no candidate) | Which sign was unclear, and the framing hint if framing caused it. After three repeats in a row "Type instead" becomes the primary button | Sign again, Type instead |
+| Sent | "Sent to the front desk" and "Read aloud at the desk" or "Shown as text at the desk" | — |
+| Test mode | When the recognizer reports `mock`: "Test mode: these signs were invented by a test program and will not be spoken." | Say it disabled |
+
+The bottom bar always holds Type, Sign or Stop, Interpreter, Text only, "I'm finished" and the Help button. Help shows "Staff has been alerted", then "Staff is coming" when staff acknowledge, plus the configured text-to-911 note. There is no sound on the guest device and nothing depends on hearing. On `pagehide` or when the page becomes hidden, the conversation is replaced by a neutral screen (AS-7).
+
+**Device health.** Where `PressureObserver` exists (Chromium in a secure context), the guest page reports changes of the `cpu` pressure state to the server at most once every 10 seconds. The guest screen shows nothing about it. Safari has no Compute Pressure API, so on the team iPad the staff Device tab says "Not available on this browser".
+
+### 4.6 Session end
+
+```
+ PHONE 390x844                              LAPTOP 1440x900
++----------------------------+             +-------------------------------------------------------------------+
+|                            |             |                                                                   |
+| This conversation has      |             |   This conversation has ended. Nothing about it was saved on      |
+| ended.                     |             |   this device.                                                    |
+|                            |             |                                                                   |
+| Nothing about it was saved |             |   If you need anything else, wave to the front desk.              |
+| on this device.            |             |                                                                   |
+|                            |             +-------------------------------------------------------------------+
+| If you need anything else, |
+| wave to the front desk.    |              STAFF (header strip and log after End guest)
++----------------------------+             | No guest.  Last wipe 10:12:40, reason: End guest, 31 items erased. |
+                                           | [ New guest ]                                                      |
+```
+
+On `session_end` the guest page clears its state, calls `POST /api/guest/leave` (which answers with `Clear-Site-Data: "cache", "cookies", "storage"` and an expired cookie), and replaces its history entry with the ended screen so Back cannot show the conversation (AS-6, AS-7). The staff screen clears the log and the per-guest counters and keeps only the wipe receipt. A guest who taps "I'm finished" ends the session the same way, with reason `guest_left`, and staff see "The guest ended the conversation".
 
 ---
 
@@ -203,342 +347,474 @@ The simulator is a collapsible panel on the staff screen that lets the team rehe
 
 ### 5.1 Staff to guest
 
-| Hop | From → to | Transport | Data that crosses | Leaves the laptop? |
+| Hop | From -> to | Transport | Data | Leaves the laptop? |
 |---|---|---|---|---|
-| S1 | Microphone → staff browser | MediaRecorder | Receptionist audio (webm, memory) | No |
-| S2 | Staff browser → `POST /api/transcribe` (P1) | Loopback HTTP | Audio blob | No |
-| S3 | `/api/transcribe` → OpenAI Whisper | HTTPS | Receptionist audio | **Yes, staff data**, counted by server.mjs |
-| S4 | Staff browser → `POST /api/gloss` (P1) | Loopback HTTP | English text | No |
-| S5 | `/api/gloss` → Anthropic | HTTPS | Receptionist text | **Yes, staff data**, counted by server.mjs |
-| S6 | Staff browser → `POST /api/staff/action` (`say_text` or `say_quick`) | Loopback HTTP | Text and gloss, or an intent id | No |
-| S7 | Server → guest device, `staff_utterance` | SSE over LAN HTTP | Text, gloss tokens, gloss source | LAN only |
-| S8 | Guest browser → avatar or sign cards | In page | Gloss | No |
-| S9 | Guest browser → `POST /api/guest/action` (`ack`) | LAN HTTP | Event sequence number | LAN only |
+| S1 | Microphone -> staff page | P1 `recorder.ts` (MediaRecorder) | Receptionist audio, in memory | No |
+| S2 | Staff page -> `POST /api/transcribe` (P1) | Loopback HTTP | Audio (multipart, at most 5 MB) | No |
+| S3 | `/api/transcribe` -> OpenAI Whisper | HTTPS | Receptionist audio | **Yes, staff data**, counted; impossible without a key (D8 window) |
+| S4 | Staff page -> `POST /api/gloss` (P1) | Loopback HTTP | English text | No (P1's gloss is a local mapping) |
+| S5 | Staff page -> `POST /api/staff/action` `say_quick {intent}` or `say_text {text, gloss, source}` | Loopback HTTP, staff cookie | Intent key, or text plus gloss | No |
+| S6 | Server: validate gloss tokens (REQ CAP-2), else P1 `mapStaffTextToGloss`, else captions only; cap the caption at 600 bytes | Memory | Same | No |
+| S7 | Server -> guest device `staff_utterance` | SSE, HTTPS (Mode C/W) or loopback (Mode 0) | Text, gloss, gloss source | Over the cable or router only |
+| S8 | Guest page -> `mountAvatar`/`playGloss(gloss, {onToken})` and `AvatarCaptions` | In page; sign files from the bundle fetched once at pairing (guest listener) or per gloss (loopback) | Gloss | No |
+| S9 | Guest page -> `POST /api/guest/action` `ack {seq}` | Same as S7 | Event number | Over the cable only |
+| S10 | Server -> staff `delivered` | Loopback SSE | Seq, round-trip time | No |
 
-A quick reply uses only S6 to S9 and no cloud call. When P1's routes return 501 or fail, the staff types instead of speaking (S1 to S3 skipped), or uses the browser Web Speech API after an on-screen disclosure that audio goes to the browser vendor; the staff browser then reports that use with `note_vendor` so the privacy panel counts it, labelled "reported by the staff browser". When `/api/gloss` returns 501 or fails, the server matches the text deterministically against the 20 staff sentences (normalized: lowercase, curly quotes to straight, punctuation removed, spaces collapsed); a match uses that intent's fixed gloss, and no match sends captions only with an empty gloss.
+A quick reply uses only S5 to S10 and no cloud call. Typed staff text uses S4 to S10. When `/api/gloss` fails or returns an invalid token, the server uses P1's `mapStaffTextToGloss` in process; when that yields nothing usable, the guest gets captions only.
 
 ### 5.2 Guest to staff
 
-| Hop | From → to | Transport | Data that crosses | Leaves the laptop? |
+| Hop | From -> to | Transport | Data | Leaves the laptop? |
 |---|---|---|---|---|
-| G1 | Desk camera → Python MediaPipe (P3) | Local | Video frames (never stored by the app; the app never sees them) | No |
-| G2 | Classifier → `POST /api/guest/signs` | Loopback HTTP, `X-Bridge-Key` | Labels and confidences only | No |
-| G3 | Server: validate → consent gate → confidence gate → match | Memory | Same | No |
-| G4a | Server → guest, `guest_proposal` or `repeat_request` | SSE over LAN | Top-1 words with confidence, matched sentence | LAN only |
-| G4b | Server → staff, `recognition` (+ `repeat_request`) | SSE loopback | Top-3 per sign, gate result, match | No |
-| G5 | Guest → `POST /api/guest/action` `guest_confirm` | LAN HTTP | Proposal id, and the typed name for NAME | LAN only |
-| G6 | Server → staff, `guest_utterance` | SSE loopback | Sentence, signs, speak plan | No |
-| G7a | Staff browser → speechSynthesis (local voice) | In page | Sentence | No |
-| G7b | Staff browser → `POST /api/tts {id}` → ElevenLabs | Loopback, then HTTPS | Fixed sentence for that id (not free text) | **Yes, guest-derived**, counted, unless already cached |
-| G8 | Server → guest, `guest_utterance` echo | SSE over LAN | Sentence, spoken-aloud flag | LAN only |
+| G1 | Desk camera -> `recognition/live.py` (P3) | Local | Video frames, never stored, never seen by the app | No |
+| G2 | `live.py` -> `POST /api/guest/signs` | Loopback HTTP, `X-Bridge-Key` | Bridge events: labels, confidences, timestamps, framing status, and an optional skeleton snapshot (section 6.2) | No |
+| G3 | Server: validate, drop stale or replayed events, consent gate, traffic lights, gate, match, candidates | Memory | Same | No |
+| G4a | Server -> guest `live_sign`, `framing`, `guest_proposal` or `repeat_request` | SSE over the cable | Top-1 words with lights, guidance text, candidate sentences | Over the cable only |
+| G4b | Server -> staff `live_sign`, `framing`, `recognition` | Loopback SSE | Top-3, timestamps, skeleton, gate result | No |
+| G5 | Guest -> `POST /api/guest/action` `guest_confirm {proposalId, candidateId, name?}` | Over the cable | Choice, and the typed name for NAME | Over the cable only |
+| G6 | Server -> staff `guest_utterance` with a speak plan | Loopback SSE | Sentence, signs, plan | No |
+| G7a | Staff page -> `POST /api/tts {text}` (Nath) | Loopback | The **fixed** sentence from the server's plan, never guest text | No with Piper; **yes** with an ElevenLabs key (counted as guest-derived, though the sentence is fixed) |
+| G7b | Staff page -> `speechSynthesis` with a `localService` voice | In page | Name sentence after "Speak name", typed text after "Read aloud" | No |
+| G8 | Staff page -> `POST /api/staff/action` `speak_done` | Loopback | How it was voiced and when speech started | No |
+| G9 | Server -> guest `guest_utterance` echo | Over the cable | Sentence, spoken or shown | Over the cable only |
 
-Typed guest text goes guest → `POST /api/guest/action` (`guest_typed`) → staff SSE, and is never sent to any vendor. The guest name goes only to the staff screen and to a local speechSynthesis voice. When `ENGLISH_FALLBACK=1` and a gated batch is unmatched, the server sends the labels only (no name, no typed text) to Anthropic and returns the suggestion as a proposal that the guest must confirm; this is the only place guest-derived bytes reach Claude, and it is counted.
+Typed guest text goes guest -> `guest_typed` -> staff banner and log, and is never sent to any vendor. The guest name goes only to the staff screen and to a local voice after a staff tap.
 
 ---
 
-## 6. Event and message catalogue
+## 6. Recognizer bridge ingest
 
-All events travel as Server-Sent Events from `GET /api/events`. Each SSE message has `id: <seq>` and `data: <BusEnvelope JSON>`, with a single event name so `onmessage` handles everything. The server sends `retry: 2000`, a comment heartbeat every 15 seconds, and on every (re)connect a `snapshot` so the client never needs replay. The guest and staff unions in `types.ts` are separate, and the server builds guest messages only from the guest union, so staff-only fields cannot reach the guest device by accident.
+### 6.1 The contract (from `recognition/README.md`, "App bridge")
 
-| Type | Guest gets | Staff gets | Produced by | Notes |
-|---|---|---|---|---|
-| `hello` | yes | no | guest join and stream open | VRI details, idle time, emergency note |
-| `snapshot` | yes (mode, last caption, pending proposal) | yes (status, log, pairing, last recognition) | every stream open | replaces replay |
-| `session_start` | no | yes | `new_guest`, `repair` | pairing info for the QR |
-| `staff_utterance` (6.7, extended) | yes | yes | `say_quick`, `say_text` | id, text, gloss, glossSource; staff also gets captionSource and intentId |
-| `recognition` | no | yes | signs ingest | top-3 per sign, gate result, match, source |
-| `repeat_request` (6.7, extended) | yes: reason, top-1 words, weak indexes, streak | yes: reason, count, streak | gate failure | guest sees "Please sign that again" |
-| `guest_proposal` | yes | no (staff sees `recognition`) | gate pass | match null = unmatched |
-| `guest_utterance` (6.7, extended) | echo: text, spokenAloud | yes: signs, text, intentId, source, speak plan | `guest_confirm` | staff laptop speaks per speak plan |
-| `guest_fix` | no | yes | `guest_fix` | sign again or type |
-| `guest_typed` | no | yes | `guest_typed` | shown as a banner and log line |
-| `guest_choice` | no | yes | `guest_choice`, `stop_signing`, `prefs` | mode and speak-aloud setting |
-| `interpreter_request` | no | yes (with VRI info) | `interpreter_request` or choice | staff banner |
-| `emergency` | no | yes | `emergency` | red banner and tone until ack |
-| `staff_ack` | yes | yes | staff `ack` | "Staff is coming" on the guest device |
-| `idle_warning` | yes | yes | sweeper, 30 s before wipe | any tap keeps the session |
-| `session_end` | yes | yes | `end_guest`, idle wipe, `repair` (guest only, reason `repaired`) | clients clear all state |
-| `status` | no | yes, every 2 s and on change | server | recognizer, guest connection, counters, privacy, latency, flags |
+`live.py --post http://127.0.0.1:3000/api/guest/signs` sends each event as its own POST with `Content-Type: application/json` and `X-Bridge-Key`. Times are Unix seconds from the laptop's clock, comparable with `Date.now() / 1000`.
 
-`guest_confirm` is a guest action, not an event; its result is `guest_utterance`. The BroadcastChannel in `web/lib/channel.ts` is superseded by this bus because the two screens are on different devices; the file becomes a thin client helper that wraps `EventSource` and the action POSTs.
+| Event | Fields the app reads | What the app does |
+|---|---|---|
+| `sign` | `seq`, `top` (top 3, best first), `t_sign_start`, `t_sign_end`, `t_closed`, `t_predicted`, `t_sent`, optional `skeleton` (requested, section 6.2) | Stores it under `seq` for this session; sends `live_sign` (top-1 and light) to the guest and the full detail to staff |
+| `utterance` | `signs` (top-1 of each, 1 to 8), `seqs`, `needs_repeat`, `t_end`, `t_sent` | Joins each sign with its stored `sign` event to get the top 3 and times; runs the app's own gate; the result is a repeat when either the app's gate or `needs_repeat` says so; then matches and builds the proposal (section 6.3) |
+| `framing` | `status`, `since`, optional `rejected_seq`, `t_sent` | Shows the guidance on the guest screen and the staff screen; with `rejected_seq`, marks that sign red ("framing") |
+| `status` | `fps`, `recognizer` (`ok`, `mock`, `no_model`), `t`, `t_sent` | Updates the staff header; in `mock` every later proposal is a test-mode proposal that is never spoken |
+| `vlm_suggestion` (reserved) | — | Ignored with 404 unless `VLM_FALLBACK=1` (section 6.8) |
+
+**Validation.** The body is at most 8 KB. `type` must be one of the known types; unknown keys are ignored, as the README asks, but every known key is checked strictly. Labels must be one of the 22 labels exactly, after the alias map (`FS-CHECKOUT` -> `LEAVE`). Each `conf` is a finite number in [0, 1]. `top` has 1 to 5 entries and is re-sorted on the server. An utterance has 1 to 8 signs and as many `seqs`. Any `face`, `frames`, `pose` or `video` key is refused with 400, so nothing but the optional skeleton can ever carry body points.
+
+**Freshness and replay.** An event whose `t_sent` is more than 5 seconds old, or older than the start of the current session, is dropped with `200 {ok: true, outcome: "stale"}` (the recognizer should not retry it). A `sign` whose `seq` was already seen in this recognizer run is dropped and raises the safety warning "repeated recognizer event". A `seq` that falls back to 1 is treated as a recognizer restart, shown as a system line, and starts a new run.
+
+**Consent gate.** `sign`, `utterance` and `framing` are accepted only when the session is `ACTIVE` and the guest chose Sign; otherwise the route answers 409 and `GET /api/guest/signs` answers `{accepting: false}`. `status` is always accepted, because it carries no personal data.
+
+### 6.2 Skeleton snapshot (contract change requested from P3)
+
+The evidence panel needs a picture of what the camera saw, without video. P3 is asked to add an optional field to `sign` events:
+
+```json
+"skeleton": { "t": 1760112001.6, "pose": [[x, y], ... 7 points: pose 0, 11, 12, 13, 14, 15, 16], "lh": [[x, y] x 21] | null, "rh": [[x, y] x 21] | null }
+```
+
+It is one frame from the middle of the sign, x and y only, rounded to 3 decimals, in the normalized coordinates the model already uses, with no face points. That is at most 49 points and under 1.5 KB. The app accepts it only in that exact shape, keeps it in memory for this session, shows it on the staff screen only (never to the guest device, AS-1), counts it in the privacy panel, and erases it at the wipe. Until P3 sends it, the evidence panel says "No skeleton snapshot from this recognizer build". Landmarks are far less identifying than video, but they are never called "anonymous".
+
+### 6.3 Traffic lights, harm-weighted gate and matching
+
+| Rule | Value | Source |
+|---|---|---|
+| Default bar for a sign's top-1 | 0.6 (0.6 passes, 0.5999 fails) | CLAUDE.md 7.2 |
+| Higher bar for harm-weighted labels | 0.75 for `YES`, `NO`, `NAME`, `ROOM`, `HELP` (provisional; P3 sets the final values from audited calibration) | Slide "build today" item 3; harm table in `rylo_final.md` |
+| Green "sure" | 0.8 or above, and at or above the label's bar | This plan |
+| Amber "fairly sure" | From the label's bar up to 0.8 | This plan |
+| Red "unclear" | Below the label's bar, `NONE`, or framing rejection | This plan |
+
+The outcome of an utterance is decided in this order:
+
+1. If any sign is `NONE` or framing-rejected, the outcome is **repeat**.
+2. If every sign is at or above its bar, the top-1 labels are matched as a **multiset** against the 20 guest intents of `docs/vocabulary.md` section 2, so `ELEVATOR WHERE` matches "Where is the elevator?" just like `WHERE ELEVATOR`. A match gives a **proposal**. A HELP sign that passed its bar but is amber still gives a proposal; the guest confirms it like any other.
+3. If exactly one sign is below its bar and it is `HELP`, the outcome is **"Did you mean HELP?"**.
+4. If exactly one sign is below its bar, the server replaces it in turn with each label in its top 3 (including its own top-1) and keeps every replacement that matches an intent, ranked by the product of confidences. One candidate gives **"Did you mean...?"**; two or three give **"Pick one"**; none gives **repeat**.
+5. If two or more signs are below their bars, the outcome is **repeat**.
+6. If every sign passed but nothing matched, the outcome is **"Not a request we know"** with up to three nearest intents (those sharing the most signs, at least one).
+
+The guest always confirms, so using a runner-up never speaks something the guest did not choose. Nothing is ever spoken for a repeat. A unit test parses `docs/vocabulary.md` section 2 and checks that all 20 multisets are distinct and that every permutation of each matches its own intent.
+
+### 6.4 Framing guidance shown on the guest screen
+
+| Status | Guest text (the app's copy of `recognition/framing.py` `GUIDANCE`) |
+|---|---|
+| `OK` | "Ready: sign when you like" |
+| `STEP_BACK` | "Please step back: your head to your waist should be in the picture" |
+| `COME_CLOSER` | "Please come a little closer" |
+| `HANDS_OUT` | "Keep your hands inside the picture" |
+| `CENTER` | "Please move to the middle of the picture" |
+| `MOVE_CAMERA_DOWN` | "Your waist is below the picture. Staff will tilt the camera down" (staff screen: "Tilt the desk camera down") |
+| `NO_PERSON` | "Please stand in front of the desk camera" |
+
+The guidance is shown only while the guest is in Sign mode, and it is removed when `OK` arrives.
+
+### 6.5 Latency from real timestamps
+
+| Stage | Computed as | Clock |
+|---|---|---|
+| Movement end -> prediction | `t_predicted - t_sign_end` | Laptop (recognizer) |
+| Prediction -> app | server receive time - `t_predicted` | Laptop |
+| App -> guest screen | ack receive time - event send time (a round trip, labelled "reported by the guest device"; values outside 0 to 10 s dropped, AS-22) | Laptop server |
+| Utterance end -> proposal on the guest screen | ack receive time of the proposal - `t_end` | Laptop |
+| "Say it" -> speech starts at the desk | `speak_done.startedAt` - confirm receive time | Laptop (staff browser and server) |
+
+Each stage shows the last value, the median and the count for this guest. With no data it shows "no data yet"; nothing is estimated.
+
+### 6.6 Session safety warnings (server-side)
+
+| Warning | Trigger | Staff wording |
+|---|---|---|
+| Second device | A second guest stream from another address, or a join after the code was used | "Another device tried to join this conversation." |
+| Device changed | The bound device's address or browser changed; guest actions except Help are paused until a new check code is typed | "The guest device changed address or browser. Check the device and type its new number." |
+| Repeated request | A guest action whose nonce was already used, or a confirm for a proposal that is no longer pending | "A request was sent twice. This can be a network retry." |
+| Unusual rate | A guest action kind hit its rate limit, or Help merged above 5 presses | "The guest device is sending requests unusually fast." |
+| Failed pairing | Each failed join (per address count) | "Failed pairing attempts: 3" |
+| Silent change | The guest device turned signing or read-aloud off | "The guest device switched off signing." (shown as information) |
+| Heartbeat | No acknowledgement for 20 s (amber) or 45 s (red) | "Guest device last heard 47 s ago. Check on the guest." |
+| Recognizer replay or key | Repeated or out-of-order `seq`, stale events, or failed `X-Bridge-Key` checks | "The recognizer sent an unexpected event." |
+
+Every warning is gentle and factual. None of them claims an attack or spyware; the staff response card (section 4.2) is the action.
+
+### 6.7 Simulator
+
+`POST /api/dev/simulate` accepts exactly the bridge event bodies of section 6.1 and runs them through the same ingest function, marked `source: "simulated"`, so the staff screen shows a "SIMULATED" badge. It needs the staff cookie and answers 404 unless `SB_SIMULATE=1`. The panel has one button per guest intent (signs at 0.9 each, sent as `sign` events then an `utterance`), "Shuffle order", "Make one sign unclear" (one sign at 0.45 with a plausible top 3), "Low HELP", "Framing: step back", and "Recognizer in mock mode".
+
+### 6.8 Reserved: local vision-model fallback (stub only)
+
+`recognition/vlm/` is exploring a local vision-language model that could propose a sign when the classifier is unsure. This build reserves the slot and nothing more: a bridge event type `vlm_suggestion` (`{ type, seq, label, conf, model, t_sent }`), a proposal source `"local_vlm"`, and a "Did you mean...?" rendering that says "Suggested by a second program on this laptop". The route ignores the event with 404 unless `VLM_FALLBACK=1`, and even then a suggestion only ever becomes a candidate the guest must confirm. No video or frames are sent to the app for it; the model runs inside P3's process.
 
 ---
 
-## 7. API route catalogue
+## 7. Event catalogue
 
-"Loopback" means the request reached `server.mjs` from 127.0.0.1, ::1 or ::ffff:127.0.0.1. Every route also passes the Host allowlist and, for state-changing requests, the same-origin check (section 10). Error bodies are `ApiError` from `types.ts`, and API responses carry `Cache-Control: no-store`.
+All events travel as Server-Sent Events from `GET /api/events`. Each message has `id: <seq>` and `data: <BusEnvelope JSON>`. Every (re)connect gets `retry: 2000`, then `hello` (guest) and a `snapshot`, so no replay buffer is needed. The guest and staff unions in `types.ts` are separate, and the server builds guest messages only from the guest union (AS-1). Constant-size guest frames with cover events (`c`) are a LATER item for Mode W (REQ OPS-5).
 
-| Method and path | Who may call | Request | Response | Body cap, type | Status codes |
+| Type | Guest | Staff | Produced by | Notes |
+|---|---|---|---|---|
+| `hello` | yes | — | Every guest stream open | VRI details, kiosk flag, idle and cap times, emergency note, the check code while unconfirmed, the deployment mode |
+| `pair_confirmed` | yes (`deskShows`) | yes | Staff `confirm_pair` | Both screens show the number |
+| `snapshot` | yes (mode, read-aloud setting, last caption, pending proposal) | yes (status, log, pairing, checklist, evidence, latency, privacy, warnings) | Every stream open | Guest snapshot holds no scrollback (AS-1) |
+| `session_state` | — | yes | Any lifecycle change | State, pairing info (code and URL only while the overlay is up), device class and address, tries left |
+| `staff_utterance` | yes | yes | `say_quick`, `say_text` | Staff copy adds intent key and caption source |
+| `delivered` | — | yes | Guest `ack` of a caption or proposal | Feeds the checklist and latency |
+| `live_sign` | yes (label, light, conf) | yes (top 3, times, skeleton) | Bridge `sign` | Shown the moment a sign is recognised |
+| `framing` | yes (status, text) | yes (status, rejected seq) | Bridge `framing` | Guest only while in Sign mode |
+| `recognition` | — | yes | Bridge `utterance` | Signs, lights, gate outcome, candidates, source |
+| `guest_proposal` | yes | — | Gate outcome | Kinds: `proposal`, `did_you_mean`, `did_you_mean_help`, `pick`, `unmatched`; each with candidates; `testMode` when the recognizer is `mock` |
+| `repeat_request` | yes (signs with lights, weak indexes, framing hint, streak) | yes (reason, count, streak) | Gate outcome | Nothing is spoken |
+| `guest_utterance` | echo (text, spoken or shown) | yes (signs, text, intent, speak plan) | `guest_confirm`, or `confirm_for_guest` in Mode 0 | Staff page voices it per the plan |
+| `guest_fix` | — | yes | `guest_fix` | Sign again, type, interpreter, not this |
+| `guest_typed` | — | yes | `guest_typed` | Banner and log line, never spoken without "Read aloud" |
+| `guest_choice` | — | yes | `guest_choice`, `stop_signing`, `prefs` | Mode and read-aloud setting |
+| `interpreter_request` | — | yes (VRI details) | Guest | Merged, at most one a minute |
+| `emergency` | — | yes (`count`) | Guest Help | Never refused; merged with a count until acknowledged |
+| `staff_ack` | yes | yes | Staff `ack` | "Staff is coming" |
+| `warning` | — | yes | Safety rules (section 6.6) | Kind, plain text, time |
+| `device_health` | — | yes | Guest `device_health` | "Reported by the guest device" |
+| `idle_warning` | yes | yes | Sweeper, 30 s before the idle wipe | Staff "Keep open"; the guest cannot extend |
+| `cap_warning` | — | yes | Sweeper, 2 min before the cap | "Extend 5 min" |
+| `session_paused` | yes ("Please wait, the desk is checking this screen") | yes | Device change | Only Help works until a new check code |
+| `vlm_proposal` (reserved) | — | — | `vlm_suggestion` with `VLM_FALLBACK=1` | Stub only |
+| `session_end` | yes | yes | End guest, idle, cap, guest left, pair failed, repair (guest only), restart | Clients clear everything |
+| `status` | — | yes, every 2 s and on change | Server | Recognizer, guest connection, counters, privacy, latency, flags |
+
+---
+
+## 8. Route catalogue
+
+"Staff cookie" means the `sb_staff` capability cookie (section 9.6). "Guest cookie" means `__Host-sb_g` on the guest listener (or its Mode 0 loopback form). Every route also passes its listener's Host allowlist, and every state-changing request passes the same-origin check (`Sec-Fetch-Site`, `Origin`). Error bodies are `ApiError`; every response has `Cache-Control: no-store`.
+
+| Method and path | Listener | Who may call | Body cap, type | Rate limit | Status codes | Owner |
+|---|---|---|---|---|---|---|
+| `GET /staff` | Staff | Loopback (page shell; data needs the staff cookie) | — | — | 200; 403 | P4 |
+| `POST /api/staff/claim` | Staff | Loopback, same origin, body `{k}` from the one-time `#k=` URL | 1 KB JSON | 10/min | 200 (sets cookie); 400; 403 wrong key; 410 already claimed | P4 |
+| `GET /api/events?role=staff` | Staff | Staff cookie | — | 4 streams | 200; 401; 403 | P4 |
+| `POST /api/staff/action` | Staff | Staff cookie, same origin | 4 KB JSON | 120/min | 200; 400 (wrong check code carries `triesLeft`); 401; 403; 409 (wrong state, captions before confirmation); 413; 415; 429 | P4 |
+| `GET /api/staff/benchmark` | Staff | Staff cookie | — | — | 200; 401 | P4 |
+| `POST /api/guest/signs` | Staff only | Loopback plus `X-Bridge-Key` (at least 32 characters, constant time) | 8 KB JSON | 10/s | 200 (`outcome` includes `stale`); 400; 401; 403 (not loopback, or arrived on the guest listener); 404 (`vlm_suggestion` when off); 409 (no active session, or guest not signing); 413; 415; 429; 503 (`BRIDGE_KEY` unset or short) | P4 |
+| `GET /api/guest/signs` | Staff only | Loopback plus `X-Bridge-Key` | — | 10/s | 200 `{accepting}`; 401; 403; 503 | P4 |
+| `POST /api/dev/simulate` | Staff only | Staff cookie, `SB_SIMULATE=1` | 8 KB JSON | 10/s | as `/api/guest/signs`; 404 when off | P4 |
+| `GET /signs/index.json`, `GET /signs/<dir>/<file>.json` | Staff only | Loopback | — | — | 200; 404 | P4 (route) |
+| `GET /signs/bundle` | Both | Guest cookie on the guest listener; loopback on the staff listener | — | 2/min per session | 200 (fixed size, padded); 401 | P4 |
+| `GET /guest` | Both (Mode 0 uses the staff listener) | Anyone on an allowed Host; shows nothing without a cookie | — | — | 200; 403 bad Host | P4 |
+| `GET /api/events?role=guest` | Both | Guest cookie | — | 2 streams, newest wins | 200; 401 (with `Clear-Site-Data`) | P4 |
+| `POST /api/guest/join` | Both | Anyone on an allowed Host; `GUEST_IPS` checked first | 4 KB JSON `{code}` | 5 failures per address per minute; no global ceiling | 200 `{check, hello}` and `Set-Cookie`; 400; 403 (address not in `GUEST_IPS`, code not burned); 410 (used or expired); 413; 415; 429 (that address only) | P4 |
+| `POST /api/guest/action` | Both | Guest cookie, same origin | 4 KB JSON | Per action kind (section 9.5) | 200; 400; 401; 409 (stale proposal, wrong mode, not confirmed yet; never for `emergency`); 413; 415; 429 (never for `emergency`) | P4 |
+| `POST /api/guest/leave` | Both | Guest cookie (also accepted with a dead cookie) | empty | 10/min | 200 with `Clear-Site-Data` and an expired cookie | P4 |
+| `GET /_next/static/*`, `GET /favicon.ico` | Both | Anyone on an allowed Host | — | — | 200; 404 | Next |
+| `GET /avatar/bellhop.glb` | Staff; guest **only if Talha accepts the D6 amendment** | — | — | — | 200 | P2 file |
+| `POST /api/transcribe` | Staff only | Loopback, same origin, staff cookie (added in `guard.ts`) | 5 MB multipart, Content-Length required | 20/min | 200; 403; 411; 413; 415; 429; 502 (status only); 503 no key | P1 |
+| `POST /api/gloss` | Staff only | Loopback, same origin, staff cookie | 4 KB JSON | 30/min | 200; 400; 403; 413; 415; 429 | P1 |
+| `POST /api/english` | Staff only | Loopback, same origin, staff cookie | 8 KB JSON | 10/min | 200; 400; 403; 413; 415; 429 | Nath |
+| `POST /api/tts` | Staff only | Loopback, same origin, staff cookie | 4 KB JSON | 20/min | 200 `audio/wav`; 400; 403; 413; 415; 429; 500; 503 busy | Nath |
+| `/p1-test`, `/avatar-preview` | Staff only | Loopback | — | — | 200 | P1, P2 |
+
+**Guest listener path list** (decision record D6, default deny, everything else 403): `GET /guest`, `GET /favicon.ico`, `GET /_next/static/*`, `GET /api/events`, `GET /signs/bundle`, `POST /api/guest/join`, `POST /api/guest/action`, `POST /api/guest/leave`. Per-gloss `/signs/*` is removed from the guest listener. **Proposed amendment for Talha:** add exactly `GET /avatar/bellhop.glb`, a fixed 8 MB file that is the same for every guest and reveals nothing; if declined, the guest uses the `hologram` avatar style.
+
+**Sign bundle.** `GET /signs/bundle` returns `{index, files}` with every file referenced by `signs/index.json` (signer removed), padded to a fixed size, fetched once at pairing. P2 is asked to add `preloadSigns(bundle)` to `web/lib/avatar/lookup.ts` so `loadIndex` and `loadSign` read from it; until then the guest listener shows captions and text sign cards, which is the documented fallback (AS-24).
+
+---
+
+## 9. Session, pairing, idle wipe and hard cap
+
+### 9.1 States
+
+```
+                New guest                    Guest is here                 join ok (code burned, cookie set)
+ NO_SESSION ─────────────► WAITING_FOR_GUEST ─────────────► AWAITING_PAIR ─────────────────────► PAIRED_UNCONFIRMED
+     ▲                                                       │  code refreshed every 60 s            │  staff types check code
+     │                                                       │  (expires after 120 s)                │  wrong x3 -> WIPED (pair_failed)
+     │                                                       │                                       ▼
+     │                         Mode 0: join from loopback is confirmed at once ───────────────────► ACTIVE ◄──────────────┐
+     │                                                                                              │  │                  │
+     │                                                       device address/browser changed ────────┘  ▼                  │
+     │                                                       PAUSED (Help only) ── new check code ok ───┘ staff action or  │
+     │                                                                                                 accepted signs reset│
+     │   End guest / idle (120 s; 60 s unconfirmed) / cap (15 min) / guest "I'm finished" / pair failed     the idle timer ──┘
+     └──────────────────────────────────────────────── WIPED ◄──────────────────────────────────────────────────────────────
+```
+
+There is at most one session. The store lives on `globalThis[Symbol.for("signbridge.store.v2")]`, in memory only.
+
+### 9.2 Idle wipe and hard cap
+
+Only staff actions (including "Keep open") and accepted sign batches from the desk camera reset the idle timer. Guest actions, acknowledgements, heartbeats and reconnects never do (AS-16), because a hostile device must not be able to keep a session alive. The idle wipe is 120 seconds in `ACTIVE` and 60 seconds in `PAIRED_UNCONFIRMED`, with a warning 30 seconds before on both screens. A hard cap of 15 minutes ends the session even when it is busy; two minutes before it, the staff screen offers "Extend 5 minutes", which only staff can press, and each extension is logged. In `AWAITING_PAIR` only the code's own 120-second expiry applies.
+
+### 9.3 Wipe
+
+Wiping sends `session_end` to every stream and closes the guest streams; erases the log, names, typed text, proposals, skeleton snapshots, sign events, check code, device binding, token hash and nonce set; clears any cache that could hold guest-derived audio; and resets the per-guest counters. The since-start counters stay because they hold no personal data. A unit test runs a conversation that uses the name and typed text `Zq7Canary`, wipes, and asserts that the canary is absent from `JSON.stringify(store)`. A server restart loses everything, which is intended.
+
+### 9.4 Reconnection and device changes
+
+The guest stream authenticates with the cookie, which `EventSource` sends on its own. Each reconnect rotates the token with `Set-Cookie` (AS-5). When a third stream opens, the oldest is closed (newest wins). The guest page runs a 5-second watchdog and reopens a silent stream itself. A 401 that was not preceded by `session_end` shows a full-screen "Ask the desk to reconnect", and the staff screen shows the device-changed warning with a one-tap re-bind that needs a new check code. Two simultaneous streams from different addresses are refused.
+
+### 9.5 Guest action rate limits (compromised_device.md R7)
+
+| Action | Limit | When exceeded |
+|---|---|---|
+| `emergency` | One alert while unacknowledged; repeats raise its count; accepted before confirmation and while paused | Never 429 or 409 |
+| `interpreter_request` | 1 per 60 s, repeats merged | Merged |
+| `guest_typed` | 6 per minute, 280 characters each | 429 "Please wait a moment" |
+| `guest_confirm`, `guest_fix` | Only for the pending proposal | 409 |
+| `prefs`, `guest_choice`, `stop_signing` | 10 per minute, each shown to staff | 429 |
+| `ack` | 120 per minute, not activity | Ignored above the limit |
+| `device_health` | 1 per 10 s | Ignored |
+| `POST /api/guest/join` | 5 failed attempts per address per minute, no global cap | 429 for that address |
+
+Every guest action carries a client nonce `n` (16 random bytes, hex); a nonce seen before in this session is refused with 409 and raises "Repeated request".
+
+### 9.6 Staff capability
+
+At start, `server.mjs` prints a one-time URL `http://127.0.0.1:3000/staff#k=<random>`. The staff page posts `k` to `/api/staff/claim` and receives the `HttpOnly; SameSite=Strict; Path=/` cookie `sb_staff` (with the `__Host-` prefix if step 0 shows the demo browser accepts it on `http://127.0.0.1`). Every `/api/staff/*` call, the staff stream, the simulator and, through `guard.ts`, the P1 and Nath routes require it. Loopback alone is never treated as authentication, because every local process shares it (D6).
+
+**Mode 0 cookies.** The guest window shares the staff window's browser profile. That is acceptable only because the Mode 0 guest window is display-only, with no keyboard or touch for the guest. The guest cookie in Mode 0 is `sb_g` (no `__Host-` prefix on plain loopback unless step 0 shows it works).
+
+---
+
+## 10. Server and Next.js 16 specifics
+
+- **Header ownership (D7).** `web/server.mjs` alone sets `Content-Security-Policy`, `Permissions-Policy`, `X-Frame-Options`, `Cross-Origin-Opener-Policy`, `Cross-Origin-Resource-Policy`, `Origin-Agent-Cluster`, `X-Robots-Tag` and, on the guest listener, `Strict-Transport-Security: max-age=86400`. The `headers()` block in `web/next.config.ts` keeps none of them, because Next applies config headers later and would replace the nonce policy. A new pure module `web/lib/app/headers.ts` exports `cspFor(path, nonce, dev, listener)` and `headersFor(path, listener)`.
+- **Nonce CSP.** For every page request, `server.mjs` deletes any client-sent CSP request header, creates a 16-byte nonce, sets the policy on the request (Next 16 reads the nonce from there) and on the response. `/guest` and `/staff` call `await connection()` so they render per request. The guest policy is `lan_tls_pairing.md` section 5.3 (`script-src 'nonce-…' 'strict-dynamic'`, `default-src 'none'`, `connect-src 'self'`, `media-src 'none'`, `object-src 'none'`, `base-uri 'none'`, `form-action 'none'`, `frame-ancestors 'none'`); the staff policy adds `media-src 'self' blob:`. `'unsafe-eval'` and `ws:` are added in development only. P2 runs one avatar rehearsal with the policy as Report-Only before it is enforced (LT-25).
+- **Permissions-Policy.** Guest: `camera=(), microphone=(), geolocation=(), display-capture=(), usb=(), serial=(), hid=(), bluetooth=(), payment=(), publickey-credentials-get=(), clipboard-read=(), screen-wake-lock=(self), compute-pressure=(self)`. Staff: `camera=(), microphone=(self), geolocation=(), compute-pressure=(self)`.
+- **TLS.** `https.createServer` with `minVersion: "TLSv1.3"` on every context, a 5-second handshake timeout, a per-address connection cap of 8 counted on `connection` (before the handshake), and fail-closed start-up. Certificates come from the event CA (D5); key files are `0600` outside the repository.
+- **SSE.** `export const dynamic = "force-dynamic"`, a `ReadableStream` response with `Content-Type: text/event-stream`, `Cache-Control: no-store, no-transform`, `X-Accel-Buffering: no`, TCP keep-alive, and unsubscribe on `request.signal` abort. `compress: false` in `next.config.ts` so nothing buffers the stream.
+- **Same process.** Route handlers and `server.mjs` share one process (the integration merge confirmed the guard's `SB_PROOF` works), so the store and counters are shared.
+- **Pure modules for tests.** Logic lives in pure modules that take their clock, random source and config as arguments (`vocab.ts`, `match.ts`, `validate.ts`, `pairing.ts`, `store.ts`, `bus.ts`, `ingest.ts`, `checklist.ts`, `latency.ts`, `warnings.ts`, `headers.ts`), with `node:test` files beside them run by `npm run test:unit`. Modules that read env or keys import `server-only` and contain only wiring.
+
+---
+
+## 11. Consolidated requirements
+
+Each row merges every source that asks for the same thing. Owners: **A** = P4 builder A (server, security, logic), **B** = P4 builder B (screens), **P1** = Maya, **P2** = Cosme, **P3** = Talha (recognition), **Nath** = english and tts routes, **Ops** = Talha in person (demo operations). Tests: **U** = `web/lib/app/*.test.ts` (`npm run test:unit`), **S** = `web/security-tests/*.test.mjs` (`npm run test:security`, loopback only), **T** = new `web/security-tests/tls.test.mjs` (TLS listener bound to 127.0.0.1 with a throwaway test CA in a temporary folder), **H** = new `web/security-tests/hygiene.test.mjs` (repository greps), **E** = Playwright on loopback (added at build step 10), **M** = manual rehearsal or the engagement pre-flight scripts. "Source" uses the IDs of the documents: RT (app-plan 10a), AS (compromised_device 8), R (compromised_device 3), D and G (decision record), LT (lan_tls_pairing 8), BT (slide "build today" item), RY (rylo_final sections 4 and 5), F (feature list from Talha).
+
+### 11.1 Deployment and server
+
+| ID | Requirement | Source | Owner | When | Test that proves it |
 |---|---|---|---|---|---|
-| `GET /staff` (page) | Loopback | — | HTML | — | 200; 403 if not loopback |
-| `GET /guest` (page) | Anyone on an allowed Host | `?s=<code>` optional | HTML (no data without a token) | — | 200 |
-| `GET /api/events?role=staff` | Loopback | — | `text/event-stream` of `StaffEvent` | — | 200; 403; 429 when stream limit reached |
-| `GET /api/events?role=guest&s=<guestToken>` | Valid guest token | — | `text/event-stream` of `GuestEvent` | — | 200; 401; 429 |
-| `POST /api/staff/action` | Loopback, same origin | `StaffAction` | `StaffActionResponse` | 4 KB, `application/json` | 200; 400; 403; 409 (no session for say/ack); 413; 415 |
-| `GET /api/staff/benchmark` | Loopback | — | `BenchmarkResponse` | — | 200; 403 |
-| `POST /api/guest/join` | Anyone on an allowed Host | `GuestJoinRequest` | `GuestJoinResponse` | 4 KB, json | 200; 400; 410 (used or expired); 413; 415; 429 (10/min per server) |
-| `POST /api/guest/action` | Valid `X-Session-Token` | `GuestAction` | `GuestActionResponse` | 4 KB, json | 200; 400; 401; 409 (stale proposal, wrong mode); 413; 415; 429 (30/min per session, `ack` exempt up to 120/min) |
-| `POST /api/guest/signs` | Loopback + `X-Bridge-Key` | `SignsPayload` | `SignsIngestResponse` | 8 KB, json | 200; 400; 401; 403; 409 (no session or guest not signing); 413; 415; 429 (10/s); 503 (BRIDGE_KEY missing or under 32 chars) |
-| `GET /api/guest/signs` | Loopback + `X-Bridge-Key` | — | `{ accepting: boolean }` so P3 can pause the camera | — | 200; 401; 403 |
-| `POST /api/dev/simulate` | Loopback, same origin, simulation enabled | `SignsPayload` | `SignsIngestResponse` | 8 KB, json | as `/api/guest/signs`; 404 when disabled |
-| `POST /api/transcribe` (P1) | Loopback (enforced by server.mjs) | audio webm | `{ text }` | 5 MB checked by server.mjs on Content-Length; `audio/webm` | P1's; 501 until implemented |
-| `POST /api/gloss` (P1) | Loopback (server.mjs) | `{ text }` | `{ gloss }` | 4 KB, json | P1's; 501 until implemented |
-| `POST /api/english` (P4) | Loopback, `ENGLISH_FALLBACK=1` | `{ signs: RawPrediction[] }` (labels only) | `{ text }` | 8 KB, json | 200; 400; 403; 404 when off; 429 (10/min); 502 |
-| `POST /api/tts` (P4) | Loopback, same origin | `{ id: GuestIntentId }` | `audio/mpeg` | 4 KB, json | 200; 400; 403 (id 4, NAME, or anything not a fixed id); 404 when no ElevenLabs key; 429 (20/min); 502 |
+| SRV-1 | The app runs only through `server.mjs`, from a production build for any demo; development mode is never reachable from a network; every route calls a guard, and a route with no guard is a bug | RT1, B1, RY 7 | A | BUILD-NOW | S: plain `next dev` fails closed (exists). H: every `route.ts` under `web/app/api` calls a guard function |
+| SRV-2 | No plain-HTTP listener off loopback, ever: remove `--lan` and `firstLanIPv4`; the guest listener is HTTPS only on an explicit `LAN_IP:3443` inside `LAN_NET`, TLS 1.3 on every context; start-up refuses without certificate, key or `LAN_IP`; no `TLS_MIN` or `ALLOW_PLAIN_HTTP_LAN` | D3, RT2, AS-17, LT-01, LT-06, LT-31, R8 | A | BUILD-NOW | T: plain HTTP to the guest port gets no response; TLS 1.2 refused; start without a key exits non-zero. S: no listener other than 127.0.0.1 without `start:guest-tls` |
+| SRV-3 | The listener decides the role: guest-listener requests are never loopback, whatever the socket address | LT-06, AS-17 | A | BUILD-NOW | T: guest listener on 127.0.0.1 answers 403 to `/staff`, `/api/staff/action`, `/api/guest/signs`, `/api/tts` |
+| SRV-4 | Host allowlist per listener (`127.0.0.1:3000`, `localhost:3000` for staff; `LAN_IP:3443` and `DESK_NAME:3443` for guest); client `x-sb-*` headers stripped | B3, LT-07 | A | BUILD-NOW | S, T: foreign Host 403; forged `x-sb-*` ignored (exists for staff) |
+| SRV-5 | Guest listener path list exactly as D6 (plus `/avatar/bellhop.glb` only if Talha accepts); everything else 403; per-gloss `/signs` removed from the guest listener | D6, RT7, LT-28, B2 | A | BUILD-NOW | U: `lanPathAllowed` cases. T: `/signs/team/LEAVE.json` 403 on the guest listener |
+| SRV-6 | `GET /signs/bundle`: every sign file, signer removed, padded to one fixed size, guest cookie required on the guest listener; P2 adds `preloadSigns(bundle)` | D6, LT-28 | A, P2 | BUILD-NOW | T: two bundles for different sessions have identical byte length; 401 without cookie |
+| SRV-7 | `server.mjs` alone owns the security headers; `next.config.ts` sets none of them; exactly one CSP header; nonce CSP with `'strict-dynamic'` and no `'unsafe-inline'` or `'unsafe-eval'` on `/guest` and `/staff` in production; client CSP request headers stripped; pages render per request | D7, AS-18, LT-16, LT-17, LT-27, LT-29, R12, B7 | A | BUILD-NOW | S (production build): one `Content-Security-Policy` line, `script-src` has a nonce and no `unsafe-*`, nonce differs between two requests |
+| SRV-8 | Header set of `lan_tls_pairing.md` 5.3: guest Permissions-Policy deny list (plus `compute-pressure=(self)`, `screen-wake-lock=(self)`), COOP, CORP, Origin-Agent-Cluster, X-Robots-Tag, HSTS on the guest listener, `Cache-Control: no-store` on every response including HTML and static files | AS-2, AS-19, LT-19, LT-20, R2, R11 | A | BUILD-NOW | S, T: header table checked per listener and path |
+| SRV-9 | Per-address connection cap of 8 before the TLS handshake; handshake and request timeouts; no global join ceiling | LT-21, AS-15, D6 | A | BUILD-NOW | T: 20 sockets from one address, the 9th is closed; a request from a fresh connection still succeeds |
+| SRV-10 | Staff capability: one-time `#k=` URL printed at start, exchanged once for an HttpOnly SameSite=Strict cookie, required on `/api/staff/*`, the staff stream, the simulator and (through `guard.ts`) P1 and Nath routes | D6, LT-30 | A | BUILD-NOW | S: staff action without the cookie 401; second claim 410; `/api/tts` without the cookie 401 |
+| SRV-11 | Body caps with the capped reader, content-type allowlist, strict schema validation on every route | RT12, AS-12, B4, R6 | A | BUILD-NOW | U: validators. S: 413, 415, 400 per route |
+| SRV-12 | Logs carry status codes and short error types only: never URLs, codes, tokens, check codes, names, typed text, transcripts or vendor bodies | RT11, LT-22, B8, D6 (finding) | A | BUILD-NOW | S: run a full simulated session with `Zq7Canary` and a known check code; neither appears in server output |
+| SRV-13 | No secrets in the browser: no `NEXT_PUBLIC_`, key readers import `server-only`, the guest bundle does not contain staff page code, no key value in `.next/static` | AS-20, RY 13, R12 | A | BUILD-NOW | H: greps. M: after `next build`, grep `.next/static` for key values and for `/api/staff/action` inside guest chunks |
+| SRV-14 | Child processes use an absolute executable and an allowlisted environment | RT10, B9, C3, D5 (finding) | Nath, A | BUILD-NOW (exists for Piper) | S: Piper spy test (exists) |
+| SRV-15 | Works fully offline with no vendor keys: quick replies, fixed tables, Piper, local voice, P1 local gloss; the staff header says "Vendor keys: none"; the Web Speech fallback is off when no disclosure was accepted | D8, RT13, BT 4 | A, B | BUILD-NOW | E: the whole demo script with no keys in the environment; privacy panel shows 0 vendor calls |
+| SRV-16 | Event CA (name-constrained, 3 days, key destroyed), never mkcert; TLS key files `0600` outside the repository; `*.pem`, `*.key`, `*.crt` ignored | D5, LT-04, LT-23, RT2 | Ops | BUILD-NOW (before gate G1) | M: LT-04 and LT-23 checks in `preflight_laptop.sh` |
+| SRV-17 | Deploy only a signed, reviewed tag; `npm ci --ignore-scripts`, `pip install --require-hashes`; freeze 24 hours before | RT14, D9, G0 | Ops, all | LATER (gate G0) | M: G0 checklist |
+| SRV-18 | Vendor terms read and zero-retention on before any vendor path is used with a guest | RT13, RY "should" | Talha | LATER | M: written record |
 
-The ingest logic sits in one function, `ingestSigns(payload, source)`, used by both `/api/guest/signs` and `/api/dev/simulate`, and in-process by `/api/english` when the fallback is on. `/api/tts` caches each fixed sentence's audio in memory (never on disk) after the first call, and the `prewarm_tts` staff action fetches all 19 fixed sentences before a guest arrives, so that during the conversation no guest-derived bytes leave the laptop.
+### 11.2 Pairing and session lifecycle
 
-### Payload validation for `/api/guest/signs`
+| ID | Requirement | Source | Owner | When | Test that proves it |
+|---|---|---|---|---|---|
+| SES-1 | "New guest" then "Guest is here"; 128-bit code, 120 s, single use, in the URL fragment, removed with `replaceState` before any request; QR as a full-screen overlay, refreshed every 60 s, closed on join, drawn as `<rect>` elements | D6, AS-9, LT-08, RT3, R4 | A, B | BUILD-NOW | U: `pairing.test.ts` expiry and single use. E: after load the address bar has no fragment; overlay closes on join |
+| SES-2 | Join checks `GUEST_IPS` first (403, code not burned), then the code in constant time, then counts failures per address (5 a minute); a valid code is never rate-limited; failures shown on staff | D6, AS-15, LT-12 | A | BUILD-NOW | U and T: outside address gets 403 and the real device can still join with the same code |
+| SES-3 | 6-digit check code created at join, shown only on the guest device, typed by staff, 3 tries then wipe; before confirmation only Help is accepted and captions get 409; both screens show the number after; Mode 0 loopback join confirmed at once | D6, AS-10, LT-09 | A, B | BUILD-NOW | U: tries and states. T: `say_quick` before `confirm_pair` is 409; `emergency` before confirmation is 200 |
+| SES-4 | Guest token only in the `__Host-sb_g` cookie (Secure, HttpOnly, SameSite=Strict, Path=/, no expiry), stored as SHA-256; never in a URL, body, storage or log | D6, AS-4, LT-10, RT3 | A | BUILD-NOW | T: join body has no token; cookie attributes exact; a replayed cookie with another User-Agent gets 401 |
+| SES-5 | Token rotated on every stream reconnect and on repair; revoked on End guest, idle, cap and leave | AS-5, LT-13 | A | BUILD-NOW | U: old token refused after rotation and after each kind of end |
+| SES-6 | Device binding: address plus User-Agent hash and parsed device class; a change pauses everything except Help, warns staff and needs a fresh check code; two simultaneous streams from different addresses refused; an unexpected 401 shows "Ask the desk to reconnect" | AS-11, LT-11, R5 | A, B | BUILD-NOW | U: store with injected addresses. M: renew the guest address in rehearsal |
+| SES-7 | Guest stream: cookie auth, `retry: 2000`, `hello` and snapshot on connect (last caption and pending proposal only), newest stream wins (2), keep-alive, 5 s client watchdog, `no-store, no-transform` | LT-14, LT-20, AS-1, R1 | A, B | BUILD-NOW | U: guest snapshot keys. T: third stream closes the oldest |
+| SES-8 | Idle wipe 120 s (60 s unconfirmed) with a 30 s warning; reset only by staff actions and accepted sign batches | AS-16, R14, RY 15 | A | BUILD-NOW | U: guest actions and acks do not move the timer |
+| SES-9 | Hard cap 15 minutes; staff-only "Extend 5 minutes" offered 2 minutes before; the guest can never extend | AS-16, R14 | A, B | BUILD-NOW | U: cap fires while busy; a guest `extend` is 400 |
+| SES-10 | End guest and every wipe erase everything (log, names, typed text, proposals, skeletons, sign events, tokens, check code, binding, guest-derived audio cache); `session_end` to all streams; afterwards 401 with `Clear-Site-Data`; `/api/guest/leave` expires the cookie | LT-13, AS-6, RT5, old row 24, RY 15 | A | BUILD-NOW | U: `Zq7Canary` absent from the store after wipe. T: `Clear-Site-Data` on leave and on the next 401 |
+| SES-11 | Guest page uses no `localStorage`, `sessionStorage`, IndexedDB, Cache API, service worker or manifest; inputs have autocomplete, autocorrect, autocapitalize and spellcheck off; neutral screen on `pagehide` and when hidden; after `session_end` history shows only the ended page | AS-3, AS-7, AS-8, R2, R3 | B | BUILD-NOW | H: greps over `web/app/guest`, `web/components/guest`. E: Back after End guest shows the ended page |
+| SES-12 | The guest can end the conversation with "I'm finished" (reason `guest_left`) | D6 (leave route), old open question 4 | A, B | BUILD-NOW | U: leave ends the session; E: staff sees "The guest ended the conversation" |
 
-The body must be a JSON object with exactly the key `signs`, holding an array of 1 to 8 elements. Either every element is a `RawPrediction` (`{label, conf}`, shape A) or every element is `{top: RawPrediction[]}` with 1 to 5 entries (shape B); mixing shapes is a 400. Every label must be one of the 22 labels exactly (case-sensitive, no trimming), and every `conf` must be a finite number in [0, 1]. Extra keys anywhere are a 400. Shape B arrays are sorted by `conf` descending on the server rather than trusting the sender's order.
+### 11.3 Recognizer bridge
 
-### Gate and match
+| ID | Requirement | Source | Owner | When | Test that proves it |
+|---|---|---|---|---|---|
+| BRG-1 | `POST /api/guest/signs` only on the staff listener, loopback plus `X-Bridge-Key` (at least 32 characters, constant time, 503 when unset), 8 KB, 10 a second | RT9, LT-24, A4, A8 | A | BUILD-NOW | S: 401 wrong key, 503 short key, 413, 429. T: 403 on the guest listener |
+| BRG-2 | Accepts the real bridge events (`sign`, `utterance`, `framing`, `status`); unknown keys ignored, known keys strict; 22 labels plus the `FS-CHECKOUT` alias; `face`, `frames`, `pose` or `video` keys refused | Recognizer README "App bridge", old rows 11 | A | BUILD-NOW | U: `validate.test.ts` with the README examples, fuzzed labels, `NaN`, extra `face` |
+| BRG-3 | Stale events (`t_sent` older than 5 s or before the session start) dropped; repeated `seq` dropped with a warning; restart detected | README, AS-21 | A | BUILD-NOW | U: injected clock and sequences |
+| BRG-4 | Consent gate: signs and framing accepted only in `ACTIVE` with the guest in Sign mode; `GET` answers `{accepting}` | RT4, old row 14, BT 2, RY 12 | A | BUILD-NOW | U and S: 409 in `choosing`, `type`, `text_only` |
+| BRG-5 | Recognizer `status` shown; in `mock` every proposal is test mode and never spoken | README status | A, B | BUILD-NOW | U: test-mode proposals have no speak plan |
+| BRG-6 | Simulator posts the same events, needs the staff cookie and `SB_SIMULATE=1`, is labelled SIMULATED, 404 otherwise | Old 4.5 | A, B | BUILD-NOW | S: 404 when off |
+| BRG-7 | Skeleton snapshot: optional `skeleton` on `sign` events (pose 0 and 11 to 16 plus hands, x and y, no face, one frame, at most 2 KB); staff only, memory only, wiped, counted | F (evidence), RY "privacy mode" | P3 (sender), A, B | BUILD-NOW app side; P3 LATER | U: guest projection never contains `skeleton`; face keys refused; wipe erases snapshots |
 
-For each sign the top-1 prediction is `top[0]` after sorting. If any top-1 label is `NONE`, the result is `repeat_request` with reason `none_sign`. Otherwise, if any top-1 confidence is below 0.6 (0.6 itself passes), the result is `repeat_request` with reason `low_confidence` and the indexes of the weak signs. Otherwise the top-1 labels are matched as a multiset against the 20 guest intents: the labels are sorted and joined, and compared with each intent's sorted signs, so `ELEVATOR WHERE` matches intent 6 just like `WHERE ELEVATOR`, and a duplicated sign does not match a single one. The 20 multisets in vocabulary.md section 2 are all distinct, which a unit test asserts. A match becomes a `guest_proposal` with the fixed sentence; for intent 4 (NAME), `needsName` is true. No match becomes an unmatched proposal, or, with `ENGLISH_FALLBACK=1`, an LLM suggestion that still needs confirmation. There is no fuzzy or second-choice matching in this version (open question 3).
+### 11.4 Confirm before speaking
 
-### Guest name and typed text
+| ID | Requirement | Source | Owner | When | Test that proves it |
+|---|---|---|---|---|---|
+| SPK-1 | Nothing reaches `/api/tts` or a speaker until the guest taps "Say it" (Mode 0: staff tap "Say it for the guest", logged as such); `NONE` and below-bar signs are never spoken; a stale proposal gets 409 | RT4, A8, D1 (finding), BT 2, RY 11, old row 15 | A, B | BUILD-NOW | U: no `guest_utterance` without confirm. E: a fetch spy on `/api/tts` sees no call before the tap |
+| SPK-2 | Harm-weighted gate (0.6 default, 0.75 for YES, NO, NAME, ROOM, HELP, provisional) and traffic lights (green 0.8 and above, amber, red); HELP below its bar gives "Did you mean HELP? [Yes, get staff] [No]" and never a silent alert | BT 3, RY harm table | A, B, P3 (final values) | BUILD-NOW | U: `match.test.ts` bars, 0.6 passes, 0.5999 fails, lights, low HELP |
+| SPK-3 | "Did you mean...?" for one weak sign with one candidate; "Pick one" for two or three; "None of these: Type / Sign again / Interpreter"; nearest requests for unmatched signs; the guest always confirms | BT 3, F | A, B | BUILD-NOW | U: candidate generation for every intent with one sign weakened |
+| SPK-4 | Order-insensitive multiset match for all 20 guest intents with `LEAVE` | RY 10, old row 13 | A | BUILD-NOW | U: parses `docs/vocabulary.md` section 2; every permutation matches; all multisets distinct |
+| SPK-5 | Speak plan: the vendor or Piper voice only for fixed table sentences (sent as `{text}` of the fixed sentence until Nath accepts `{id}`); NAME needs staff "Speak name" and typed text needs "Read aloud", both with an on-device voice (`localService`) or text only; the canary never appears in an outgoing request | RT5, RT6, AS-13, D9 (finding), R6, RY 9 | A, B; Nath for `{id}` | BUILD-NOW; `{id}` LATER | U: speak plan for each case. E: fetch spy with name `Zq7Canary` |
+| SPK-6 | Name sanitizer (NFC, letters, marks, spaces, hyphen, apostrophe, 1 to 40) and typed text (NFC, no control characters, at most 280); every guest string rendered as text only; no `dangerouslySetInnerHTML` | Old row 16, LT-29, B5 | A, B | BUILD-NOW | U: sanitizer cases. E (LT-29): `<img src=x onerror=…>` in a name, typed text and User-Agent runs nothing on `/staff` |
+| SPK-7 | "Read my sentences aloud" toggle and Text only: confirmed sentences shown as text at the desk without speech | BT 2, RY 11 | B | BUILD-NOW | E: toggle off, nothing reaches `/api/tts` or `speechSynthesis` |
 
-A name is normalized to NFC, trimmed, has inner whitespace collapsed to one space and curly apostrophes mapped to `'`, and must then match `^[\p{L}\p{M}' -]{1,40}$` (Unicode letters including accented ones, combining marks, spaces, hyphen, apostrophe) and contain at least one letter; anything else is rejected rather than silently stripped, so the guest sees what will be said. The sentence becomes `My name is <name>.`, its speak plan is always `local`, and `/api/tts` refuses id 4. Typed guest text is NFC-normalized, has control characters removed, and is limited to 280 characters; it is displayed as text with React escaping and spoken only if the staff presses "Read aloud", with a local voice.
+### 11.5 Staff to guest
 
----
+| ID | Requirement | Source | Owner | When | Test that proves it |
+|---|---|---|---|---|---|
+| CAP-1 | 20 quick replies with fixed glosses, no cloud call | CLAUDE.md 8.1, RY 1 | A, B | BUILD-NOW | U: `vocab.test.ts` matches `docs/vocabulary.md` section 1 |
+| CAP-2 | Voice and typed staff text: P1 `/api/transcribe`, then `/api/gloss`; the server accepts only tokens in `signs/index.json`, `FS:` plus `^[A-Z0-9]{1,32}$`, or the two markers, at most 40; otherwise P1 `mapStaffTextToGloss` in process; otherwise captions only; captions at most 600 bytes | RT8, D8 (finding), CLAUDE.md 7.1 | A, B | BUILD-NOW | U: gloss validator rejects `FS:<script>`, 41 tokens, unknown words |
+| CAP-3 | The free-text box is labelled "This text will appear on the guest's device" | AS-26, R1 | B | BUILD-NOW | M: read the staff screen |
+| CAP-4 | Guest renders captions first, then `mountAvatar` and `playGloss(gloss, {onToken})` with `AvatarCaptions`; without WebGL or images, captions and text sign cards; system fonts only | AS-24, P2 API | B | BUILD-NOW | E: with WebGL disabled the caption and cards still show |
+| CAP-5 | The avatar works under the nonce CSP (Report-Only rehearsal first, then only the reported sources are added) | LT-25 | P2, B | BUILD-NOW | E: no CSP violations in the console during a full gloss |
 
-## 8. Session, pairing and idle-wipe lifecycle
+### 11.6 Guest features
 
-```
-           New guest                     join (code ok, burned)
- NO_SESSION ─────────► AWAITING_PAIR ───────────────────────────► ACTIVE ◄──────────┐
-     ▲                   │  code expires (5 min):                  │   any activity  │
-     │                   │  staff sees "Code expired, New code"    │   resets timer  │
-     │                   ▼                                         │                 │
-     │              (stays, code invalid)       repair ───────────►│ AWAITING_PAIR   │
-     │                                          (old guest token   │ (log kept)      │
-     │                                           revoked)          ▼                 │
-     │                                              90 s idle: idle_warning ─ tap ───┘
-     │   End guest (any state) / 120 s idle                         │
-     └──────────────────────────────── WIPED ◄──────────────────────┘
-```
+| ID | Requirement | Source | Owner | When | Test that proves it |
+|---|---|---|---|---|---|
+| GST-1 | First screen: Sign, Type, Ask for a human interpreter, Text only as equal choices; notice text exactly as `compromised_device.md` 2.4; nothing ever asks for a password, card number or ID | AS-23, BT 2, RY 3, RY 12, R11 | B | BUILD-NOW | E: the notice text matches the document; H: no input with `type=password` or card or ID wording in the guest page |
+| GST-2 | Help button visible on every guest screen; never 429 or 409; merged count; accepted before confirmation and while paused; staff full-screen alert and "I'm coming"; guest heartbeat on staff (amber 20 s, red 45 s); printed "wave or knock" card at the counter | AS-14, AS-21, R7, R7a, BT 2, RY 12 | A, B, Ops (card) | BUILD-NOW | U: emergency never refused. M: drill with the emergency request blocked; the actor waves and staff respond |
+| GST-3 | Interpreter: VRI name and phone; a link only when the device is not a kiosk; disclosure that a video relay call sends video to the provider; called "a link" on stage | AS-25, RY 6, BT 2 | B | BUILD-NOW | U: `hello.kiosk` true hides the link |
+| GST-4 | Framing guidance (`STEP_BACK`, `COME_CLOSER`, `HANDS_OUT`, `CENTER`, `MOVE_CAMERA_DOWN`, `NO_PERSON`) shown on the guest screen while signing; a framing-rejected sign is red | Recognizer README framing, F | A, B | BUILD-NOW | U: every status maps to text |
+| GST-5 | Live sign display: each sign appears on the guest screen (top-1 with light) and the staff screen (top 3 with times) as it is recognised | F | A, B | BUILD-NOW | E: simulator `sign` events appear before the `utterance` |
+| GST-6 | Device-health hint only where the browser supports Compute Pressure; reports at most every 10 s; staff wording "reported by the guest device" and "not a security check"; the word "spyware" never appears | F, HANDOFF extras | A, B | BUILD-NOW | H: no "spyware" in `web/app`, `web/components`. U: rate of `device_health` |
+| GST-7 | Local vision-model fallback reserved: `vlm_suggestion` event, `local_vlm` source and a disabled "Did you mean...?" path; ignored unless `VLM_FALLBACK=1`; never spoken without confirmation | F | A, B | BUILD-NOW (stub only) | S: 404 with the flag off |
+| GST-8 | Per-action guest rate limits and nonce replay refusal (section 9.5) | AS-14, RT12, R7 | A | BUILD-NOW | U: limits per kind |
+| GST-9 | No camera or microphone code in the guest bundle; the guest page stub comment no longer mentions a webcam | AS-19, R11 | B | BUILD-NOW (comment fixed with this plan) | H: no `getUserMedia`, `mediaDevices` or `geolocation` under guest paths |
 
-There is at most one session. The store lives on `globalThis[Symbol.for("signbridge.store.v1")]` so it survives dev hot reloads, and it holds the session (pairing code hash and expiry, guest token, mode, speak-aloud setting, pending proposal, log, counters, the ring of SSE subscribers) plus server-lifetime privacy counters and the recognizer status.
+### 11.7 Staff dashboard
 
-Activity is any guest action except `ack`, any staff action, and any accepted signs batch. SSE heartbeats, acks, status polls and stream reconnects are not activity. A sweeper (`setInterval`, `unref`'d, every second) sends `idle_warning` 30 seconds before the wipe and wipes after `IDLE_WIPE_MS` (default 120000) without activity. The idle timer runs only in ACTIVE; in AWAITING_PAIR the pairing code's own expiry applies.
+| ID | Requirement | Source | Owner | When | Test that proves it |
+|---|---|---|---|---|---|
+| DSH-1 | Header strip: mode, device class and address, pairing state and number, heartbeat, streams, idle and cap countdowns with Extend, recognizer state, warnings count, vendor keys, End guest | AS-21, R13 | B | BUILD-NOW | E: values follow a simulated session |
+| DSH-2 | Check-in co-pilot checklist: 13 items, shared only on the guest device's acknowledgement, "sent" before it, gentle "not shared yet", "guest asked; not answered yet", "I saw it" for ID, evidence time and sentence | F (ProtoCopilot) | A (`checklist.ts`), B | BUILD-NOW | U: checklist reducer over a scripted event list |
+| DSH-3 | Evidence: traffic light per recognised sign with timestamps, top 3 and skeleton snapshot; never video | F | B | BUILD-NOW | E: simulator sign with a skeleton draws it |
+| DSH-4 | Latency panel only from real timestamps (section 6.5); guest-reported values labelled and limited to 0 to 10 s; "no data yet" otherwise | AS-22, F | A (`latency.ts`), B | BUILD-NOW | U: stage arithmetic and the 10 s filter |
+| DSH-5 | Privacy panel only from real counters (section 4.2) | RY 4, F | A, B | BUILD-NOW | U: counters move with each event; H: no file-writing calls in app code |
+| DSH-6 | Benchmark card shows only audited figures; today "Accuracy figures: not yet audited"; a file must say `cleared: true` with an audit reference before any number shows | HANDOFF (audit not cleared), F | A, B | BUILD-NOW | U: synthetic or uncleared files give the "not yet audited" state |
+| DSH-7 | Session safety warnings (section 6.6) with the staff response card | AS-21, R13, HANDOFF extras, F | A (`warnings.ts`), B | BUILD-NOW | U: each trigger raises its warning once |
+| DSH-8 | Simulator panel for rehearsal | Old 4.5 | B | BUILD-NOW | E: rehearsal script |
+| DSH-9 | Mock pager "notify guest" panel: generic codes only ("Please come to the desk"), no names, rooms or text, clearly labelled mock | HANDOFF extras, F | B | LATER (only if time remains) | H: the panel sends only codes from a fixed list |
 
-Wiping means sending `session_end` to every stream, closing the guest streams, overwriting and dropping the session object (log, names, typed text, proposals, tokens), and resetting the "this guest" counters. The server-lifetime counters (`sinceStart`) stay because they contain no personal data. Clients react to `session_end` by clearing their state and the guest's `sessionStorage` token. A server restart loses everything, which is intended; the guest page then shows "This conversation has ended."
+### 11.8 People, operations and later work
 
----
-
-## 9. Server and Next.js 16 specifics
-
-This section records what was checked in `web/node_modules/next/dist/docs` for Next 16.4, so builders do not rely on memory.
-
-- **Why a custom server.** In Next 16, Middleware is renamed Proxy (`proxy.ts`, Node runtime by default), but neither Proxy nor Route Handlers expose the socket address (`request.ip` was removed in Next 15), so the only reliable source of the client address is the Node socket. The documented custom server (`next({ dev, hostname, port, httpServer })` plus `http.createServer`) gives us `req.socket.remoteAddress`. We pass `httpServer` so dev HMR upgrades work. Custom servers cannot be combined with `output: "standalone"`, which we do not use.
-- **What server.mjs does, in order, before calling `handle(req, res)`.** It deletes every incoming header whose name starts with `x-sb-`. It checks the Host header against the allowlist (`localhost:PORT`, `127.0.0.1:PORT`, `[::1]:PORT`, and `LAN_IP:PORT` when `GUEST_LAN=1`) and answers 403 otherwise. It computes loopback from `req.socket.remoteAddress` (`127.0.0.1`, `::1`, `::ffff:127.0.0.1`) and sets `x-sb-loopback: 1|0` and `x-sb-proof: <SB_PROOF>`, where `SB_PROOF` is 32 random bytes generated at start-up and placed in `process.env` before `next()` is created. For a non-loopback client it allows only an explicit list of paths (`/guest`, `/api/guest/join`, `/api/guest/action`, `/api/events`, `/_next/static/*`, `/favicon.ico`, and in dev the rest of `/_next/*` for HMR) and answers 403 to everything else, including `/staff`, `/api/staff/*`, `/api/guest/signs`, `/api/dev/*`, `/api/transcribe`, `/api/gloss`, `/api/english` and `/api/tts`. It rejects a `Content-Length` above 5 MB for `/api/transcribe` and above 8 KB elsewhere with 413. It sets the security headers (section 10). It counts requests to the P1 routes and their response status on `finish` for the privacy panel. It never logs URLs, headers or bodies.
-- **Route-level defence in depth.** Every route handler and the staff page call `guard()` from `web/lib/app/guard.server.ts`, which trusts `x-sb-loopback` only when `x-sb-proof` equals `process.env.SB_PROOF` in constant time. If the app is started with plain `next dev`, `SB_PROOF` is absent and every loopback-only route fails closed with 403.
-- **Binding.** `server.mjs` listens on `127.0.0.1` by default. With `GUEST_LAN=1` it listens on `0.0.0.0`, takes `LAN_IP` from the environment or detects the first non-internal IPv4 address, sets `process.env.LAN_IP` before `next()` (so `next.config.ts` sees it), and prints the guest URL with a warning to use an isolated network.
-- **next.config.ts.** `compress: false` (gzip would buffer SSE; the LAN app does not need it), `poweredByHeader: false`, `logging: { incomingRequests: false }` (dev request logging would print pairing codes and tokens), and `allowedDevOrigins: [process.env.LAN_IP]` when set, because Next 16 blocks cross-origin requests to dev assets and the guest phone would otherwise fail in dev.
-- **Async request APIs.** In Next 16, `headers()`, `cookies()`, `params` and `searchParams` are async only; always `await` them.
-- **`server-only`.** Next resolves `import "server-only"` internally, so no package is needed. Modules that are unit-tested under plain Node must not import it. The rule is: a `*.server.ts` module imports `server-only` and holds only wiring (env, the globalThis singleton, real vendor calls); the logic it uses lives in a sibling pure module that takes its clock, random source, config and `fetch` as arguments, and that pure module is what the tests import (section 12).
-- **SSE route.** `export const dynamic = "force-dynamic"`, return a `Response` around a `ReadableStream`, headers `Content-Type: text/event-stream`, `Cache-Control: no-cache, no-transform`, `Connection: keep-alive`, `X-Accel-Buffering: no`, and unsubscribe on `request.signal` abort.
-- **package.json.** Scripts: `"dev": "NEXT_TELEMETRY_DISABLED=1 node server.mjs"`, `"dev:lan": "NEXT_TELEMETRY_DISABLED=1 GUEST_LAN=1 node server.mjs"`, `"build": "NEXT_TELEMETRY_DISABLED=1 next build"`, `"start": "NEXT_TELEMETRY_DISABLED=1 NODE_ENV=production node server.mjs"`, `"start:lan"` likewise with `GUEST_LAN=1`, `"test": "node --test --disable-warning=ExperimentalWarning lib/app/"`. Add `"type": "module"` (Node otherwise warns that the TypeScript test files are ESM in a typeless package) and `"engines": { "node": ">=22.18" }` for unflagged type stripping. Add `allowImportingTsExtensions: true` to `tsconfig.json` so tested modules can import each other with `.ts` extensions, which Node requires. The only new dependency is `qrcode` (render its `QRCode.create()` module matrix as React `<rect>` elements; never inject its SVG string).
-- **Demo mode.** Run the demo from a production build (`npm run build && npm run start:lan`): it is faster, has no HMR socket on the LAN, and has no dev overlay. Use `dev:lan` only for building.
-
----
-
-## 10. Security controls mapped to tests
-
-| # | Control | Where | Test (U = node:test unit, S = curl smoke script `web/scripts/smoke.sh` against a running server, M = manual) |
-|---|---|---|---|
-| 1 | Loopback decision from the socket, never from X-Forwarded-For | `lib/app/access.ts` `isLoopback(addr)`; server.mjs | U: `127.0.0.1`, `::1`, `::ffff:127.0.0.1` are loopback; `192.168.1.5`, `::ffff:192.168.1.5`, `127.0.0.1.evil`, `""`, undefined are not. S: a request from the LAN IP with `X-Forwarded-For: 127.0.0.1` to `/staff` gets 403 |
-| 2 | Incoming `x-sb-*` headers stripped; proof check | server.mjs, `guard.server.ts` | U: `guardDecision` denies when proof is missing or wrong even if loopback=1. S: `curl -H 'x-sb-loopback: 1'` from the LAN gets 403 |
-| 3 | Non-loopback path allowlist (default deny) | `access.ts` `lanPathAllowed(pathname, dev)` | U: allowed `/guest`, `/api/guest/join`, `/api/guest/action`, `/api/events`, `/_next/static/x.js`; denied `/staff`, `/staff/`, `/api/staff/action`, `/api/guest/signs`, `/api/dev/simulate`, `/api/tts`, `/api/transcribe`, `/%2e%2e/staff`, `/guest/../staff` |
-| 4 | Host header allowlist (blocks DNS rebinding) | `access.ts` `hostAllowed(host, cfg)` | U: `evil.com:3000`, `127.0.0.1:3001`, missing host denied. S: `curl -H 'Host: evil.com'` gets 403 |
-| 5 | Same-origin for state-changing requests (CSRF from a site open in the staff browser) | `guard.server.ts` | U: `Origin: http://evil.com` denied; `Sec-Fetch-Site: cross-site` denied; JSON content type required. S: cross-origin POST to `/api/staff/action` gets 403 |
-| 6 | Content-type allowlist per route | `guard.server.ts` | S: `text/plain` to each JSON route gets 415 |
-| 7 | Body caps with a capped reader (not `req.json()`) | `lib/app/body.ts` | U: 8193-byte body rejected; chunked body without length over the cap rejected. S: 413 on each route |
-| 8 | Rate limits per session and route | `lib/app/ratelimit.ts` | U: fixed-window counter with an injected clock. S: 31st guest action in a minute gets 429 |
-| 9 | Pairing code and guest token: 128 / 256 random bits, constant-time compare, single use, expiry, revocation | `lib/app/tokens.ts` | U: length and alphabet; `safeEqual` false on different lengths without throwing; a used code returns `gone`; an expired code returns `gone`; after `repair` the old token is rejected; after `end_guest` and idle wipe every token is rejected |
-| 10 | X-Bridge-Key constant time; fail closed without a 32+ char key | `guard.server.ts` | U: missing, wrong, short-config cases. S: 401 without the key, 503 with `BRIDGE_KEY` unset |
-| 11 | Strict signs validator | `lib/app/validate.ts` | U: all 22 labels accepted; `yes`, `YES `, `<script>`, `FS:WIFI` rejected; conf `NaN`, `Infinity`, `-0.01`, `1.01`, `"0.9"` rejected; 0 and 9 signs rejected; mixed shapes rejected; extra keys rejected; top length 0 and 6 rejected |
-| 12 | Gate | `lib/app/match.ts` | U: 0.6 passes, 0.5999 fails, NONE fails even at 0.99, weak indexes correct, shape B unsorted input sorted |
-| 13 | Order-insensitive multiset match for all 20 guest intents | `lib/app/match.ts`, `lib/app/vocab.ts` | U: the test parses docs/vocabulary.md section 2 and checks that every row's signs, and every permutation of them, match that row's id and sentence; duplicates and extras do not match; all 20 multisets distinct |
-| 14 | Consent gate: no signs accepted until the guest chooses Sign | `ingest.ts` | U (store with injected clock): ingest returns `conflict` in mode `choosing` and `type` |
-| 15 | Confirm before speaking | store | U: no `guest_utterance` exists until `guest_confirm`; a stale proposal id returns `conflict` |
-| 16 | Name sanitizer | `validate.ts` | U: `José`, `Zoë O'Brien-Smith`, `Nguyễn Văn An`, `Ana  María` (collapsed) accepted; `<b>`, `Robert'); DROP`, `12`, empty, 41 letters, emoji, only spaces rejected |
-| 17 | Name and typed text never reach a vendor | store, `/api/tts`, `/api/english` | U: run `guest_confirm` with name `Zq7Canary` and `guest_typed` with `Zq7Canary` through the handlers with an injected `fetch` spy; the spy is never called with a body containing the canary. U: `/api/tts` handler returns 403 for id 4 and for any non-integer or text body |
-| 18 | Guest never receives staff-only data | `bus.ts` projection | U: build every event type for the guest audience and assert the JSON has no `top`, `count`, `privacy`, `status`, `recognizer`, `pairing`, `code` keys |
-| 19 | No secrets in the browser | repo | U (`repo-hygiene.test.ts`): no `NEXT_PUBLIC_` in web source; every module reading `process.env.*_KEY` imports `server-only`. M: after `next build`, grep `.next/static` for each key value from `.env.local` and expect nothing |
-| 20 | No `dangerouslySetInnerHTML`, no file writes, no content logging | repo | U (`repo-hygiene.test.ts`): grep `web/app`, `web/components`, `web/lib/app`, `web/server.mjs` for `dangerouslySetInnerHTML`, `writeFile`, `appendFile`, `createWriteStream`, `localStorage.setItem`, and `console.log(` with request data; expect none (sessionStorage for the guest token only is allowed and listed) |
-| 21 | Bind address | server.mjs | M: `lsof -nP -iTCP:3000 -sTCP:LISTEN` shows `127.0.0.1` without `GUEST_LAN`, `*` with it; a curl from the phone is refused without `GUEST_LAN` |
-| 22 | Security headers | server.mjs | S: every response has `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Permissions-Policy: camera=(), geolocation=(), microphone=(self)` (`microphone=()` on `/guest`), and the CSP `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, with `'unsafe-eval'` added to `script-src` in dev only. A nonce-based CSP through `proxy.ts` is the documented stretch |
-| 23 | No outbound requests from the guest page | guest page | M: DevTools network panel on `/guest` shows only requests to the laptop |
-| 24 | Wipe on End guest and idle | store | U: after wipe the store holds no log, name, typed text or token; the canary string is absent from `JSON.stringify(store)` |
-
-
-### 10a. Red-team requirements (from the 2026-10-10 adversarial test)
-
-The red team attacked the running app on this laptop (from 127.0.0.1 and from the laptop's own LAN address, standing in for a hotel-network attacker). The findings are labelled A (recognizer), B (web app), C (supply chain) and D (privacy and LLM). Part of the shell above is now **built**, and the attacks are replayed as regression tests in `web/security-tests/` (`npm run test:security`) and `recognition/tests/security/` (`pytest recognition/tests/security`). Both suites must pass before any demo or hotel use. What is not built yet is a **requirement**, and the unbuilt part must meet it before it ships.
-
-**Built now (2026-10-10):**
-
-- `web/server.mjs` is the only supported way to run the app (`npm run dev`, `npm run dev:lan`, `npm run start`, `npm run start:lan`). The scripts use `--lan` and `--production` flags instead of the shell environment syntax in section 9, so they also work on Windows. By default the server listens on 127.0.0.1 only. In LAN mode it adds a second listener on `LAN_IP` only, not `0.0.0.0`, so other interfaces stay closed. It strips client-sent `x-sb-*` headers and checks the Host allowlist, which stops DNS rebinding. It decides loopback from the socket and applies the default-deny LAN path list (`web/lib/app/access.ts` `lanPathAllowed`). It answers 413 when Content-Length is over 8 KB (5 MB for `/api/transcribe`), and it never logs URLs. (B1, B3, B4, B8)
-- `web/lib/app/guard.ts` `guardLoopbackJsonPost()` is called by `/api/english` and `/api/tts`. It runs these checks in order: the SB_PROOF loopback check (403, failing closed under plain `next dev`), the Host allowlist (403), same-origin via `Sec-Fetch-Site` and `Origin` (403), `application/json` only (415), a capped body reader that also catches chunked bodies (413), a per-route rate limit (english 10 a minute, tts 20 a minute, 429), and the JSON parse (400). (B1, B3, B4, D1, D2)
-- `/api/english` accepts at most 8 signs. Each label must be one of the 22 classifier labels, and each `conf` must be finite and in [0, 1]. Claude's reply must pass `cleanSentence()` (one plain sentence of at most 200 characters, with no markup, braces, backticks or control characters); otherwise the route falls back to the label words. A vendor error is logged by status only. (B4, B5, D1, D6)
-- `/api/tts` accepts one plain sentence of at most 300 characters. Only the 19 fixed guest sentences are cached. Other text is never cached, which removes both the memory growth and the "was this sentence said before" timing oracle, and at most 2 uncached syntheses run at once (503 otherwise). Piper runs an absolute interpreter (`PIPER_PYTHON`, else the repo `.venv`, else `python` from PATH with a warning) and gets an allowlisted environment with no API keys and no `BRIDGE_KEY`. (B6, B9, C3, D2, D3, D5)
-- `next.config.ts` sets `poweredByHeader: false` and `logging.incomingRequests: false`, plus the section-10 row-22 headers on every response: CSP with `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`, and a Permissions-Policy that also sets `microphone=()` on `/guest`. API responses also carry `Cache-Control: no-store`. HSTS waits for HTTPS. (B7, B8, D4)
-- The `web/public/signs` symlink is replaced by `web/app/signs/[...path]/route.ts`. The route serves only `*.json` files one or two levels deep under `signs/`, refuses anything that resolves outside that folder, and removes the `signer` field. The URLs are unchanged. A LAN device may only `GET /signs/<dir>/<file>.json` (the guest avatar needs them). (B2, D7)
-- `web/components/speakSigns.ts`: the last-resort browser voice must be an on-device voice (`localService === true`). With no local English voice it stays silent and the text is still returned for display. (D9)
-- Recognizer, in the P3 checkout:
-  - An unpinned `model.pt` is refused unless `RECOGNITION_ALLOW_UNPINNED=1` is set (development only), and a set pin always wins. `holistic_landmarker.task` is SHA-256-pinned and loaded from the checked bytes.
-  - `/health` returns only `{status}` to a LAN caller that does not hold the token.
-  - A non-loopback bind needs TLS (`--ssl-certfile/--ssl-keyfile`) unless `--insecure-http` is given.
-  - `live.py --post` sends only to loopback, unless `--post-allow-remote` is given with an `https://` URL.
-  - Face points are dropped before the model.
-  - Importing `recognition.server` loads no model.
-  - (A1, A3, A4, A5, A10, C4, C5, D11)
-
-**Requirements for the parts not built yet** (each one gets a test in `web/security-tests/` or `web/lib/app/*.test.ts` when it is built):
-
-| # | Requirement | Finding |
-|---|---|---|
-| RT1 | The demo and any hotel use run only through `server.mjs`, from a production build (`npm run build && npm run start:lan`), on an isolated network (hotspot or travel router), never on hotel or guest Wi-Fi. Any new route must call `guard.ts` (loopback-only routes) or an equivalent guest-token guard; a route with no guard is a bug. | B1, D10 |
-| RT2 | **HTTPS before any guest traffic crosses a shared network.** `server.mjs` gains an `https.createServer` path (mkcert certificate; key file outside git, `*.pem`/`*.key` ignored), then HSTS. Until then the guest token, captions and typed names cross the LAN in clear text, so plain HTTP is acceptable only on the isolated network of RT1. The recognizer's LAN mode already refuses plain HTTP without `--insecure-http`. | A5, D10 |
-| RT3 | The long-lived guest token never appears in a URL. For the SSE stream (EventSource cannot send headers) the guest first POSTs with `X-Session-Token` to get a **single-use ticket valid for 30 s**, and only that ticket goes in `?t=`. The pairing code in the QR (`?s=`) is single-use with a 5-minute expiry (section 9, row 9), and the guest page removes it from the address bar with `history.replaceState` right after joining. Nothing logs URLs (`server.mjs` does not; Next's request logging is off). | B8, D4 |
-| RT4 | **Confirm before speaking, end to end.** Nothing reaches `/api/tts` or the speaker until the guest taps "Say it" on their own device. NONE, or a top-1 confidence below 0.6, is never spoken (section 7 gate). `ingestSigns` uses the strict validator (row 11), and the consent gate (row 14) rejects signs unless the guest chose Sign. These steps block a third party who holds `BRIDGE_KEY` or the recognizer token from injecting signs that get spoken. | A8, D1, B5 |
-| RT5 | `/api/tts` moves to the planned `{ id }` contract: only fixed sentence ids are synthesised by a vendor, the cache is keyed by id, and NAME and free text never reach `/api/tts` (RT6). Until the contract changes, the interim limits above stay. Any cache that could hold guest-derived audio is cleared on `session_end` and the idle wipe. | D2, D3, B6 |
-| RT6 | The SpeakPlan: vendor TTS for fixed ids only; names and typed text use an on-device voice (`localService === true`) or are shown as text only, never a network voice. Test row 17's canary (`Zq7Canary`) must never appear in any outgoing `fetch` body. | D9, D10 |
-| RT7 | `/signs` stays a route, not a static folder. Once pairing exists, LAN requests to `/signs/*` need a valid guest session (cookie or `X-Session-Token`). No new personal field is added to served sign JSON. The team decides on consent and precision for the committed recordings (see `docs/requests.md`). | B2, C1, D7 |
-| RT8 | `/api/gloss` output and anything sent to the avatar are validated on the server: keys of `signs/index.json`, `FS:` followed by `^[A-Z0-9]{1,32}$`, or the two markers; at most 40 tokens (`LIMITS.glossMaxTokens`). Anything else falls back to captions only. Fingerspelling is a normal ASL path, but only for tokens that passed this allowlist. | D8 |
-| RT9 | `/api/guest/signs` is loopback only, needs `X-Bridge-Key` (at least 32 characters, constant-time compare, 503 when unset), takes an 8 KB body, and allows 10 requests a second. `live.py` already refuses to post anywhere but loopback. | A4, A8 |
-| RT10 | Any new child process uses an absolute executable and an allowlisted environment, as `/api/tts` now does. Add `PIPER_PYTHON=<absolute path to the venv python>` to `.env.example`. | B9, C3, D5 |
-| RT11 | Logs carry status codes and short error types only, never request bodies, vendor error bodies, URLs, names, transcripts or tokens. Repo-hygiene test (row 20) also greps for `console.*(` calls that pass `await res.text()` or a request object. | D6, B8 |
-| RT12 | Rate limits per session and per route for the guest routes (row 8). Every guest-route body goes through the capped reader in `access.ts` (`readCappedText`), never `req.json()`. | B4 |
-| RT13 | Before guest use: vendor terms read, DPAs and zero-retention options turned on (open question 10). Staff are briefed never to say the Wi-Fi password or card numbers aloud while the mic is open. The Web Speech fallback shows its disclosure every session. | D10 |
-| RT14 | Supply chain for the desk laptop: deploy only from a reviewed tag, install with `npm ci` (lockfile) and `pip install --require-hashes`, and protect the deploy branch (see `docs/requests.md`). | C6, C7 |
+| ID | Requirement | Source | Owner | When | Test that proves it |
+|---|---|---|---|---|---|
+| OPS-1 | Printed "If the screen does not respond, wave or knock. Staff will come to you." card on the guest side; staff script (treat the screen like a person; never give keys or payment details because the screen asked; press End guest) | compromised_device 2.4, `docs/security-testing.md` | Ops | BUILD-NOW (paper) | M: card on the counter at rehearsal |
+| OPS-2 | Pairing script: check the device physically, never confirm without reading the guest device, never project the QR, "SignBridge never opens a login page and never asks for payment, passwords or ID" | LT-26 | Ops | BUILD-NOW | M: rehearsal |
+| OPS-3 | Live LAN and penetration testing only on an isolated machine; `SB_SECTEST_LAN=1` only there; nothing exposed on the development Mac's network | `docs/security-testing.md`, HANDOFF | All | BUILD-NOW (rule) | M |
+| OPS-4 | Wiped unmanaged loaner as the system under test; development Mac away from the venue; gates G0 to G3 | D1, D2, gates | Talha | LATER | M: gate checklists |
+| OPS-5 | Constant-size 2048-byte guest frames every 250 ms with cover events, padded POSTs, captions capped in bytes | LT-15, D3 Mode W | A | LATER (required before gate G2 / Mode W only) | T: every frame on the guest stream has the same length |
+| OPS-6 | Mode W router controls (two networks, PMF, isolation, RA guard) | D3, G2 | Ops | LATER | M: G2 checklist |
+| OPS-7 | `ENGLISH_FALLBACK=1`: unmatched labels sent to Claude through Nath's route, labels only, as a candidate the guest must confirm | CLAUDE.md 7.2, RY 1 | A, Nath | LATER (never during the engagement window) | S: 404 when off |
+| OPS-8 | `/api/tts` accepts `{ id }` only | RT5 | Nath | LATER | S: free text 403 |
+| OPS-9 | Stronger device binding with a non-extractable WebCrypto key per action | R5 stretch | A | LATER | U |
+| OPS-10 | Consent and opaque ids for team recordings; a Deaf reviewer for the script and the avatar, or say on stage that none happened | RT7 (team part), C1, C11, BT 4 | All | LATER | M |
+| OPS-11 | Sign-language picker on the first screen (ASL first; others need data) | Roadmap | B | LATER | — |
 
 ---
 
-## 11. Fallbacks for teammate dependencies
+## 12. Build order and time estimates
 
-| Dependency | Detection | Fallback | Shown to whom |
-|---|---|---|---|
-| P1 `/api/transcribe` (Whisper) | 501, network error, or 10 s timeout | Staff types the sentence; or the Web Speech API after a one-time disclosure ("Audio will be sent to your browser's speech service") and a `note_vendor` count; quick replies always work | Staff: "Speech-to-text unavailable, type or use a quick reply" |
-| P1 `/api/gloss` (Claude) | 501, error, 5 s timeout, or invalid tokens (not uppercase gloss tokens, more than 40) | Server-side deterministic match to the 20 staff sentences; else captions only with an empty gloss | Staff log shows the gloss source; guest sees captions without sign cards |
-| P2 avatar `playGloss` | Runtime check in the swap point: `await import("@/lib/avatar/player")` and `typeof mod.playGloss === "function"`; also a 15 s timeout or a rejected promise | `SignCards`: the gloss as large key-tag cards shown one at a time (about 900 ms each, a 2-second pause at the end, then all cards stay visible). `BROWS-UP` and `BROWS-DOWN` become a small chip ("yes/no question", "question") rather than a card; `FS:WIFI` shows as "W-I-F-I, fingerspelled" | Guest |
-| P3 recognizer down | `GET RECOGNITION_URL/health` every 5 s, 1 s timeout; no POST in a while does not mean down | Staff header shows "Recognizer: down"; the guest Sign panel says "Signing is not available right now" and offers Type; the simulator still works for rehearsal | Both |
-| P3 sends only top-1 | Shape A | Staff bars show top-1 only and "alternatives not sent" | Staff |
-| ElevenLabs missing or failing | No `ELEVENLABS_API_KEY`, or 502 | Local `speechSynthesis` with a voice whose `localService === true`; if none exists, text only and a staff notice "No on-device voice; read the sentence aloud" (never a network voice) | Staff |
-| Anthropic for `/api/english` | Flag off (default) or error | Unmatched proposal with "Sign again" or "Type instead" | Guest |
+Builder A owns the server, security and logic; builder B owns the screens. Both work against `web/lib/app/types.ts`. The estimates are honest guesses for people who know the codebase, not promises. If `ps aux | grep "[t]rain_session"` shows Talha's recorder running, `next build` and Playwright wait and are retried every 60 seconds.
 
-The single avatar swap point is `web/lib/app/signOutput.ts`, which exports `loadSignRenderer(): Promise<"avatar" | "cards">` and `playSigns(gloss, el)`. It is used only by `web/components/guest/SignOutput.tsx`. When P2 ships `playGloss`, nothing else changes. Contract 6.6 does not say where the avatar draws, so the component renders `<div id="sb-avatar">` and the plan asks P2 (section 15) to render into that element or to export `mountAvatar(el)`; the swap point will call `mountAvatar` if it exists. A guest-side switch "Show sign cards instead" lets the guest pick cards even when the avatar works.
-
----
-
-## 12. File and ownership map
-
-Everything below is P4-owned per the task brief. P1, P2 and P3 paths are only read or imported.
-
-| Path | Purpose | Tested under Node |
-|---|---|---|
-| `web/server.mjs` | Custom server: header strip, Host allowlist, loopback, proof, LAN path allowlist, body caps, security headers, P1 call counting, bind | via `access.ts` |
-| `web/next.config.ts` | `compress: false`, `poweredByHeader: false`, `logging.incomingRequests: false`, `allowedDevOrigins` | — |
-| `web/package.json`, `web/tsconfig.json` | Scripts, `type: module`, engines, `qrcode`, `allowImportingTsExtensions` | — |
-| `web/lib/app/types.ts` | Shared types and limits (written with this plan) | yes |
-| `web/lib/app/vocab.ts` | `STAFF_INTENTS` and `GUEST_INTENTS`, copied from vocabulary.md sections 1 and 2 | yes |
-| `web/lib/app/match.ts` | `gate()`, `matchGuest()`, `matchStaffText()`, `normalizeEnglish()` | yes |
-| `web/lib/app/validate.ts` | `parseSignsPayload`, `parseGuestAction`, `parseStaffAction`, `parseGloss`, `sanitizeName`, `sanitizeTyped` | yes |
-| `web/lib/app/tokens.ts` | `newSecret(bytes)`, `safeEqual(a, b)` (sha256 both, `timingSafeEqual`), `groupForDisplay` | yes |
-| `web/lib/app/access.ts` | Pure decisions: `isLoopback`, `hostAllowed`, `lanPathAllowed`, `guardDecision`; imported by server.mjs through Node type stripping | yes |
-| `web/lib/app/ratelimit.ts`, `web/lib/app/body.ts` | Fixed-window limiter with injectable clock; capped body reader | yes |
-| `web/lib/app/store.ts` | Session lifecycle, sweeper logic, proposals, counters, with injected clock, id generator and fetch | yes |
-| `web/lib/app/bus.ts` | Subscribers, envelopes, guest and staff projections, SSE encoding | yes |
-| `web/lib/app/ingest.ts` | `ingestSigns(store, payload, source)` | yes |
-| `web/lib/app/store.server.ts` | `import "server-only"`; the singleton on `globalThis[Symbol.for("signbridge.store.v1")]`, wiring real clock, crypto and config into `store.ts` | — |
-| `web/lib/app/guard.server.ts` | `guard(req, policy)` for route handlers | partly |
-| `web/lib/app/recognizer.server.ts`, `benchmark.server.ts`, `tts.server.ts`, `english.server.ts`, `config.server.ts` | Health poll; report reader; ElevenLabs with memory cache; Anthropic fallback (load the `claude-api` skill before writing it); env parsing | partly |
-| `web/lib/app/client/` (`useBus.ts`, `actions.ts`, `speech.ts`, `alarm.ts`) | EventSource hook, POST helpers, local voice selection and audio unlock, WebAudio alert tone | — |
-| `web/lib/app/signOutput.ts` | Avatar or cards swap point | — |
-| `web/lib/channel.ts` | Thin re-export of the client bus helpers, with a comment that BroadcastChannel is superseded | — |
-| `web/app/layout.tsx`, `web/app/globals.css` | Font, tokens, base styles | — |
-| `web/app/staff/page.tsx`, `web/app/guest/page.tsx` | Pages (staff page awaits `headers()` and returns 403 content when not loopback) | — |
-| `web/app/api/events/route.ts`, `api/staff/action/route.ts`, `api/staff/benchmark/route.ts`, `api/guest/join/route.ts`, `api/guest/action/route.ts`, `api/guest/signs/route.ts`, `api/dev/simulate/route.ts`, `api/english/route.ts`, `api/tts/route.ts` | Routes | handlers tested through their pure parts |
-| `web/components/staff/*`, `web/components/guest/*`, `web/components/KeyTag.tsx`, `ConfidenceBar.tsx`, `QrCode.tsx`, `SignCards.tsx` | UI | — |
-| `web/scripts/smoke.sh` | curl security smoke tests | — |
-| `docs/app-plan.md`, `docs/requests.md`, `docs/demo-script.md`, `docs/privacy-notice.md` | Docs | — |
-
-Not touched: `web/lib/avatar/**` (P2), `web/lib/voice/**` and `web/app/api/transcribe|gloss` (P1), `web/lib/recognition/**`, `recognition/**`, `capture/**` (P3).
-
-Configuration lives in `web/.env.local` only (never committed): `BRIDGE_KEY`, `RECOGNITION_URL` (default `http://127.0.0.1:8000`), `GUEST_LAN`, `LAN_IP`, `PORT`, `IDLE_WIPE_MS`, `PAIR_CODE_TTL_MS`, `ENGLISH_FALLBACK`, `SB_SIMULATE`, `BENCHMARK_DIR` (default `../recognition/reports`), `VRI_LABEL`, `VRI_URL`, `VRI_PHONE`, `EMERGENCY_NOTE`, plus the vendor keys from CLAUDE.md section 5. No variable uses the `NEXT_PUBLIC_` prefix. `.env.example` is outside P4's paths, so the new names go into `docs/requests.md` for whoever owns it.
-
----
-
-## 13. Build order and time estimates
-
-Two builders work in parallel against `types.ts`. Builder A owns the server, security and logic; builder B owns the screens. Times assume a working Next scaffold and are honest estimates, not promises.
-
-| Step | Builder | Work | Estimate | Done when |
+| Step | Builder | Work | Hours | Done when |
 |---|---|---|---|---|
-| 0 | A | Spike: `server.mjs` with `next({ dev, httpServer })`; confirm a route handler sees `x-sb-loopback` and runs in the same process (log `process.pid` once in both, then remove the log), and that `/guest` loads on the phone over the hotspot | 30 min | Phone shows the page; pid matches (if not, counters move into route code, open question 8) |
-| 1 | A | `vocab.ts`, `match.ts`, `validate.ts`, `tokens.ts`, `access.ts`, `ratelimit.ts`, `body.ts` with all unit tests | 90 min | `npm test` green |
-| 2 | B | Tokens, font, layout, `KeyTag`, `ConfidenceBar`, guest first screen, static staff layout with mock data typed from `types.ts` | 75 min | Both screens render at 390x844 and 1440x900 |
-| 3 | A | `store`, `bus` (SSE), `/api/events`, `/api/staff/action`, `/api/guest/join`, `/api/guest/action`, sweeper, wipe | 90 min | Quick reply reaches the phone; End guest wipes both |
-| 4 | B | `useBus`, guest conversation screen, `SignCards` and swap point, proposal, Say it and Fix, name entry, repeat, alerts | 90 min | Simulated flow works end to end |
-| 5 | A | `ingestSigns`, `/api/guest/signs`, `/api/dev/simulate`, consent gate, latency ack | 60 min | Simulator drives the guest phone |
-| 6 | B | Staff dashboard: quick replies, log, last signs, pairing QR, simulate panel, emergency banner and tone, audio unlock, local voice | 90 min | Demo script runs with the simulator |
-| 7 | A | Recognizer health, privacy counters, benchmark reader, `/api/tts` with cache and prewarm, `/api/english` behind the flag, smoke script | 75 min | Privacy panel shows real numbers; smoke script passes |
-| 8 | B | Hold-to-talk with P1 routes and fallbacks, typed staff sentence | 45 min | Voice path works or falls back cleanly |
-| 9 | Both | Integration with P3's real recognizer, rehearsal on the hotspot, accessibility pass (keyboard, screen reader on captions, reduced motion), repo-hygiene test, `next build` | 90 min | CLAUDE.md section 9 runs twice in a row |
+| 0 | A | Spike: nonce CSP set by `server.mjs` reaches a Next 16 page; `__Host-` cookies on `http://127.0.0.1` in the demo browser; HTTPS listener on 127.0.0.1 with a throwaway CA; `connection()` | 0.5 | Notes in the progress log; cookie names decided |
+| 1 | A | Pure modules with unit tests: `vocab.ts`, `match.ts` (bars, lights, multiset, candidates, nearest), `validate.ts` (bridge events, actions, names, typed text, gloss tokens), `pairing.ts`, per-action limiter | 2.0 | `npm run test:unit` green |
+| 2 | B | Tokens, layout, `KeyTag`, `TrafficLight`, guest first screen with the exact notice, static staff layout with mock data typed from `types.ts` | 1.5 | Both screens render at 390x844 and 1440x900 |
+| 3 | A | `store.ts` (states, idle, cap, extend, wipe, nonces, warnings hooks), `bus.ts` (SSE, guest and staff projections), `/api/events`, `/api/staff/claim`, `/api/staff/action`, `/api/guest/join`, `/api/guest/action`, `/api/guest/leave` | 2.5 | A quick reply reaches a loopback guest window; End guest wipes both |
+| 4 | A | `server.mjs`: remove plain `--lan`; guest HTTPS listener with fail-closed start-up; per-listener Host lists and role; D6 path list; `headers.ts` and the nonce CSP; strip headers out of `next.config.ts`; per-address cap before TLS; staff cookie in `guard.ts` | 2.0 | `tls.test.mjs` and the extended `server.test.mjs` pass |
+| 5 | B | Guest conversation: captions, avatar swap point (`mountAvatar`, `playGloss`, `AvatarCaptions`, cards fallback), live signs, framing text, every proposal state, Say it and Fix, name field, Type, Interpreter, Text only, Help, I'm finished, ended screen, `pagehide` | 2.5 | The simulator drives every state on the guest window |
+| 6 | A | Bridge ingest (`ingest.ts`): events, freshness, replay, consent gate, `seq` join, gate outcome, status and mock; `/api/guest/signs`; `/api/dev/simulate`; VLM stub | 1.5 | `live.py --mock --post` drives a loopback session |
+| 7 | B | Staff dashboard: header strip, quick replies, free text, P1 hold-to-talk, log, Speak name, Read aloud, Speak again, speak plan (Nath `/api/tts` for fixed sentences, local voice otherwise), pairing overlay, check-code entry, alerts, Mode 0 "Say it for the guest" | 2.5 | The demo script runs with the simulator |
+| 8 | B | Panels: co-pilot checklist, evidence with skeleton drawing, latency, privacy, safety, benchmark "not yet audited", device health | 2.0 | All panels show live values from a simulated session |
+| 9 | A | `/signs/bundle` and the P2 preload request; `checklist.ts`, `latency.ts`, `warnings.ts`, privacy counters, `device_health` | 1.5 | Unit tests green; panels fed by real counters |
+| 10 | Both | Tests: extend `server.test.mjs`, add `tls.test.mjs` and `hygiene.test.mjs`, add Playwright on loopback (LT-29 XSS canary, confirm-before-speak spy, Back after End guest) | 2.0 | `npm run test:security`, `test:unit` and the e2e suite pass |
+| 11 | Both | Integration with the real `live.py` on loopback, accessibility pass (keyboard, screen reader on captions, reduced motion), `next build`, CLAUDE.md section 9 rehearsed twice in Mode 0 | 1.5 | Two clean runs in a row |
+| Ops | Talha | Event CA and cable (Mode C), the printed card, pre-flight scripts, gate G1 | 1.0 | G1 passes, or Mode 0 for the window |
 
-The critical path is about 6.5 hours of wall time with both builders busy. If time is short, cut in this order: `/api/english`, ElevenLabs prewarm, benchmark card details, laptop guest layout polish. Never cut: quick replies, the simulator, confirm before speaking, End guest and idle wipe, the security guard.
-
-HTTPS stretch (only if everything above is done): `mkcert` a certificate for the LAN IP, serve with `https.createServer` in `server.mjs`, install the mkcert root on the guest phone, and update the privacy notice. This also enables the Wake Lock API on the phone.
+Builder A has about 10 hours of work and builder B about 11, so the wall time with both busy is about 11 to 12 hours. If time runs short, cut in this order: the pager panel, the device-health hint, the skeleton drawing (keep the text evidence), the latency panel's median column, the laptop guest layout polish. Never cut: confirm before speaking, the consent gate, Help, End guest with the idle wipe and the cap, the staff capability, the HTTPS-only guest listener (or fall back to Mode 0), quick replies and the simulator.
 
 ---
 
-## 14. Demo script mapped to clicks
+## 13. Demo script mapped to clicks (CLAUDE.md section 9, with LEAVE for checkout)
 
-Preparation: start the recognizer (`uvicorn ... --host 127.0.0.1 --port 8000`) and the classifier poster with `BRIDGE_KEY`; start the app with `npm run start:lan`; open `http://127.0.0.1:3000/staff`, press "Start desk", then "Prewarm voices" if ElevenLabs is configured; press "New guest" and scan the QR code with the guest phone. The guest taps "Sign".
+**Preparation (Mode 0; Mode C differences in brackets).** Start the app with `npm run build && npm run start` [`npm run start:guest-tls` with `LAN_IP=10.77.0.1`, `LAN_NET=10.77.0.0/30`, `GUEST_IPS=10.77.0.2` and the event CA files]. Open the printed one-time `http://127.0.0.1:3000/staff#k=...` URL and press **Start desk**. Start the recognizer: `BRIDGE_KEY=... python -m recognition.live --camera 0 --post http://127.0.0.1:3000/api/guest/signs`. Check that the staff header shows "Recognizer: ok" (never `mock` on stage) and "Vendor keys: none". Put the printed "wave or knock" card on the counter. Press **New guest**, then **Open guest window** and drag it to the wired display [press **Guest is here**, open the link on the team iPad, read the 6 digits off the iPad, type them, press **Confirm**; both screens show "Paired with ..."]. The guest taps **Sign** [in Mode 0 the receptionist presses "Guest chose Sign" after asking].
 
-| # | Staff action (exact click) | Guest device shows | Guest action | Staff screen shows and laptop does |
+| # | Staff action (exact click) | Guest screen shows | Guest does | Staff screen shows, laptop does |
 |---|---|---|---|---|
-| 1 | Quick reply "Welcome!", then "Reservation?" (or hold to talk) | "Welcome!" with HELLO WELCOME; then "Do you have a reservation?" with a yes/no question chip | Signs YES RESERVATION | Bars for YES and RESERVATION; guest phone shows "Yes, I have a reservation." |
-| 2 | — | Proposal | Taps "Say it" | Log line; laptop speaks "Yes, I have a reservation." |
-| 3 | Quick reply "Your name?" | "What's your name?" | Signs NAME, types the name, taps "Say it" | "My name is <name>." spoken with a local voice |
-| 4 | Quick replies "Room 412", then "Key card" | Captions and cards | Signs THANK-YOU, Say it; then WHERE ELEVATOR, Say it | "Thank you." then "Where is the elevator?" |
-| 5 | Quick reply "Elevator left" | "The elevator is on your left." | Signs FS-WIFI PASSWORD, Say it | "What's the Wi-Fi password?" |
-| 6 | Quick reply "Wi-Fi" | "The Wi-Fi password is on your key card." | Signs BREAKFAST TIME, Say it | "What time is breakfast?" |
-| 7 | Quick reply "Breakfast 7-10" | "Breakfast is from 7 to 10." | Signs MORE TOWEL PLEASE with one sign deliberately unclear | Repeat counter 1, "Please sign that again" on both screens |
-| 8 | — | "Please sign that again" | Repeats MORE TOWEL PLEASE, Say it | "Could I have more towels, please?" |
-| 9 | Quick reply "Towels", then "Anything else?" | Captions | Signs NO THANK-YOU, Say it | "No, that's all, thank you." |
-| 10 | Quick reply "Enjoy your stay" | "Enjoy your stay!" | — | — |
-| 11 | A juror holds "Hold to talk" and says a free sentence | Captions, plus cards or avatar via the generic gloss path, or captions only if P1 is down | — | Gloss source shown in the log |
-| 12 | Point at the privacy panel, then press "End guest" | "This conversation has ended. Nothing was saved." | — | Log cleared; counters for this guest reset |
+| 1 | Quick replies **Welcome!**, then **Reservation?** | "Welcome!" and "Do you have a reservation?" with the avatar and captions | Signs YES RESERVATION; sees both signs light up live, then "Yes, I have a reservation." and taps **Say it** | Live signs with lights; checklist "Greeting" and "Reservation" turn shared; the laptop speaks the sentence (Piper) |
+| 2 | Quick reply **Your name?** | "What's your name?" | Signs NAME; types the name; taps **Say it** | "My name is ..." with **Speak name**; the receptionist taps it; a local voice says it; "Guest name" shared |
+| 3 | Quick replies **Room 412**, then **Key card** | Captions and avatar | Signs THANK-YOU, **Say it**; then WHERE ELEVATOR, **Say it** | "Thank you." then "Where is the elevator?" spoken; "Room number" and "Key card" shared |
+| 4 | Quick reply **Elevator left** | "The elevator is on your left." | Signs FS-WIFI PASSWORD, **Say it** | "What's the Wi-Fi password?"; checklist shows "Wi-Fi: guest asked; not answered yet" |
+| 5 | Quick reply **Wi-Fi** | "The Wi-Fi password is on your key card." | Signs BREAKFAST TIME, **Say it** | "What time is breakfast?"; "Wi-Fi" shared |
+| 6 | Quick reply **Breakfast 7-10** | "Breakfast is from 7 to 10." | Signs MORE TOWEL PLEASE with one sign deliberately unclear | That sign is red in the evidence panel. The guest sees either "Did you mean: 'Could I have more towels, please?'" or "Please sign that again"; the guest taps **No, sign again** (or simply signs again) |
+| 7 | — | "Please sign that again" and which sign was unclear | Repeats MORE TOWEL PLEASE, **Say it** | Repeat counter 1; "Could I have more towels, please?" spoken |
+| 8 | Quick replies **Towels**, then **Anything else?** | Captions | Signs LEAVE TIME, **Say it** | "What time is checkout?" spoken; checklist "Checkout time: guest asked" |
+| 9 | Quick reply **Checkout 11** | "Checkout is at 11." | Signs NO THANK-YOU, **Say it** | "No, that's all, thank you." spoken; "Checkout time" shared |
+| 10 | Quick reply **Enjoy stay** | "Enjoy your stay!" | — | "Farewell" shared; the co-pilot shows "ID checked: not shared yet" as a gentle grey flag; the receptionist taps **I saw it** |
+| 11 | A juror types (or, with a P1 key outside the engagement window, holds **Hold to talk** and says) a free sentence | Captions, plus the avatar via the generic gloss path, or captions only | — | Gloss source shown in the log |
+| 12 | Point at the **Latency** and **Privacy** tabs, then press **End guest** | "This conversation has ended. Nothing about it was saved on this device." | — | Log cleared; wipe receipt with the number of erased items; per-guest counters reset |
 
-Rehearsal without the camera uses the simulator: buttons 3, 4, 5, 6, 7, 8, 10 (with "Make one sign unclear" on, then off) and 20, with "Shuffle order" on at least once to show that WHERE ELEVATOR and ELEVATOR WHERE give the same result. On stage we say that the unclear-sign repeat is rehearsed, and the staff screen's "SIMULATED" badge must never appear during the real demo.
-
----
-
-## 15. Contract changes (also logged in `docs/requests.md`)
-
-1. Screen sync moves from `BroadcastChannel("signbridge")` (CLAUDE.md 2 and 6.7) to the server SSE bus, because the guest screen is now on another device.
-2. Message types are extended (section 6); the 6.7 messages gain fields but keep their names.
-3. Guest-to-staff recognition moves from the browser webcam (CLAUDE.md 7.2 steps 1 to 3) to a desk camera with Python MediaPipe on the laptop. P3's process posts to `POST /api/guest/signs` with `X-Bridge-Key`, in either payload shape, and may poll `GET /api/guest/signs` for `{accepting}` to switch the camera off when the guest is not signing. P3 is asked to expose `GET /health` on the recognizer.
-4. CLAUDE.md 7.2 step 5 changes: the scripted path uses the fixed sentence table instead of Claude; `/api/english` becomes an optional fallback behind `ENGLISH_FALLBACK=1`, labels only, always confirmed by the guest.
-5. `/api/tts` takes `{ id }` (a fixed guest intent id) instead of `{ text }`; NAME and free text are spoken with a local voice.
-6. P2 is asked where `playGloss` renders: into `#sb-avatar`, or via an exported `mountAvatar(el)`.
-7. P1 is asked to keep `/api/gloss` deterministic for the 20 staff intents, cap output at 40 allowed tokens, and never log request bodies. The P1 routes are now loopback-only through `server.mjs`, with no code change needed on their side.
-8. New environment variables (section 12) for `.env.example`.
-9. P3 is asked for the benchmark report fields (n, accuracy, open-set false-accept rate, signer type, model hash, and a `synthetic` flag) so the benchmark card can show them without guessing.
+**Rehearsal without the camera** uses the simulator in this order: intents 3, 4, 5, 6, 7, 8, 10 (with "Make one sign unclear" on, then off), 11 and 20, with "Shuffle order" on at least once to show that `WHERE ELEVATOR` and `ELEVATOR WHERE` give the same result, and "Low HELP" once to show that a weak HELP asks before alerting. On stage we say that the unclear-sign repeat is rehearsed, and the "SIMULATED" badge must never appear during the real demo. In Mode 0 we say on stage that the receptionist confirms on the guest's behalf. We do not show or claim any accuracy figure: the benchmark card says "not yet audited".
 
 ---
 
-## 16. Open questions
+## 14. Contract changes and requests (logged in `docs/requests.md`)
 
-1. Does P3's poster send top-1 or top-3 per sign, and will it implement `GET /health` and honour `{accepting}`? The app accepts both shapes either way.
-2. Should "ROOM HELP" stay as "There's a problem with my room," or become a neutral phrase? It is a high-severity confusion, and the guest confirms it either way.
-3. Should matching ever use the second-choice prediction (for example, when the top-1 multiset does not match but swapping one sign for its runner-up does)? This version says no, to avoid inventing requests.
-4. Should the guest be able to end the conversation themselves ("I'm done"), or only the staff and the idle timer?
-5. Which VRI provider, link and phone number do we show, and what text-to-911 note applies where the demo happens?
-6. Which network do we use on the day: a phone hotspot (and can that phone also be the guest device) or a travel router?
-7. Is the 2-minute idle wipe too short while the guest reads? Warning at 90 seconds plus "tap to keep" is the current answer.
-8. If step 0 shows that route handlers run in a different process from `server.mjs`, the P1 call counter must move: either P1 adds a counter call inside their routes, or the staff browser reports the calls it made (labelled as such).
-9. Is the guest screen dark-only, or should it offer a light theme for a bright lobby?
-10. Who reads the vendor terms before the privacy panel's destinations are shown on stage with any claim about retention?
+1. Screen sync moves from `BroadcastChannel("signbridge")` (CLAUDE.md 2 and 6.7) to the server SSE bus, because the guest screen is on another device. `web/lib/channel.ts` becomes a thin client helper around `EventSource` and the action POSTs.
+2. The 6.7 messages keep their names and gain fields; the full catalogue is section 7.
+3. Guest recognition comes from the desk camera through `recognition/live.py --post` events (section 6.1), not from the browser webcam of CLAUDE.md 7.2 steps 1 to 3.
+4. P3 is asked for: the optional `skeleton` field on `sign` events (section 6.2); renaming `FS-CHECKOUT` to `LEAVE` in `recognition/labels.py`; final harm-weighted bars from audited calibration; optionally polling `GET /api/guest/signs` for `{accepting}` to switch the camera off; and a benchmark report with `cleared: true` and an audit reference before any figure is shown.
+5. CLAUDE.md 7.2 step 5 changes: scripted guest sentences come from the fixed table with order-insensitive matching; `/api/english`'s Claude path is a LATER fallback, labels only, confirmed by the guest.
+6. Nath is asked to move `/api/tts` to `{ id }` (RT5). Until then the staff page sends only the fixed sentence text from the server's speak plan.
+7. P2 is asked to add `preloadSigns(bundle)` to `web/lib/avatar/lookup.ts` and to run one avatar rehearsal under the Report-Only nonce CSP.
+8. Talha is asked to accept or decline adding `GET /avatar/bellhop.glb` to the D6 guest path list.
+9. New environment variables for `.env.example`: `BRIDGE_KEY`, `LAN_IP`, `LAN_NET`, `DESK_NAME`, `GUEST_PORT` (3443), `TLS_KEY_FILE`, `TLS_CERT_FILE`, `TLS_PUBLIC_KEY_FILE`, `TLS_PUBLIC_CERT_FILE`, `GUEST_IPS`, `IDLE_WIPE_MS`, `SESSION_CAP_MS`, `PAIR_CODE_TTL_MS`, `SB_SIMULATE`, `VLM_FALLBACK`, `ENGLISH_FALLBACK`, `BENCHMARK_CLEARED_FILE`, `VRI_LABEL`, `VRI_URL`, `VRI_PHONE`, `EMERGENCY_NOTE`, `KIOSK`. `GUEST_LAN` is removed. No variable uses the `NEXT_PUBLIC_` prefix.
+10. The draft's RT2 (mkcert), RT3 (`?t=` ticket) and RT7 (per-gloss `/signs` with a session) are superseded by decision record D5 and D6, as section 0 records.
+
+---
+
+## 15. Open questions
+
+1. Does Talha accept `/avatar/bellhop.glb` on the guest listener, or should the guest use the `hologram` style?
+2. Are the provisional harm-weighted bars (0.75 for YES, NO, NAME, ROOM, HELP) acceptable for the demo, or should they wait for calibration on held-out recordings?
+3. Should "ROOM HELP" stay as "There's a problem with my room," or become a neutral phrase? It is a high-severity confusion; the guest confirms it either way.
+4. Which VRI provider name and phone number do we show, and what text-to-911 note applies where the demo happens?
+5. Is the 15-minute cap right for a check-in, and should extensions be unlimited?
+6. Will the Mode C guest device be the team iPad (Safari: no Compute Pressure, so no device-health hint) or a wiped laptop with Chrome?
+7. Does step 0 show that `__Host-` cookies work on `http://127.0.0.1` in the demo browser?
+8. Do we tell the expert testers that full control of the guest device is assumed (compromised_device.md open question)?
