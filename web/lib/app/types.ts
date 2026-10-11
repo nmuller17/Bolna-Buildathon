@@ -1003,6 +1003,10 @@ export type StaffStatus = {
     /** Latest framing status and since when it has not been OK (C1-10). */
     framing: FramingStatus | null;
     framingNotOkSince: number | null;
+    /** Builder A addition (2026-10-10): who sent the latest event; the simulator is labelled (BRG-6). */
+    source?: SignsSource | null;
+    /** Builder A addition: the value the guest screen currently has (C2-23), for the staff fallback band. */
+    signingAvailable?: boolean;
   };
   session: {
     state: SessionState;
@@ -1030,6 +1034,13 @@ export type StaffStatus = {
   latency: LatencyStage[];
   deviceHealth: DeviceHealth;
   openWarnings: number;
+  /**
+   * Builder A addition (2026-10-10): alerts still open, so a reconnecting staff screen keeps the Help
+   * banner and its count (GST-2a), the interpreter banner and "Guest needs more time".
+   */
+  alerts?: { emergency: { count: number; since: number } | null; interpreterAt: number | null; moreTimeAt: number | null };
+  /** Builder A addition: open staff streams (SRV-19 test). */
+  staffStreams?: number;
   flags: {
     simulateEnabled: boolean;
     vlmFallback: boolean;
@@ -1267,7 +1278,8 @@ export type ApiError = { ok: false; error: ErrorCode; message: string; triesLeft
 /** The guest token is NOT in this body: it travels only in Set-Cookie (__Host-sb_g, or sb_g on Mode 0 localhost). */
 export type GuestJoinResponse = { ok: true; check: string | null; hello: GuestHello } | ApiError;
 
-export type GuestActionResponse = { ok: true } | ApiError;
+/** `merged`: a merged or ignored-above-limit action (interpreter, more_time, ack, heartbeat). `logSeq`: typed text's log line. */
+export type GuestActionResponse = { ok: true; merged?: boolean; proposalId?: string; logSeq?: number } | ApiError;
 
 export type StaffClaimResponse = { ok: true } | ApiError;
 
@@ -1279,6 +1291,9 @@ export type StaffActionResponse =
       guestUrl?: string;
       /** speak_name / read_aloud: the text the staff page voices with an on-device voice. */
       speakText?: string;
+      /** Builder A additions: say_quick / say_text caption id; end_guest wipe receipt. */
+      captionId?: string;
+      receipt?: WipeReceipt | null;
     }
   | ApiError;
 
