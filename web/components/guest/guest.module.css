@@ -739,7 +739,8 @@
   }
 
   .choices {
-    grid-template-columns: repeat(4, 1fr);
+    /* features-plan F12: five equal choices. */
+    grid-template-columns: repeat(5, 1fr);
   }
 
   .choice {
@@ -1217,4 +1218,798 @@
     animation: none;
     border-top-color: var(--navy);
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Builder G, features-plan.md (2026-10-11)                            */
+/* The board keeps its lobby-directory look: pictograms are drawn like */
+/* hotel wayfinding signs (brass line on navy), and the take-home card */
+/* is the white paper sleeve a key card comes in.                      */
+/* ------------------------------------------------------------------ */
+
+.root {
+  --mist-2: #9db0c6; /* unsure caption words: 6.6:1 on navy */
+  --sleeve: #ffffff;
+  --sleeve-ink: #0e2a47;
+}
+
+/* F12: the five ways to talk, in the header of every later screen, one tap each. */
+.modeSwitchWrap {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.modeSwitch {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.modeButton {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 56px;
+  padding: 6px 2px;
+  border: 2px solid var(--navy-3);
+  border-radius: 12px;
+  background: var(--navy-2);
+  color: var(--white);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 700;
+  line-height: 1.1;
+  text-align: center;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.modeButton[aria-pressed="true"] {
+  background: var(--white);
+  border-color: var(--white);
+  color: var(--navy);
+}
+
+.modeButton:disabled {
+  border-style: dashed;
+  color: var(--mist);
+  cursor: not-allowed;
+}
+
+.modeIcon {
+  width: 22px;
+  height: 22px;
+}
+
+.modeButton[aria-pressed="true"] .modeIcon {
+  color: var(--navy);
+}
+
+@media (min-width: 900px) {
+  .modeSwitchWrap {
+    flex-basis: auto;
+    flex: 1 1 32rem;
+    max-width: 44rem;
+    margin-left: auto;
+  }
+
+  .modeButton {
+    flex-direction: row;
+    gap: 8px;
+    font-size: 1rem;
+  }
+
+  .header {
+    flex-wrap: nowrap;
+  }
+}
+
+/* Landscape phones: the header switch shrinks to one short row. */
+@media (max-height: 520px) {
+  .modeButton {
+    min-height: 44px;
+    flex-direction: row;
+    gap: 6px;
+  }
+}
+
+/* F13: which sign language. */
+.langList {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.langPrimary,
+.langButton {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+  min-height: 64px;
+  padding: 12px 18px;
+  border-radius: 14px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.langPrimary {
+  border: 2px solid var(--brass);
+  background: var(--brass);
+  color: var(--navy);
+}
+
+.langButton {
+  border: 2px solid var(--navy-3);
+  background: var(--navy-2);
+  color: var(--white);
+}
+
+.langButton[aria-pressed="true"] {
+  border-color: var(--white);
+}
+
+.langName {
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+
+.langNote {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.langButton .langNote {
+  color: var(--mist);
+}
+
+@media (min-width: 900px) {
+  .langList {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .langPrimary {
+    grid-column: 1 / -1;
+  }
+}
+
+/* F2: the picture board. */
+.board {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.boardGrid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.boardTile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 112px;
+  padding: 12px 8px;
+  border: 2px solid var(--navy-3);
+  border-radius: 14px;
+  background: var(--navy-2);
+  color: var(--white);
+  font: inherit;
+  cursor: pointer;
+}
+
+.boardTile:hover {
+  border-color: var(--brass);
+}
+
+.boardIcon {
+  width: 52px;
+  height: 52px;
+  color: var(--brass);
+}
+
+.boardBadgeBack {
+  fill: var(--navy-2);
+  stroke: none;
+}
+
+.boardLabel {
+  font-size: 1.15rem;
+  font-weight: 700;
+  line-height: 1.15;
+  text-align: center;
+}
+
+/* Quick answers: a lighter row, so "Yes" and "No" never look like requests. */
+.boardAnswers {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.boardTile[data-answer] {
+  min-height: 84px;
+  background: transparent;
+  border-color: var(--mist);
+}
+
+.boardTile[data-answer] .boardIcon {
+  width: 36px;
+  height: 36px;
+  color: var(--white);
+}
+
+.boardTile[data-answer] .boardBadgeBack {
+  fill: var(--navy);
+}
+
+.board[data-compact] .boardTile {
+  min-height: 92px;
+}
+
+.board[data-compact] .boardIcon {
+  width: 40px;
+  height: 40px;
+}
+
+.boardPicked {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+.boardPickedIcon {
+  width: 56px;
+  height: 56px;
+  color: var(--brass);
+}
+
+.otherWays {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--navy-3);
+}
+
+@media (min-width: 600px) {
+  .boardGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .boardAnswers {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/* Landscape phone: four tiles a row so the board fits between header and Help. */
+@media (max-height: 520px) and (min-width: 600px) {
+  .boardGrid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .boardTile {
+    min-height: 84px;
+    flex-direction: row;
+  }
+
+  .boardIcon {
+    width: 36px;
+    height: 36px;
+  }
+}
+
+/* F3: live captions. */
+.live {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--navy-2);
+  border: 2px solid var(--navy-3);
+}
+
+.live[data-cloud] {
+  border-color: var(--brass);
+}
+
+.liveHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 2px solid var(--g-go);
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.badge[data-backend="typed"] {
+  border-color: var(--mist);
+}
+
+.badge[data-backend="cloud_openai"],
+.badge[data-backend="browser_google"],
+.badge[data-backend="browser_apple"],
+.badge[data-backend="browser_other"] {
+  border-color: var(--brass);
+  background: var(--brass);
+  color: var(--navy);
+}
+
+.badgeIcon {
+  flex: none;
+  width: 1.3em;
+  height: 1.3em;
+}
+
+.cloudNote {
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 6px solid var(--brass);
+  background: var(--navy);
+  font-weight: 600;
+}
+
+.liveList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 40dvh;
+  overflow-y: auto;
+}
+
+.liveLine,
+.liveNow {
+  margin: 0;
+  font-size: clamp(1.5rem, 1.1rem + 1.6vw, 2.4rem);
+  font-weight: 650;
+  line-height: 1.2;
+  text-wrap: pretty;
+}
+
+.liveLine + .liveLine {
+  padding-top: 8px;
+  border-top: 1px solid var(--navy-3);
+}
+
+.liveNow {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  color: var(--white);
+}
+
+.liveDot {
+  flex: none;
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: var(--g-go);
+  transform: translateY(-0.1em);
+}
+
+.unsureWord {
+  color: var(--mist-2);
+  text-decoration: underline dotted;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.18em;
+}
+
+.liveRemoved {
+  color: var(--mist);
+}
+
+.liveRemovedNote {
+  display: block;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--g-wait);
+}
+
+.root[data-text-size="1"] .liveLine,
+.root[data-text-size="1"] .liveNow {
+  font-size: clamp(1.9rem, 1.4rem + 2.2vw, 3rem);
+}
+
+.root[data-text-size="2"] .liveLine,
+.root[data-text-size="2"] .liveNow {
+  font-size: clamp(2.3rem, 1.7rem + 2.8vw, 3.8rem);
+}
+
+/* F5: three avatar sizes (memory only). */
+.root[data-avatar-size="small"] .avatarBox {
+  height: clamp(160px, 22dvh, 280px);
+}
+
+.root[data-avatar-size="large"] .avatarBox {
+  height: clamp(300px, 50dvh, 680px);
+}
+
+/* F1: fact tiles. */
+.facts {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.factGrid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 11rem), 1fr));
+  gap: 10px;
+}
+
+.factTile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--navy-2);
+  border-top: 4px solid var(--brass);
+  min-width: 0;
+}
+
+.factLabel {
+  font-size: 0.95rem;
+  font-weight: 650;
+  color: var(--mist);
+}
+
+.factValue {
+  font-size: clamp(1.4rem, 1.1rem + 1.2vw, 2rem);
+  font-weight: 750;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.factNote {
+  font-size: 0.9rem;
+  color: var(--mist);
+}
+
+.facts > .secondary {
+  align-self: flex-start;
+  flex: none;
+}
+
+/* F4: the take-home card, a white key-card sleeve. */
+.takeHome {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  padding: 0 18px 18px;
+  border-radius: 16px;
+  background: var(--sleeve);
+  color: var(--sleeve-ink);
+  overflow: hidden;
+}
+
+.takeHomeText {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.takeHomeTitle {
+  margin: 0 -18px;
+  padding: 12px 18px;
+  background: var(--brass);
+  color: var(--navy);
+  font-size: 1.25rem;
+  font-weight: 800;
+}
+
+.takeHomeList {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.takeHomeList div {
+  display: grid;
+  grid-template-columns: minmax(7rem, auto) 1fr;
+  gap: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed #9aa9bb;
+}
+
+.takeHomeList dt {
+  font-weight: 600;
+}
+
+.takeHomeList dd {
+  margin: 0;
+  font-weight: 800;
+  font-size: 1.2rem;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.qr {
+  width: min(100%, 300px);
+  height: auto;
+  justify-self: center;
+  image-rendering: pixelated;
+}
+
+.takeHomeNote {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+@media (min-width: 700px) {
+  .takeHome {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+  }
+
+  .takeHomeText {
+    grid-column: 1 / -1;
+  }
+
+  .qr {
+    width: 260px;
+  }
+}
+
+@media (min-width: 900px) {
+  .facts {
+    grid-column: 1;
+  }
+}
+
+/* F7: number pad. */
+.numberBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.numberBlock > .secondary {
+  flex: none;
+}
+
+.numberPad {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 16px;
+  background: var(--navy-2);
+  border: 2px solid var(--navy-3);
+}
+
+.numberPad > .primary {
+  flex: none;
+}
+
+.numberInput {
+  font-size: 2rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+}
+
+.keypad {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  max-width: 22rem;
+}
+
+.key {
+  min-height: 56px;
+  border: 2px solid var(--white);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--white);
+  font: inherit;
+  font-size: 1.6rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.key:active {
+  background: var(--white);
+  color: var(--navy);
+}
+
+/* F9: desk alerts. Full width, no sound, one flash unless reduced motion. */
+.deskAlert {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px 16px;
+  padding: calc(14px + env(safe-area-inset-top)) 16px 14px;
+  background: var(--white);
+  color: var(--navy);
+  border-bottom: 8px solid var(--brass);
+}
+
+.deskAlert[data-flash] {
+  animation: deskFlash 1.2s ease-out 1;
+}
+
+@keyframes deskFlash {
+  0%,
+  40% {
+    background: var(--brass);
+  }
+  100% {
+    background: var(--white);
+  }
+}
+
+.deskAlertIcon {
+  width: 40px;
+  height: 40px;
+}
+
+.deskAlertText {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  font-size: clamp(1.5rem, 1.1rem + 1.8vw, 2.4rem);
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.deskAlertFrom {
+  font-size: 1rem;
+  font-weight: 650;
+}
+
+.deskAlertOk {
+  min-width: 96px;
+  min-height: 56px;
+  padding: 8px 20px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--navy);
+  color: var(--white);
+  font: inherit;
+  font-size: 1.3rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.deskAlert :focus-visible {
+  outline-color: var(--navy);
+}
+
+@media (max-width: 480px) {
+  .deskAlert {
+    grid-template-columns: auto 1fr;
+  }
+
+  .deskAlertOk {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deskAlert[data-flash] {
+    animation: none;
+    box-shadow: inset 0 0 0 6px var(--brass);
+  }
+}
+
+/* F10: preferences in the More panel. */
+.prefs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.select {
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 12px;
+  border: 2px solid var(--mist);
+  border-radius: 12px;
+  background: var(--white);
+  color: var(--navy);
+  font: inherit;
+  font-size: 1.1rem;
+}
+
+/* F11: interpreter first, and the consent card. */
+.interpreterNow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.interpreterNow > .primary {
+  flex: none;
+}
+
+.consentCard {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 2px dashed var(--mist);
+  background: var(--navy);
+}
+
+.consentLines {
+  margin: 0;
+  padding-left: 1.2em;
+  font-size: 1.15rem;
+  font-weight: 650;
+}
+
+.about .secondary {
+  width: 100%;
+}
+
+/* F6: one label per record line. */
+.lineLabel {
+  font-weight: 650;
+}
+
+/* F17: what this conversation used. */
+.receipt {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border-radius: 14px;
+  background: var(--navy-2);
+  border-left: 6px solid var(--g-go);
+}
+
+.receiptTitle {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.receiptList {
+  margin: 0;
+  padding-left: 1.2em;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }

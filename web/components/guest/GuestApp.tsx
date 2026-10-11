@@ -12,65 +12,59 @@
 //   is voiced at the desk before "Say it". A runner-up or a pick becomes a sentence the guest then
 //   confirms the same way;
 // - BN-5: the guest's own record of the conversation lives in this page's memory only.
+//
+// docs/features-plan.md (Builder G, 2026-10-11): five-way first screen and header switch (F12, F13),
+// picture board (F2), live captions with the backend badge (F3), fact tiles and the take-home card
+// (F1, F4), more repair requests and preferences in page memory (F5, F10), a label on every record
+// line (F6), number pad (F7), typed "Did you mean...?" (F8), desk alerts (F9), the interpreter consent
+// card (F11) and the privacy receipt (F17). Pieces live in ModeChooser, PictureBoard, LiveCaptions,
+// FactTiles, NumberPad, DeskAlert, Preferences and common.tsx.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { KeyTag, SimulatedBadge, TrafficLight } from "@/components/app/KeyTag";
-import { GUEST_PHRASES, nameProblem, typedProblem } from "@/components/app/displayVocab";
+import { GUEST_PHRASES, typedProblem } from "@/components/app/displayVocab";
+import { interpreterCard, interpreterCardLines, receiptLines, signLanguageName } from "@/lib/app/guestfeatures";
+import { matchTyped } from "@/lib/app/typedmatch";
+import { GUEST_INTENTS } from "@/lib/app/vocab";
 import {
   END_REASON_GUEST,
   END_SCREEN_PENDING_NOTE,
   END_SCREEN_STORAGE_NOTE,
   FRAMING_GUIDANCE,
-  GUEST_HONEST_LINES,
-  GUEST_NOTICE,
-  GUEST_NOTICE_EXTRA,
   GUEST_REPLY_TEXT,
   GUEST_SCROLLBACK_HINT,
   HELP_LABEL,
   LIGHT_WORDS_GUEST,
   LIMITS,
   REPEAT_TEXT,
-  SIGN_CARD_TEXT,
   SPEECH_CAPTION_NOTE,
   VRI_UNSET_TEXT,
+  CAPTION_BACKEND_LABEL,
+  FACT_LABEL,
   type Candidate,
   type GuestIntentId,
+  type GuestPrefs,
   type GuestProposal,
   type GuestReplyKind,
-  type GuestSignView,
+  type NumberAbout,
   type VriInfo,
 } from "@/lib/app/types";
+import { KeyTag } from "@/components/app/KeyTag";
 import AvatarStage from "./AvatarStage";
+import { ConfirmCard, SignRow, canSpeak, hhmm, isTyping, kioskInput, useNow, type SendHow, type Session } from "./common";
+import DeskAlert from "./DeskAlert";
+import FactTiles from "./FactTiles";
 import s from "./guest.module.css";
-import { useGuestSession, type ActionOutcome, type GuestUi, type RecordItem } from "./useGuestSession";
+import LiveCaptions from "./LiveCaptions";
+import { AboutScreen, DisplayOnlyChoices, FirstScreen, ModeSwitch } from "./ModeChooser";
+import NumberPad from "./NumberPad";
+import PictureBoard from "./PictureBoard";
+import Preferences, { DEFAULT_PREFS } from "./Preferences";
+import { useGuestSession, type GuestUi, type RecordItem } from "./useGuestSession";
 
-type Session = ReturnType<typeof useGuestSession>;
-
-/** Caption size steps (BN-3). Memory only; a new page starts at the standard size. */
-type TextSize = 0 | 1 | 2;
-const TEXT_SIZE_WORDS: Record<TextSize, string> = { 0: "Standard", 1: "Large", 2: "Largest" };
-
-/** Order of the repair replies under the latest caption (plan C2-11 plus BN-3). */
-const REPLY_ORDER: GuestReplyKind[] = ["please_repeat", "slower", "please_type", "show_on_paper", "dont_understand", "wait_please"];
-
-const isTyping = () => {
-  const el = document.activeElement;
-  return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
-};
-
-/** Kiosk inputs (every team-owned device): no autocomplete, autocorrect, capitalisation or spellcheck (AS-8). */
-const kioskInput = (kiosk: boolean) =>
-  kiosk ? ({ autoComplete: "off", autoCorrect: "off", autoCapitalize: "off", spellCheck: false } as const) : {};
-
-const hhmm = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-
-function useNow(ms = 1000) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), ms);
-    return () => clearInterval(id);
-  }, [ms]);
-  return now;
-}
+/**
+ * Order of the repair replies under the latest caption (plan C2-11, BN-3, features-plan F5). "Say it
+ * another way" and "Write the number" are F5 additions.
+ */
+const REPLY_ORDER: GuestReplyKind[] = ["please_repeat", "slower", "please_type", "say_another_way", "write_number", "show_on_paper", "dont_understand", "wait_please"];
 
 const INTERPRETER_SENT = "Interpreter request sent to the desk.";
 const INTERPRETER_ACKED = "The desk is arranging an interpreter.";
@@ -81,8 +75,13 @@ export default function GuestApp() {
   const session = useGuestSession();
   const { ui, hidden } = session;
   const displayOnly = ui.hello?.displayOnly ?? false;
-  const [textSize, setTextSize] = useState<TextSize>(0);
+  // F10: preferences in React state only (AS-3); a new page starts with the defaults.
+  const [prefs, setPrefs] = useState<GuestPrefs>(DEFAULT_PREFS);
   const finishRef = useRef<HTMLDialogElement>(null);
+  // Preferences are erased with the conversation, like everything else on this screen.
+  useEffect(() => {
+    if (ui.conn === "ended") setPrefs(DEFAULT_PREFS);
+  }, [ui.conn]);
 
   if (hidden) {
     // AS-7: nothing of the conversation while the page is hidden; restored from memory on return.
@@ -95,11 +94,15 @@ export default function GuestApp() {
     );
   }
 
-  const ui2: Ui = { session, textSize, setTextSize, askFinish: () => finishRef.current?.showModal() };
+  const ui2: Ui = { session, prefs, setPrefs, askFinish: () => finishRef.current?.showModal() };
+  const alert = ui.alerts[0] ?? null;
 
   return (
-    <main className={s.root} data-display-only={displayOnly || undefined} data-text-size={textSize}>
+    <main className={s.root} data-display-only={displayOnly || undefined} data-text-size={prefs.textSize} data-avatar-size={prefs.avatarSize}>
       <LiveRegions ui={ui} />
+      {alert && ui.conn !== "ended" && (
+        <DeskAlert key={alert.id} alert={alert} flash={prefs.alertFlash} vibrate={prefs.alertVibrate} interactive={!displayOnly} onOk={session.ackAlert} />
+      )}
       <GuestBody u={ui2} />
       <HelpRow session={session} />
       {!displayOnly && <FinishDialog dialogRef={finishRef} onFinish={() => void session.finish()} onHelp={() => void session.emergency()} />}
@@ -107,13 +110,13 @@ export default function GuestApp() {
   );
 }
 
-type Ui = { session: Session; textSize: TextSize; setTextSize: (v: TextSize) => void; askFinish: () => void };
+type Ui = { session: Session; prefs: GuestPrefs; setPrefs: (p: GuestPrefs) => void; askFinish: () => void };
 
 function GuestBody({ u }: { u: Ui }) {
   const { ui } = u.session;
   const displayOnly = ui.hello?.displayOnly ?? false;
 
-  if (ui.conn === "ended" && ui.end) return <EndScreen reason={ui.end.reason} pendingLost={ui.end.pendingLost} />;
+  if (ui.conn === "ended" && ui.end) return <EndScreen ui={ui} />;
   if (ui.conn === "connecting") return <Message title="Connecting to the front desk" />;
   if (ui.conn === "no_session") return <Message title="Ask the front desk to connect this screen." />;
   if (ui.conn === "link_used")
@@ -146,7 +149,11 @@ function GuestBody({ u }: { u: Ui }) {
         <p className={s.notice}>{ui.interpreter === "acked" ? INTERPRETER_ACKED : INTERPRETER_SENT}</p>
       )}
       {ui.settings.guestMode === "choosing" ? (
-        displayOnly ? <DisplayOnlyChoices /> : <FirstScreen session={u.session} />
+        displayOnly ? (
+          <DisplayOnlyChoices />
+        ) : (
+          <FirstScreen session={u.session} language={u.prefs.signLanguage} setLanguage={(l) => u.setPrefs({ ...u.prefs, signLanguage: l })} />
+        )
       ) : (
         <Conversation u={u} />
       )}
@@ -166,6 +173,7 @@ function Header({ u }: { u: Ui }) {
       <p className={s.brand}>SignBridge front desk</p>
       {ui.pairedWith && <p className={s.muted}>Paired with {ui.pairedWith}</p>}
       {!displayOnly && ui.settings.guestMode !== "choosing" && <MoreMenu u={u} />}
+      {!displayOnly && ui.settings.guestMode !== "choosing" && <ModeSwitch session={u.session} />}
       {ui.link === "down" && (
         // Robustness: a dropped or frozen connection is shown, never hidden behind an old caption.
         <p className={s.linkDown} role="status">
@@ -219,6 +227,18 @@ function LiveRegions({ ui }: { ui: GuestUi }) {
   useEffect(() => {
     if (ui.link === "down") setPolite("Reconnecting to the front desk. This screen may be out of date.");
   }, [ui.link]);
+  // F1: a new tile is announced by its label only; the value (a room number, a password) is not read out.
+  const factKeys = Object.keys(ui.facts).join(",");
+  const prevFacts = useRef("");
+  useEffect(() => {
+    const before = new Set(prevFacts.current ? prevFacts.current.split(",") : []);
+    prevFacts.current = factKeys;
+    const added = factKeys ? factKeys.split(",").filter((k) => !before.has(k)) : [];
+    if (added.length) setPolite(`New on your screen: ${added.map((k) => FACT_LABEL[k as keyof typeof FACT_LABEL]).join(", ")}.`);
+  }, [factKeys]);
+  useEffect(() => {
+    if (ui.captionBackend) setPolite(`Live captions: ${CAPTION_BACKEND_LABEL[ui.captionBackend]}.`);
+  }, [ui.captionBackend]);
   useEffect(() => {
     if (ui.help.state === "sent") setAssertive("Staff has been alerted.");
     if (ui.help.state === "acked") setAssertive("Staff is coming.");
@@ -316,12 +336,32 @@ function TimeWarning({ warnings }: { warnings: GuestUi["warnings"] }) {
   );
 }
 
-function EndScreen({ reason, pendingLost }: { reason: keyof typeof END_REASON_GUEST; pendingLost: boolean }) {
+function EndScreen({ ui }: { ui: GuestUi }) {
+  const end = ui.end!;
+  // F17: the desk's receipt from real counters when it sent one; otherwise what this screen itself knows.
+  const lines = end.receipt
+    ? receiptLines(end.receipt, hhmm)
+    : [
+        ...(ui.backendsSeen.filter((b) => b !== "typed").length
+          ? [`Live captions: ${ui.backendsSeen.filter((b) => b !== "typed").map((b) => CAPTION_BACKEND_LABEL[b]).join("; ")}.`]
+          : []),
+        `This screen erased the conversation at ${hhmm(end.at)}.`,
+      ];
   return (
     <div className={s.center}>
       <h1 className={s.title}>This conversation has ended.</h1>
-      <p className={s.lead}>{END_REASON_GUEST[reason]}</p>
-      {pendingLost && <p className={s.lead}>{END_SCREEN_PENDING_NOTE}</p>}
+      <p className={s.lead}>{END_REASON_GUEST[end.reason]}</p>
+      {end.pendingLost && <p className={s.lead}>{END_SCREEN_PENDING_NOTE}</p>}
+      <section className={s.receipt} aria-labelledby="receipt-title">
+        <h2 id="receipt-title" className={s.receiptTitle}>
+          What this conversation used
+        </h2>
+        <ul className={s.receiptList}>
+          {lines.map((l) => (
+            <li key={l}>{l}</li>
+          ))}
+        </ul>
+      </section>
       <p className={s.muted}>{END_SCREEN_STORAGE_NOTE}</p>
       <p className={s.lead}>If you need anything else, wave to the front desk.</p>
     </div>
@@ -366,112 +406,6 @@ function FinishDialog({ dialogRef, onFinish, onHelp }: { dialogRef: React.RefObj
 }
 
 /* ------------------------------------------------------------------ */
-/* First screen (plan 4.4, BN-2)                                       */
-/* ------------------------------------------------------------------ */
-
-function FirstScreen({ session }: { session: Session }) {
-  const { ui, act, requestInterpreter } = session;
-  const [error, setError] = useState<string | null>(null);
-  const speakAloud = ui.settings.speakAloud;
-
-  const choose = async (choice: "sign" | "type" | "interpreter" | "text_only") => {
-    setError(null);
-    const r = await act({ type: "guest_choice", choice });
-    if (!r.ok) return setError(r.message);
-    if (choice === "interpreter") await requestInterpreter();
-  };
-
-  return (
-    <div className={s.first}>
-      <h1 className={s.title}>How would you like to talk with the front desk?</h1>
-      <div className={s.choices}>
-        <button type="button" className={s.choice} disabled={!ui.signingAvailable} onClick={() => void choose("sign")}>
-          <ChoiceIcon kind="sign" />
-          <span className={s.choiceTitle}>Sign</span>
-          <span className={s.choiceText}>
-            {ui.signingAvailable ? SIGN_CARD_TEXT : "Signing is not available right now. Please type or ask for an interpreter."}
-          </span>
-        </button>
-        <button type="button" className={s.choice} onClick={() => void choose("type")}>
-          <ChoiceIcon kind="type" />
-          <span className={s.choiceTitle}>Type</span>
-          <span className={s.choiceText}>Type a message, or tap one of 20 common requests.</span>
-        </button>
-        <button type="button" className={s.choice} onClick={() => void choose("interpreter")}>
-          <ChoiceIcon kind="interpreter" />
-          <span className={s.choiceTitle}>Ask for a human interpreter</span>
-          <span className={s.choiceText}>The desk arranges a sign language interpreter. This may take time.</span>
-        </button>
-        <button type="button" className={s.choice} onClick={() => void choose("text_only")}>
-          <ChoiceIcon kind="text" />
-          <span className={s.choiceTitle}>Text only</span>
-          <span className={s.choiceText}>Read the desk&apos;s words as text, with no avatar.</span>
-        </button>
-      </div>
-      {error && <p className={s.error}>{error}</p>}
-      <label className={s.check}>
-        <input type="checkbox" checked={speakAloud} onChange={(e) => void act({ type: "prefs", speakAloud: e.target.checked })} />
-        <span>
-          Read my sentences aloud at the desk. <span className={s.muted}>People nearby will hear it. You still choose each time.</span>
-        </span>
-      </label>
-      <ul className={s.honest}>
-        <li>{GUEST_HONEST_LINES.camera}</li>
-        <li>{GUEST_HONEST_LINES.keeps}</li>
-        <li>{GUEST_HONEST_LINES.mistakes}</li>
-      </ul>
-      <AboutScreen emergencyNote={ui.hello?.emergencyNote ?? ""} />
-    </div>
-  );
-}
-
-/** Small line icons for the four equal choices; decoration only, the words carry the meaning. */
-function ChoiceIcon({ kind }: { kind: "sign" | "type" | "interpreter" | "text" }) {
-  const paths: Record<typeof kind, string> = {
-    sign: "M7 21v-6.5L4.6 9.8a1.4 1.4 0 0 1 2.4-1.4L9 11V4.5a1.3 1.3 0 0 1 2.6 0V10m0-5.8a1.3 1.3 0 0 1 2.6 0V10m0-4.3a1.3 1.3 0 0 1 2.6 0V11m0-3a1.3 1.3 0 0 1 2.6 0v6.5c0 3.6-2.4 6.5-6 6.5",
-    type: "M3 7h18v10H3zM6 10h1m3 0h1m3 0h1m3 0h1M7 14h10",
-    interpreter: "M8.5 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm-5 9c0-3 2.2-5 5-5s5 2 5 5M16 8.5a2.5 2.5 0 1 0 0-5M17 12.6c2 .5 3.5 2.3 3.5 4.9",
-    text: "M4 6h16M4 10h16M4 14h11M4 18h8",
-  };
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24" className={s.choiceIcon}>
-      <path d={paths[kind]} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function AboutScreen({ emergencyNote }: { emergencyNote: string }) {
-  return (
-    <>
-      <details className={s.about}>
-        <summary>About this screen</summary>
-        <p>{GUEST_NOTICE}</p>
-        {GUEST_NOTICE_EXTRA.map((t) => (
-          <p key={t}>{t}</p>
-        ))}
-      </details>
-      {emergencyNote && <p className={s.muted}>{emergencyNote}</p>}
-    </>
-  );
-}
-
-function DisplayOnlyChoices() {
-  return (
-    <div className={s.first}>
-      <h1 className={s.title}>The desk will ask how you want to talk. Point to one:</h1>
-      <div className={s.choices} aria-label="Choices on the card at the desk">
-        {["Sign", "Type", "Interpreter", "Text only"].map((c) => (
-          <div key={c} className={`${s.choice} ${s.choiceStatic}`}>
-            <span className={s.choiceTitle}>{c}</span>
-          </div>
-        ))}
-      </div>
-      <p className={s.lead}>{SIGN_CARD_TEXT}</p>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
 /* Conversation (plan 4.5)                                             */
 /* ------------------------------------------------------------------ */
 
@@ -491,8 +425,9 @@ function Conversation({ u }: { u: Ui }) {
     <div className={s.conversation} data-pending={((ui.pending !== null || keySigning || needsGuest) && !displayOnly) || undefined}>
       <DeskSaid session={u.session} />
       <section className={s.you} aria-labelledby="you-title">
-        {displayOnly ? <DisplayOnlyYou ui={ui} /> : <YouPanel session={u.session} />}
+        {displayOnly ? <DisplayOnlyYou ui={ui} /> : <YouPanel u={u} />}
       </section>
+      <FactTiles facts={ui.facts} interactive={!displayOnly} />
       {!displayOnly && <Scrollback record={ui.record} onFinish={u.askFinish} />}
     </div>
   );
@@ -522,7 +457,8 @@ function DeskSaid({ session }: { session: Session }) {
       <h2 id="desk-title" className={s.sectionTitle}>
         Front desk said
       </h2>
-      {ui.captions.length === 0 && <p className={s.muted}>The desk&apos;s words will appear here.</p>}
+      <LiveCaptions captions={ui.liveCaptions} backend={ui.captionBackend} />
+      {ui.captions.length === 0 && ui.liveCaptions.length === 0 && <p className={s.muted}>The desk&apos;s words will appear here.</p>}
       {ui.captions.map((c, i) => (
         <div key={c.cap.id} className={i === 0 ? s.captionLatest : s.captionOld} data-new={(i === 0 && c.isNew) || undefined}>
           <p className={i === 0 ? s.captionText : s.captionTextOld}>
@@ -566,45 +502,84 @@ function DeskSaid({ session }: { session: Session }) {
   );
 }
 
-function YouPanel({ session }: { session: Session }) {
+/** "Talk to an interpreter now" comes first after Help, after two missed signs, or when the guest asked for it (F11 E3). */
+function interpreterFirst(ui: GuestUi, prefs: GuestPrefs): boolean {
+  if (ui.settings.guestMode === "interpreter") return false;
+  return prefs.interpreterFirst || ui.help.state !== "none" || (ui.repeat?.streak ?? 0) >= 2 || ui.pending?.kind === "did_you_mean_help";
+}
+
+/** A number pad preset from the desk's latest question, e.g. "How many nights?" (F7). */
+function numberHint(ui: GuestUi): NumberAbout | null {
+  const t = ui.captions[0]?.cap.text ?? "";
+  if (/how many nights/i.test(t)) return "nights";
+  if (/how many (people|guests|adults)/i.test(t)) return "people";
+  return null;
+}
+
+function InterpreterNow({ session }: { session: Session }) {
+  const { ui, act, requestInterpreter } = session;
+  return (
+    <div className={s.interpreterNow}>
+      <button
+        type="button"
+        className={s.primary}
+        onClick={() => {
+          void act({ type: "guest_choice", choice: "interpreter" });
+          if (ui.interpreter === "none") void requestInterpreter();
+        }}
+      >
+        Talk to an interpreter now
+      </button>
+      {ui.interpreter !== "none" && <p className={s.small}>{ui.interpreter === "acked" ? INTERPRETER_ACKED : INTERPRETER_SENT}</p>}
+    </div>
+  );
+}
+
+function YouPanel({ u }: { u: Ui }) {
+  const session = u.session;
   const { ui } = session;
   const mode = ui.settings.guestMode;
+  const [numbers, setNumbers] = useState(false);
+  const hint = numberHint(ui);
+  // The desk asked a number question: the pad opens by itself (the guest can still close it).
+  useEffect(() => {
+    if (hint && (mode === "type" || mode === "tap" || mode === "text_only")) setNumbers(true);
+  }, [hint, mode]);
+  const canNumber = mode === "type" || mode === "tap" || mode === "text_only";
   return (
     <>
       <h2 id="you-title" className={s.sectionTitle}>
         You
       </h2>
+      {!ui.pending && interpreterFirst(ui, u.prefs) && <InterpreterNow session={session} />}
       {ui.pending ? (
         <ProposalView key={ui.pending.proposalId} session={session} proposal={ui.pending} />
       ) : (
         <>
           {mode === "sign" && <SignPanel session={session} />}
+          {mode === "tap" && (
+            <div className={s.stack}>
+              {ui.echo && <Echo echo={ui.echo} />}
+              <PictureBoard session={session} />
+            </div>
+          )}
           {(mode === "type" || mode === "text_only") && <TypePanel session={session} />}
-          {mode === "interpreter" && <InterpreterPanel session={session} />}
+          {mode === "interpreter" && <InterpreterPanel u={u} />}
+          {canNumber && (
+            <div className={s.numberBlock}>
+              <button type="button" className={s.secondary} aria-expanded={numbers} aria-controls="number-pad" onClick={() => setNumbers((v) => !v)}>
+                {numbers ? "Close the number pad" : "Type a number"}
+              </button>
+              {numbers && (
+                <div id="number-pad">
+                  <NumberPad session={session} suggestAbout={hint} />
+                </div>
+              )}
+            </div>
+          )}
         </>
       )}
     </>
-  );
-}
-
-/** True when the guest allowed reading aloud and is not in Text only mode (C2-22). */
-const canSpeak = (ui: GuestUi) => ui.settings.speakAloud && ui.settings.guestMode !== "text_only";
-
-function SignRow({ signs, simulated }: { signs: GuestSignView[]; simulated: boolean }) {
-  return (
-    <ul className={s.signRow} aria-label="Signs the camera read">
-      {simulated && (
-        <li>
-          <SimulatedBadge />
-        </li>
-      )}
-      {signs.map((sg, i) => (
-        <li key={`${sg.seq ?? "x"}-${i}`} className={s.signItem}>
-          <KeyTag token={sg.label === "NONE" ? "no sign" : sg.label} missed={sg.light === "red"} />
-          <TrafficLight light={sg.light} surface="guest" />
-        </li>
-      ))}
-    </ul>
   );
 }
 
@@ -623,10 +598,15 @@ function SignPanel({ session }: { session: Session }) {
   if (!ui.signingAvailable) {
     return (
       <div className={s.stack}>
-        <p className={s.lead}>Signing is not available right now. Please type or ask for an interpreter.</p>
-        <button type="button" className={s.primary} onClick={() => void act({ type: "guest_choice", choice: "type" })}>
-          Type instead
-        </button>
+        <p className={s.lead}>Signing is not available right now. Please type, tap pictures or ask for an interpreter.</p>
+        <div className={s.buttonRow}>
+          <button type="button" className={s.primary} onClick={() => void act({ type: "guest_choice", choice: "type" })}>
+            Type instead
+          </button>
+          <button type="button" className={s.secondary} onClick={() => void act({ type: "guest_choice", choice: "tap" })}>
+            Tap pictures
+          </button>
+        </div>
       </div>
     );
   }
@@ -688,6 +668,14 @@ function SignPanel({ session }: { session: Session }) {
               </>
             )}
           </div>
+        </div>
+      )}
+
+      {repeat && repeat.streak >= 2 && (
+        // Two missed signs in a row: the pictures are already here, no extra tap (features-plan F2 E4).
+        <div className={s.otherWays}>
+          <h3 className={s.subTitle}>Or tap a picture instead</h3>
+          <PictureBoard session={session} compact />
         </div>
       )}
 
@@ -870,98 +858,8 @@ function proposalHeading(p: GuestProposal): string {
 }
 
 /* ------------------------------------------------------------------ */
-/* Confirm before speaking (BN-1)                                      */
+/* Confirm before speaking (BN-1): ConfirmCard lives in common.tsx    */
 /* ------------------------------------------------------------------ */
-
-type Confirmable = { text: string; needsName: boolean };
-type SendHow = { voice: boolean; name?: string };
-
-/**
- * The one confirmation every sentence goes through: the exact sentence, the signs it came from, and
- * three equal buttons. "Say it" lets the desk read it aloud; "Text only" shows it at the desk with no
- * voice; "Fix" never re-runs recognition by itself (BN-1).
- */
-function ConfirmCard(props: {
-  ui: GuestUi;
-  item: Confirmable;
-  signs: GuestSignView[] | null;
-  simulated: boolean;
-  testMode: boolean;
-  headingRef?: React.RefObject<HTMLHeadingElement | null>;
-  heading?: string;
-  onSend: (how: SendHow) => Promise<ActionOutcome>;
-  fixOptions: { label: string; run: () => void }[];
-}) {
-  const { ui, item, signs, simulated, testMode } = props;
-  const [name, setName] = useState("");
-  const [nameErr, setNameErr] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [fixOpen, setFixOpen] = useState(false);
-  const speak = canSpeak(ui);
-
-  const send = async (voice: boolean) => {
-    let typedName: string | undefined;
-    if (item.needsName) {
-      const problem = nameProblem(name);
-      if (problem) return setNameErr(problem);
-      typedName = name.normalize("NFC").trim();
-    }
-    setBusy(true);
-    setError(null);
-    const r = await props.onSend({ voice, ...(typedName ? { name: typedName } : {}) });
-    setBusy(false);
-    if (!r.ok) {
-      if (r.field === "name") setNameErr(r.message);
-      else setError(r.message);
-    }
-  };
-
-  const sentence = item.needsName ? `My name is ${name.trim() || "..."}` : item.text;
-
-  return (
-    <div className={s.confirm}>
-      {props.heading && <p className={s.small}>{props.heading}</p>}
-      <h3 ref={props.headingRef} tabIndex={-1} className={s.proposalHeading}>
-        &ldquo;{sentence}&rdquo;
-      </h3>
-      {signs && signs.length > 0 && <SignRow signs={signs} simulated={simulated} />}
-      {testMode && <p className={s.framingAlert}>Test mode: these signs were invented by a test program and will not be spoken.</p>}
-      {item.needsName && <NameField name={name} setName={setName} error={nameErr} setError={setNameErr} kiosk={ui.hello?.kiosk ?? true} />}
-      {signs && signs.length > 0 && <p className={s.small}>{GUEST_HONEST_LINES.face}</p>}
-      <div className={s.confirmButtons} data-count={speak ? 3 : 2} data-actions="">
-        {speak && (
-          <button type="button" className={s.primary} disabled={busy || testMode} onClick={() => void send(true)}>
-            Say it
-          </button>
-        )}
-        <button type="button" className={speak ? s.secondary : s.primary} disabled={busy || testMode} onClick={() => void send(false)}>
-          {speak ? "Text only" : "Send as text"}
-        </button>
-        <button type="button" className={s.secondary} disabled={busy} aria-expanded={fixOpen} onClick={() => setFixOpen((v) => !v)}>
-          Fix
-        </button>
-      </div>
-      <p className={s.small}>
-        {speak
-          ? item.needsName
-            ? "Say it: your name appears on the desk screen, and staff read it aloud on this laptop's own voice. Text only: it is never read aloud."
-            : "Say it: the desk reads this sentence aloud. Text only: it appears on the desk screen with no voice."
-          : "Reading aloud is off. The sentence appears on the desk screen with no voice."}
-      </p>
-      {fixOpen && (
-        <div className={s.buttonRow} role="group" aria-label="Fix">
-          {props.fixOptions.map((f) => (
-            <button key={f.label} type="button" className={s.secondary} onClick={f.run}>
-              {f.label}
-            </button>
-          ))}
-        </div>
-      )}
-      {error && <p className={s.error}>{error}</p>}
-    </div>
-  );
-}
 
 function ProposalView({ session, proposal }: { session: Session; proposal: GuestProposal }) {
   const { ui, act, emergency, closeProposal } = session;
@@ -1094,36 +992,15 @@ function ProposalView({ session, proposal }: { session: Session; proposal: Guest
   );
 }
 
-function NameField(props: { name: string; setName: (v: string) => void; error: string | null; setError: (v: string | null) => void; kiosk: boolean }) {
-  return (
-    <div className={s.field}>
-      <label htmlFor="guest-name">Type your name</label>
-      <input
-        id="guest-name"
-        className={s.input}
-        value={props.name}
-        maxLength={60}
-        aria-invalid={!!props.error}
-        aria-describedby={props.error ? "guest-name-error" : undefined}
-        onChange={(e) => {
-          props.setName(e.target.value);
-          props.setError(null);
-        }}
-        {...kioskInput(props.kiosk)}
-      />
-      {props.error && (
-        <p id="guest-name-error" className={s.error}>
-          {props.error}
-        </p>
-      )}
-    </div>
-  );
-}
-
 function TypePanel({ session }: { session: Session }) {
-  const { ui, act, unsentRef } = session;
+  const { ui, act, unsentRef, sendingVia } = session;
   const kiosk = ui.hello?.kiosk ?? true;
   const [picked, setPicked] = useState<GuestIntentId | null>(null);
+  /** F8: how the picked sentence was reached: tapped in the list, or offered after typing. */
+  const [pickedVia, setPickedVia] = useState<"phrase_list" | "typed_match">("phrase_list");
+  /** F8: the typed words and the fixed requests they look like, shown before anything is sent. */
+  const [suggest, setSuggest] = useState<{ text: string; ids: GuestIntentId[] } | null>(null);
+  const suggestRef = useRef<HTMLHeadingElement>(null);
   const [text, setText] = useState("");
   const [textErr, setTextErr] = useState<string | null>(null);
   const [sent, setSent] = useState<string | null>(null);
@@ -1133,8 +1010,8 @@ function TypePanel({ session }: { session: Session }) {
   const echoRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    unsentRef.current = text.trim().length > 0 || picked !== null;
-  }, [text, picked, unsentRef]);
+    unsentRef.current = text.trim().length > 0 || picked !== null || suggest !== null;
+  }, [text, picked, suggest, unsentRef]);
 
   // UX review 4: on a phone the typing box sat 1.5 screens down, below the avatar and the 20 phrases.
   // The box now comes before the phrases, and switching to Type brings it into view (no focus, so the
@@ -1147,16 +1024,33 @@ function TypePanel({ session }: { session: Session }) {
     if (sent || ui.echo) echoRef.current?.scrollIntoView({ block: "nearest" });
   }, [sent, ui.echo]);
 
-  const sendText = async () => {
-    const problem = typedProblem(text);
-    if (problem) return setTextErr(problem);
+  useEffect(() => {
+    if (suggest) suggestRef.current?.focus({ preventScroll: false });
+  }, [suggest]);
+
+  const sendTyped = async (clean: string) => {
     setBusy(true);
-    const clean = text.normalize("NFC").trim();
+    sendingVia("typed");
     const r = await act({ type: "guest_typed", text: clean });
     setBusy(false);
     if (!r.ok) return setTextErr(r.message);
+    setSuggest(null);
     setSent(clean);
     setText("");
+  };
+
+  // F8: if the words look like one of the fixed requests, offer it first ("Did you mean...?"). The
+  // guest's own words are never changed; "Send my words as typed" is always one tap away.
+  const sendText = async () => {
+    const problem = typedProblem(text);
+    if (problem) return setTextErr(problem);
+    const clean = text.normalize("NFC").trim();
+    const ids = matchTyped(clean).map((m) => m.intentId);
+    if (ids.length > 0) {
+      setSent(null);
+      return setSuggest({ text: clean, ids });
+    }
+    await sendTyped(clean);
   };
 
   return (
@@ -1210,17 +1104,60 @@ function TypePanel({ session }: { session: Session }) {
             signs={null}
             simulated={false}
             testMode={false}
-            heading="You picked:"
-            onSend={async (how) => {
-              const r = await act({ type: "guest_phrase", intentId: phrase.id, voice: how.voice, ...(how.name ? { name: how.name } : {}) });
-              if (r.ok) setPicked(null);
+            heading={pickedVia === "typed_match" ? "You chose this request:" : "You picked:"}
+            onSend={async (how: SendHow) => {
+              sendingVia(pickedVia);
+              const r = await act({ type: "guest_phrase", intentId: phrase.id, via: pickedVia, voice: how.voice, ...(how.name ? { name: how.name } : {}) });
+              if (r.ok) {
+                setPicked(null);
+                if (pickedVia === "typed_match") {
+                  setText("");
+                  setSuggest(null);
+                }
+              }
               return r;
             }}
             fixOptions={[
               { label: "Pick another", run: () => setPicked(null) },
-              { label: "Type it myself", run: () => setPicked(null) },
+              ...(pickedVia === "typed_match" && suggest
+                ? [{ label: "Send my words as typed", run: () => void sendTyped(suggest.text).then(() => setPicked(null)) }]
+                : [{ label: "Type it myself", run: () => setPicked(null) }]),
             ]}
           />
+        </div>
+      ) : suggest ? (
+        <div className={s.card} data-kind="typed_match">
+          <h3 ref={suggestRef} tabIndex={-1} className={s.subTitle}>
+            Did you mean:
+          </h3>
+          <div className={s.pickList} data-actions="">
+            {suggest.ids.map((id) => {
+              const g = GUEST_INTENTS.find((x) => x.id === id);
+              if (!g) return null;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  className={s.sentenceButton}
+                  onClick={() => {
+                    setPickedVia("typed_match");
+                    setPicked(id);
+                  }}
+                >
+                  {g.needsName ? "My name is ..." : g.text}
+                </button>
+              );
+            })}
+          </div>
+          <p className={s.small}>A set request can be read aloud by the desk&apos;s voice straight away. Your own words are shown to the desk first.</p>
+          <div className={s.buttonRow}>
+            <button type="button" className={s.secondary} disabled={busy} onClick={() => void sendTyped(suggest.text)}>
+              Send my words as typed
+            </button>
+            <button type="button" className={s.quiet} onClick={() => setSuggest(null)}>
+              Change my words
+            </button>
+          </div>
         </div>
       ) : (
         <>
@@ -1233,6 +1170,7 @@ function TypePanel({ session }: { session: Session }) {
                 className={s.phraseButton}
                 disabled={busy}
                 onClick={() => {
+                  setPickedVia("phrase_list");
                   setPicked(p.id);
                   setSent(null);
                   setTextErr(null);
@@ -1248,10 +1186,29 @@ function TypePanel({ session }: { session: Session }) {
   );
 }
 
-function InterpreterPanel({ session }: { session: Session }) {
+/**
+ * Human interpreter (F11). The request itself goes out with one tap and carries nothing. The card is
+ * optional: the guest sees its exact text, ticks what to share, and only then sends it to the desk.
+ * The app calls no interpreting provider; staff read or copy the card.
+ */
+function InterpreterPanel({ u }: { u: Ui }) {
+  const { session, prefs } = u;
   const { ui, requestInterpreter, act } = session;
   const vri = ui.hello?.vri ?? null;
   const kiosk = ui.hello?.kiosk ?? true;
+  const [shareLanguage, setShareLanguage] = useState(false);
+  const [shareTopics, setShareTopics] = useState(false);
+  const [cardSent, setCardSent] = useState<string | null>(null);
+  const lastFixed = [...ui.record].reverse().find((r) => r.kind === "you" && GUEST_INTENTS.some((g) => !g.needsName && g.text === r.text));
+  const card = interpreterCard({ shareLanguage, language: prefs.signLanguage, shareTopics, intents: ui.sentIntents, openRequest: lastFixed?.text ?? null });
+  const lines = interpreterCardLines(card);
+  const preview = interpreterCardLines(interpreterCard({ shareLanguage: true, language: prefs.signLanguage, shareTopics: true, intents: ui.sentIntents, openRequest: lastFixed?.text ?? null }));
+
+  const sendCard = async () => {
+    const r = await requestInterpreter({ language: shareLanguage ? prefs.signLanguage : null, topics: shareTopics });
+    setCardSent(r.ok ? "The card was sent to the desk." : r.message);
+  };
+
   return (
     <div className={s.stack}>
       <div className={s.card}>
@@ -1268,10 +1225,50 @@ function InterpreterPanel({ session }: { session: Session }) {
           </button>
         )}
       </div>
-      <p className={s.muted}>While you wait, you can still type.</p>
-      <button type="button" className={s.secondary} onClick={() => void act({ type: "guest_choice", choice: "type" })}>
-        Type instead
-      </button>
+
+      <details className={s.about}>
+        <summary>Share a short card with the interpreter (optional)</summary>
+        <p>The interpreter can start faster if they know a little. Tick what you want to share. Nothing is shared unless you tick it and tap Send.</p>
+        <label className={s.check}>
+          <input type="checkbox" checked={shareLanguage} onChange={(e) => setShareLanguage(e.target.checked)} />
+          <span>My sign language: {signLanguageName(prefs.signLanguage)}</span>
+        </label>
+        <label className={s.check}>
+          <input type="checkbox" checked={shareTopics} onChange={(e) => setShareTopics(e.target.checked)} />
+          <span>What we talked about so far (topic words only, never my name or numbers)</span>
+        </label>
+        <div className={s.consentCard} aria-label="The card exactly as the desk will see it">
+          <p className={s.small}>The desk will see exactly this:</p>
+          {lines.length ? (
+            <ul className={s.consentLines}>
+              {lines.map((l) => (
+                <li key={l}>{l}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className={s.cardText}>Nothing ticked. No card will be sent.</p>
+          )}
+          {lines.length === 0 && preview.length > 0 && <p className={s.small}>If you tick both: {preview.join(" · ")}</p>}
+        </div>
+        <button type="button" className={s.secondary} disabled={lines.length === 0} onClick={() => void sendCard()}>
+          Send this card to the desk
+        </button>
+        {cardSent && (
+          <p className={s.small} role="status">
+            {cardSent}
+          </p>
+        )}
+      </details>
+
+      <p className={s.muted}>While you wait, you can still type or tap pictures.</p>
+      <div className={s.buttonRow}>
+        <button type="button" className={s.secondary} onClick={() => void act({ type: "guest_choice", choice: "type" })}>
+          Type instead
+        </button>
+        <button type="button" className={s.secondary} onClick={() => void act({ type: "guest_choice", choice: "tap" })}>
+          Tap pictures
+        </button>
+      </div>
     </div>
   );
 }
@@ -1345,11 +1342,18 @@ function Scrollback({ record, onFinish }: { record: RecordItem[]; onFinish: () =
             <span className={s.recordMeta}>
               {r.kind === "desk" ? "Desk" : "You"} <time>{hhmm(r.at)}</time>
             </span>
-            <span className={s.recordText}>{r.text}</span>
-            {r.kind === "you" && (
-              <span className={s.recordNote}>{r.delivery === "spoken" ? "read aloud" : r.delivery === "shown" ? "shown as text" : "on the desk screen"}</span>
+            {r.kind === "desk" && r.retracted ? (
+              <span className={s.recordText}>
+                <del>{r.text}</del> <span className={s.recordNote}>Removed by the desk</span>
+              </span>
+            ) : (
+              <span className={s.recordText}>{r.text}</span>
             )}
-            {r.kind === "desk" && r.fromSpeech && <span className={s.recordNote}>from speech recognition</span>}
+            {/* F6: exactly one machine-or-human label per line, then how it was delivered. */}
+            <span className={s.recordNote}>
+              <span className={s.lineLabel}>{r.label}</span>
+              {r.kind === "you" && r.delivery !== "number" && (r.delivery === "spoken" ? ", read aloud" : r.delivery === "shown" ? ", shown as text" : ", on the desk screen")}
+            </span>
           </li>
         ))}
       </ol>
@@ -1361,13 +1365,12 @@ function Scrollback({ record, onFinish }: { record: RecordItem[]; onFinish: () =
 }
 
 /* ------------------------------------------------------------------ */
-/* More menu: modes, settings, text size, interpreter, notice, end     */
+/* More menu: preferences (F5, F10), notice, end. Modes are in the header (F12). */
 /* ------------------------------------------------------------------ */
 
 function MoreMenu({ u }: { u: Ui }) {
-  const { ui, act, requestInterpreter } = u.session;
+  const { ui } = u.session;
   const [open, setOpen] = useState(false);
-  const mode = ui.settings.guestMode;
   const panelRef = useRef<HTMLDivElement>(null);
 
   // Escape closes the menu and returns focus to its button.
@@ -1383,13 +1386,6 @@ function MoreMenu({ u }: { u: Ui }) {
     return () => document.removeEventListener("keydown", onKey);
   }, [open]);
 
-  // Choosing how to talk is a "do and go" action: the menu closes so the new panel is in view.
-  const pick = (run: () => void) => {
-    run();
-    setOpen(false);
-    document.getElementById("guest-more-button")?.focus();
-  };
-
   return (
     <div className={s.more}>
       <button type="button" id="guest-more-button" className={s.moreButton} aria-expanded={open} aria-controls="guest-more" onClick={() => setOpen((v) => !v)}>
@@ -1397,43 +1393,7 @@ function MoreMenu({ u }: { u: Ui }) {
       </button>
       {open && (
         <div id="guest-more" ref={panelRef} className={s.morePanel}>
-          <p className={s.subTitle} id="more-mode">
-            How I talk
-          </p>
-          <div className={s.buttonRow} role="group" aria-labelledby="more-mode">
-            <button type="button" className={s.secondary} aria-pressed={mode === "sign"} disabled={!ui.signingAvailable} onClick={() => pick(() => void act({ type: "guest_choice", choice: "sign" }))}>
-              Sign
-            </button>
-            <button type="button" className={s.secondary} aria-pressed={mode === "type"} onClick={() => pick(() => void act({ type: "guest_choice", choice: "type" }))}>
-              Type
-            </button>
-            <button type="button" className={s.secondary} aria-pressed={mode === "text_only"} onClick={() => pick(() => void act({ type: "guest_choice", choice: "text_only" }))}>
-              Text only
-            </button>
-          </div>
-          <button type="button" className={s.secondary} onClick={() => pick(() => void requestInterpreter())}>
-            Ask for a human interpreter
-          </button>
-          <p className={s.subTitle} id="more-size">
-            Text size
-          </p>
-          <div className={s.buttonRow} role="group" aria-labelledby="more-size">
-            {([0, 1, 2] as TextSize[]).map((n) => (
-              <button key={n} type="button" className={s.secondary} aria-pressed={u.textSize === n} onClick={() => u.setTextSize(n)}>
-                {TEXT_SIZE_WORDS[n]}
-              </button>
-            ))}
-          </div>
-          <label className={s.check}>
-            <input type="checkbox" checked={ui.settings.speakAloud} onChange={(e) => void act({ type: "prefs", speakAloud: e.target.checked })} />
-            <span>
-              Read my sentences aloud at the desk. <span className={s.muted}>People nearby will hear it.</span>
-            </span>
-          </label>
-          <label className={s.check}>
-            <input type="checkbox" checked={ui.settings.showAvatar} onChange={(e) => void act({ type: "prefs", showAvatar: e.target.checked })} />
-            <span>Show the avatar</span>
-          </label>
+          <Preferences session={u.session} prefs={u.prefs} setPrefs={u.setPrefs} />
           <AboutScreen emergencyNote={ui.hello?.emergencyNote ?? ""} />
           <button
             type="button"
