@@ -13,6 +13,31 @@ const SPEECH_RATIO = 3.5; // speech = this many times louder than the noise floo
 const MIN_THRESHOLD = 0.01; // RMS, never trigger below this
 const BUILT_IN = /macbook|built-in|intégré|interne/i; // the laptop's own microphone
 const AVOID = /airpods|iphone|teams|zoom|virtual|blackhole/i;
+
+/**
+ * Opens the microphone that hears the receptionist at the desk. The system default input can be AirPods, an
+ * iPhone (Continuity) or a virtual meeting device: switch to the laptop's built-in microphone when there is one.
+ * Throws if the microphone is blocked.
+ */
+export async function openDeskMicrophone(constraints: MediaTrackConstraints): Promise<MediaStream> {
+  let stream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
+  const current = stream.getAudioTracks()[0]?.label ?? "";
+  if (!BUILT_IN.test(current)) {
+    const inputs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput");
+    const builtIn = inputs.find((d) => BUILT_IN.test(d.label) && !AVOID.test(d.label));
+    if (builtIn) {
+      try {
+        const better = await navigator.mediaDevices.getUserMedia({ audio: { ...constraints, deviceId: { exact: builtIn.deviceId } } });
+        stream.getTracks().forEach((t) => t.stop());
+        stream = better;
+      } catch (err) {
+        console.warn("[voice] built-in microphone unavailable, keeping", current, err);
+      }
+    }
+  }
+  console.info("[voice] microphone:", stream.getAudioTracks()[0]?.label);
+  return stream;
+}
 const OUT_RATE = 16000;
 
 // Collects audio in the audio thread and posts it in blocks of BLOCK samples.
@@ -57,25 +82,7 @@ export class VoiceListener {
 
   /** Opens the microphone. Throws if it is blocked. Check `running` afterwards: Chrome may need a click first. */
   async start() {
-    const constraints = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
-    this.stream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
-    // The system default input can be AirPods, an iPhone (Continuity) or a virtual meeting device, which do not
-    // hear the receptionist at the desk: switch to the laptop's built-in microphone when there is one.
-    const current = this.stream.getAudioTracks()[0]?.label ?? "";
-    if (!BUILT_IN.test(current)) {
-      const inputs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput");
-      const builtIn = inputs.find((d) => BUILT_IN.test(d.label) && !AVOID.test(d.label));
-      if (builtIn) {
-        try {
-          const better = await navigator.mediaDevices.getUserMedia({ audio: { ...constraints, deviceId: { exact: builtIn.deviceId } } });
-          this.stream.getTracks().forEach((t) => t.stop());
-          this.stream = better;
-        } catch (err) {
-          console.warn("[voice] built-in microphone unavailable, keeping", current, err);
-        }
-      }
-    }
-    console.info("[voice] microphone:", this.stream.getAudioTracks()[0]?.label);
+    this.stream = await openDeskMicrophone({ echoCancellation: true, noiseSuppression: true, autoGainControl: true });
     this.context = new AudioContext();
     const url = URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }));
     await this.context.audioWorklet.addModule(url);

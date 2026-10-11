@@ -12,7 +12,8 @@ export type ListenState =
   | "listening"
   | "hearing" // someone is talking
   | "processing" // transcribing / glossing
-  | "blocked"; // microphone denied or unavailable
+  | "blocked" // microphone denied or unavailable
+  | "off"; // hands-free listening disabled (push-to-talk instead)
 
 export type ListenMode = "whisper" | "browser" | null;
 
@@ -45,7 +46,7 @@ const RESTART_MS = [300, 1000, 3000]; // browser recognition restart backoff
  * sets it during the guest's whole turn and while the guest's sentence is spoken aloud, so nothing heard then
  * (the guest, the room, our own voice) is ever signed. It holds as long as `muted` stays true.
  */
-export function useHandsFreeSpeech(onSentences: (sentences: SignedSentence[]) => void, muted = false) {
+export function useHandsFreeSpeech(onSentences: (sentences: SignedSentence[]) => void, muted = false, enabled = true) {
   const [state, setState] = useState<ListenState>("starting");
   const [mode, setMode] = useState<ListenMode>(null);
   const deliverRef = useRef(onSentences);
@@ -62,6 +63,10 @@ export function useHandsFreeSpeech(onSentences: (sentences: SignedSentence[]) =>
   const isMuted = () => mutedNow.current || performance.now() < graceUntil.current;
 
   useEffect(() => {
+    if (!enabled) {
+      setState("off");
+      return;
+    }
     let active = true;
     let listener: VoiceListener | null = null;
     let recognition: Recognition | null = null;
@@ -218,7 +223,7 @@ export function useHandsFreeSpeech(onSentences: (sentences: SignedSentence[]) =>
       rec?.stop();
       resumeRef.current = null;
     };
-  }, []);
+  }, [enabled]);
 
   /** Call from a click or key press when state is "needs-click". */
   const resume = useCallback(() => resumeRef.current?.(), []);
