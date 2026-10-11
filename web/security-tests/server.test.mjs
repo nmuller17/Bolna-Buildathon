@@ -391,6 +391,17 @@ describe("server.mjs, default (loopback) mode", { concurrency: false }, () => {
     }
     assert.ok(limited, "no 429 within 12 requests");
   });
+
+  test("features F3-5: the engagement profile refuses every cloud caption backend (even with an OpenAI key set)", async () => {
+    const h = { ...JSON_H, Origin: `http://127.0.0.1:${port}`, "Sec-Fetch-Site": "same-origin" };
+    for (const backend of ["browser_google", "browser_apple", "browser_other", "cloud_openai"]) {
+      const r = await request({ port, method: "POST", path: "/api/staff/action", headers: h, body: json({ type: "caption_backend", backend }) });
+      assert.equal(r.status, 409, backend);
+      assert.match(JSON.parse(r.body).message, /Cloud captions are off/);
+    }
+    const st = await request({ port, method: "POST", path: "/api/staff/action", headers: h, body: json({ type: "caption_backend", backend: "typed" }) });
+    assert.equal(st.status, 200);
+  });
 });
 
 describe("server.mjs, default voice: ElevenLabs only, Piper off (p4-app 27e6b51)", { concurrency: false }, () => {
@@ -626,6 +637,65 @@ describe("Tier 0 app routes on server.mjs (stage profile, guest input on)", { co
     for (const secret of [ZQ, ZQ_NAME, code, g.split("=")[1], AUTH_COOKIE.split("=")[1]]) {
       assert.equal(srv.out.text.includes(secret), false, `server output contains ${secret.slice(0, 6)}...`);
     }
+  });
+
+  test("features F3-10: POST /api/staff/stt needs the staff cookie (401), is 403 on the guest listener and with a guest cookie, 413 over the cap", async () => {
+    const pcm = "\u0000".repeat(3200);
+    const sttH = (extra = {}) => ({ "Content-Type": "application/octet-stream", Origin: `http://127.0.0.1:${port}`, "Sec-Fetch-Site": "same-origin", "x-stt-utterance": "u1", "x-stt-final": "0", ...extra });
+    const code = await newGuestWindow();
+    const { cookie: g } = await join(code);
+    assert.equal((await request({ port, method: "POST", path: "/api/staff/stt", noAuth: true, headers: sttH(), body: pcm })).status, 401, "no staff cookie");
+    assert.equal(
+      (await request({ port, method: "POST", path: "/api/staff/stt", noAuth: true, headers: sttH({ Host: `localhost:${port}`, Origin: `http://localhost:${port}`, Cookie: g }), body: pcm })).status,
+      403,
+      "guest listener with the guest cookie",
+    );
+    assert.equal((await request({ port, method: "POST", path: "/api/staff/stt", noAuth: true, headers: sttH({ Cookie: g }), body: pcm })).status, 401, "a guest cookie is not a staff cookie");
+    const over = await request({ port, method: "POST", path: "/api/staff/stt", headers: sttH(), body: "\u0000".repeat(960_002) });
+    assert.ok(over.status === 413 || ["EPIPE", "ECONNRESET"].includes(over.error?.code), String(over.status ?? over.error?.code));
+    // Above the 8 KB default cap but under the STT cap: server.mjs lets it through; no local STT here, so the
+    // route answers 409 (local captions off), never 413.
+    const mid = await request({ port, method: "POST", path: "/api/staff/stt", headers: sttH(), body: "\u0000".repeat(32_000) });
+    assert.equal(mid.status, 409, mid.body);
+    assert.equal((await request({ port, method: "POST", path: "/api/staff/stt", headers: sttH({ "Content-Type": "audio/webm" }), body: pcm })).status, 415);
+    assert.equal((await staff({ type: "end_guest" })).status, 200);
+  });
+
+  test("features F3-10/AS-19: the guest page's scripts contain no getUserMedia and no SpeechRecognition", async () => {
+    const page = await request({ port, path: "/guest", noAuth: true, headers: { Host: `localhost:${port}` } });
+    assert.equal(page.status, 200);
+    const srcs = [...page.body.matchAll(/<script[^>]+src="([^"]+)"/g)].map((m) => m[1]).filter((u) => u.startsWith("/_next/"));
+    assert.ok(srcs.length > 0);
+    for (const src of srcs) {
+      const js = await request({ port, path: src, noAuth: true, headers: { Host: `localhost:${port}` } });
+      assert.equal(js.status, 200, src);
+      // Code, not comments (dev chunks keep the shared types' comments): calls and string literals only.
+      assert.doesNotMatch(js.body, /getUserMedia\s*\(|webkitSpeechRecognition|SpeechRecognition\s*\(|audioWorklet|["'`]\/stt\/pcm-worklet|["'`]\/api\/staff\/stt/, src);
+    }
+  });
+
+  test("features F14-1: /staff/course answers only on the staff address with the staff cookie", async () => {
+    assert.equal((await request({ port, path: "/staff/course", noAuth: true, headers: { Host: `localhost:${port}` } })).status, 403, "guest listener");
+    assert.equal((await request({ port, path: "/staff/course", noAuth: true })).status, 403, "no staff cookie");
+    const ok = await request({ port, path: "/staff/course" });
+    assert.equal(ok.status, 200);
+    assert.match(ok.body, /Learn signing from a Deaf teacher/);
+  });
+
+  test(`features F1-3: with room and Wi-Fi password typed, neither reaches the voice route, Piper or the server output`, async () => {
+    const ROOM = "7319";
+    const PASS = "Zq7WifiPass";
+    const code = await newGuestWindow();
+    const { cookie: g } = await join(code);
+    assert.equal((await staff({ type: "set_fact", key: "room", value: ROOM })).status, 200);
+    assert.equal((await staff({ type: "set_fact", key: "wifi_password", value: PASS })).status, 200);
+    assert.equal((await staff({ type: "say_quick", intent: "room_number" })).status, 200);
+    assert.equal((await staff({ type: "say_quick", intent: "wifi_password" })).status, 200);
+    assert.equal((await guest(g, { type: "guest_phrase", intentId: 7, via: "board" })).status, 200);
+    assert.equal((await staff({ type: "end_guest" })).status, 200);
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal(srv.out.text.includes(PASS) || srv.out.text.includes(ROOM), false, "server output");
+    assert.equal(spyLog().includes(PASS) || spyLog().includes(ROOM), false, "Piper input");
   });
 
   test("SIGUSR2 prints a new one-time staff link; claiming it replaces the old cookie and keeps the guest", async () => {
