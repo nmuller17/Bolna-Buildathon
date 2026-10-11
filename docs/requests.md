@@ -213,3 +213,14 @@ This branch now supports the single-screen demo path from ad90509. Start `server
 |---|---|---|---|
 | 1 | P3 | Optional: have `/health` answer `no_model` (or a non-200) when the pinned model did not load | The probe cannot tell a running live_key without a model from a working one |
 | 2 | P3 | Optional: emit a `capture` `{"phase": "cancelled"}` when a recording is dropped (Q, or no frames) | The guest screen's buttons otherwise wait up to 8 s before coming back |
+
+## 2026-10-11, from P4 (talha/app-shell builder S, local branch): features plan requests
+
+From `docs/features-plan.md` (Talha asked for these features). Nothing here changes a teammate's code on this branch.
+
+| # | To | What | Why |
+|---|---|---|---|
+| 1 | Talha (decision record owner) | Amend AS-1 so the guest reconnect snapshot may also carry the current fact tiles (room, Wi-Fi, breakfast and so on, typed by staff) | Today AS-1 limits the snapshot to the last caption and the pending proposal. After a guest reconnect the tiles are gone until staff tap "Send the facts again" (`resend_facts`). With the amendment the tiles come back on their own |
+| 2 | P2 | Add `rate` (0.5 to 1.5) to `playGloss` options (`PlayOptions.rate`), next to `onToken` | Guest control "avatar speed" (features-plan F5, roadmap R5). Until then the guest has size and captions-only, not speed |
+| 3 | P1 | No change needed. Live captions use `/api/transcribe` only as the second backend ("Cloud: OpenAI speech-to-text"), utterance at a time, only when `OPENAI_API_KEY` is set and the profile is `stage`. The local backend (`web/stt/local_stt.py`, faster-whisper on 127.0.0.1) is P4's | Features plan section 1: local first, cloud only on an explicit choice and labelled |
+| 4 | Talha | Confirm or reject the SES-11 amendment in `dad4b47` (manifest on the guest page, no service worker, no storage) | AS-3 as written forbids the manifest; the features plan keeps it (F15) only if confirmed |
