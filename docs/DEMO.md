@@ -53,7 +53,7 @@ The guest's camera feed must show at the bottom right; if it says "Camera offlin
 | 1 | Welcome! Do you have a reservation? | YES · NAME · S-A-M | Yes, my name is Sam. |
 | 2 | Sam, you're in room 412. Here is your key card. | THANK-YOU · WHERE · ELEVATOR | Thank you. Where is the elevator? |
 | 3 | The elevator is on your left. | FS-WIFI · PASSWORD | What's the Wi-Fi password? |
-| 4 | The Wi-Fi password is on your key card. | BREAKFAST · TIME | What time is breakfast? |
+| 4 | Thank you. | THANK-YOU | Thank you. |
 
 The reference video of each guest sign is in `capture/reference/`.
 
@@ -66,6 +66,7 @@ The receptionist (or a team member repeating a juror's question) keeps talking w
   | Receptionist says | Guest signs | Laptop says |
   |---|---|---|
   | Can I see your ID? | YES | Yes. |
+  | The Wi-Fi password is on your key card. | BREAKFAST · TIME | What time is breakfast? |
   | Breakfast is from 7 to 10. | LEAVE · TIME | What time is checkout? |
   | Checkout is at 11. | LATE · LEAVE · PLEASE | Could I have a late checkout? |
   | Late checkout is fine, until 1 PM. | MORE · TOWEL · PLEASE | Could I have more towels, please? |

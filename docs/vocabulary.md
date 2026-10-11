@@ -29,7 +29,7 @@ Sign IDs below are the exact keys used in `signs/index.json`, sign file names, g
 | checkout | `LEAVE` | No standard hotel checkout sign; fingerspelling C-H-E-C-K-O-U-T (8 letters) was too long to sign and to recognize |
 | password | `PRIVATE` + `WORD` | No single established sign, PRIVATE-WORD is the documented compound |
 
-## 1. Staff to guest, 20 intents (avatar)
+## 1. Staff to guest, 21 intents (avatar)
 Facial marker column: `brows-up` for yes/no questions, `brows-down` for wh-questions.
 Signs are captured with a neutral face. The marker is sent as the first gloss token (`BROWS-UP` or `BROWS-DOWN`) and the avatar applies it to the eyebrows for the whole sentence.
 
@@ -55,6 +55,7 @@ Signs are captured with a neutral face. The marker is sent as the first gloss to
 | 18 | Sorry, can you repeat? | `BROWS-UP SORRY AGAIN PLEASE` | brows-up |
 | 19 | Anything else? | `BROWS-UP OTHER QUESTION` | brows-up |
 | 20 | Enjoy your stay! | `ENJOY YOUR STAY` | |
+| 21 | Thank you. | `THANK-YOU` | |
 
 ## 2. Guest to staff, 22 intents (recognition)
 | # | Guest signs | Spoken sentence |

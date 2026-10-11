@@ -19,6 +19,7 @@ export type StaffIntentId =
   | "repeat_please"
   | "anything_else"
   | "enjoy_stay"
+  | "thank_you"
   | "unknown";
 
 type IntentRule = {
@@ -52,6 +53,7 @@ export const STAFF_INTENTS: IntentRule[] = [
   rule("repeat_please", ["BROWS-UP", "SORRY", "AGAIN", "PLEASE"], ["repeat", "again", "say that again", "sorry"]),
   rule("anything_else", ["BROWS-UP", "OTHER", "QUESTION"], ["anything else", "other question"]),
   rule("enjoy_stay", ["ENJOY", "YOUR", "STAY"], ["enjoy", "good night", "have a nice"]),
+  rule("thank_you", ["THANK-YOU"], ["thank you", "thanks"]),
 ];
 
 export type Classification = {
@@ -194,6 +196,7 @@ const EXAMPLES: Record<Exclude<StaffIntentId, "unknown">, string> = {
   repeat_please: "Sorry, can you repeat that again? Say that again.",
   anything_else: "Anything else? Any other question? Is there anything else I can help you with?",
   enjoy_stay: "Enjoy your stay! Good night, have a nice day.",
+  thank_you: "Thank you, thanks a lot.",
 };
 
 const contentWords = (text: string) =>

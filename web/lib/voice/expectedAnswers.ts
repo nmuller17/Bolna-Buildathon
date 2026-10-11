@@ -66,6 +66,7 @@ export const EXPECTED_AFTER: Record<StaffIntentId, GuestAnswerId[] | "previous" 
   repeat_please: "previous",                                              // "Sorry, can you repeat?"
   anything_else: REQUESTS,                                                // "Anything else?"
   enjoy_stay: ["thank_you"],                                              // "Enjoy your stay!"
+  thank_you: ["thank_you", "no_thanks"],                                  // "Thank you."
   unknown: "any",
 };
 
@@ -102,7 +103,7 @@ export const DEMO_SCRIPT: ScriptStep[] = [
   { staff: "Welcome! Do you have a reservation?", triggers: ["reservation_question"], answer: "yes_name" },
   { staff: "Sam, you're in room 412. Here is your key card.", triggers: ["key_card"], answer: "thanks_where_elevator" },
   { staff: "The elevator is on your left.", triggers: ["elevator_left"], answer: "wifi_password" },
-  { staff: "The Wi-Fi password is on your key card.", triggers: ["wifi_password"], answer: "breakfast_time" },
+  { staff: "Thank you.", triggers: ["thank_you"], answer: "thank_you" },
 ];
 
 /**
@@ -121,6 +122,7 @@ export const CLASSIC_ANSWERS: Partial<Record<StaffIntentId, GuestAnswerId | null
   late_checkout: "more_towels",
   anything_else: "no_thanks",
   enjoy_stay: null,
+  thank_you: "thank_you",
 };
 
 /**
