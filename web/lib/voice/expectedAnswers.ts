@@ -5,7 +5,7 @@
 // ("Welcome! Do you have a reservation?" -> answers to the question, not to the greeting).
 import type { StaffIntentId } from "./intents";
 
-/** The 21 guest sentences (docs/vocabulary.md section 2), as classifier label lists. */
+/** The 22 guest sentences (docs/vocabulary.md section 2), as classifier label lists. */
 export const GUEST_ANSWERS = {
   yes: ["YES"],
   no: ["NO"],
@@ -28,6 +28,7 @@ export const GUEST_ANSWERS = {
   restaurant_time: ["RESTAURANT", "TIME"],
   no_thanks: ["NO", "THANK-YOU"],
   yes_name: ["YES", "NAME"], // "Yes, my name is Sam." (name fingerspelled after NAME)
+  thanks_where_elevator: ["THANK-YOU", "WHERE", "ELEVATOR"], // "Thank you. Where is the elevator?"
 } as const satisfies Record<string, readonly string[]>;
 
 export type GuestAnswerId = keyof typeof GUEST_ANSWERS;
@@ -50,13 +51,13 @@ export const EXPECTED_AFTER: Record<StaffIntentId, GuestAnswerId[] | "previous" 
   name_question: ["name", "yes_name"],                                    // "What's your name?"
   id_please: ["yes", "no"],                                               // "Can I see your ID?"
   nights_question: "any",                                                 // "How many nights?" (a number: not signable)
-  room_number: ["thank_you", "where_room", "where_elevator"],             // "You're in room 412."
-  key_card: ["thank_you", "wifi_password", "where_room", "where_elevator"], // "Here is your key card."
+  room_number: ["thank_you", "where_room", "where_elevator", "thanks_where_elevator"], // "You're in room 412."
+  key_card: ["thank_you", "wifi_password", "where_room", "where_elevator", "thanks_where_elevator"], // "Here is your key card."
   elevator_left: ["thank_you", "wifi_password", "breakfast_time"],         // "The elevator is on your left."
-  breakfast_time: ["thank_you", "where_breakfast"],                       // "Breakfast is from 7 to 10."
+  breakfast_time: ["thank_you", "where_breakfast", "checkout_time"],      // "Breakfast is from 7 to 10."
   wifi_password: ["thank_you", "breakfast_time"],                         // "The Wi-Fi password is on your key card."
   checkout_time: ["thank_you", "late_checkout"],                          // "Checkout is at 11."
-  late_checkout: ["thank_you"],                                           // "Late checkout is fine, until 1 PM."
+  late_checkout: ["thank_you", "more_towels"],                            // "Late checkout is fine, until 1 PM."
   send_towels: ["thank_you"],                                             // "I'll send towels to your room."
   parking_downstairs: ["thank_you"],                                      // "Parking is downstairs."
   restaurant_hours: ["thank_you", "where_restaurant"],                    // "The restaurant is open until 10 PM."
@@ -86,38 +87,44 @@ export function expectedAfter(intents: readonly StaffIntentId[], previous: Expec
   return toLabels(rule);
 }
 
-/** One step of the scripted demo: what the receptionist says, and the single answer the guest gives. */
-export type ScriptStep = { staff: string; triggers: StaffIntentId[]; answer: GuestAnswerId };
+/**
+ * One step of the scripted demo: what the receptionist says, the intent it is expected to carry (checked by the
+ * tests only) and the single answer the guest gives (null: no guest turn, e.g. the closing sentence).
+ */
+export type ScriptStep = { staff: string; triggers: StaffIntentId[]; answer: GuestAnswerId | null };
 
 /**
- * Scripted demo (?script=1): one expected answer per guest turn, so the translation cannot fail.
- * Each answer is also allowed by EXPECTED_AFTER for that step's last intent (checked by the tests).
+ * Scripted demo (?script=1): one expected answer per guest turn, so the translation cannot fail. The script
+ * advances one step per receptionist turn whatever Whisper transcribed ("keycard" once blocked it). Each answer is
+ * also allowed by EXPECTED_AFTER for that step's intent (checked by the tests).
  */
 export const DEMO_SCRIPT: ScriptStep[] = [
   { staff: "Welcome! Do you have a reservation?", triggers: ["reservation_question"], answer: "yes_name" },
-  { staff: "You're in room 412. Here is your key card.", triggers: ["key_card"], answer: "where_elevator" },
+  { staff: "Can I see your ID?", triggers: ["id_please"], answer: "yes" },
+  { staff: "Sam, you're in room 412. Here is your key card.", triggers: ["key_card"], answer: "thanks_where_elevator" },
   { staff: "The elevator is on your left.", triggers: ["elevator_left"], answer: "wifi_password" },
   { staff: "The Wi-Fi password is on your key card.", triggers: ["wifi_password"], answer: "breakfast_time" },
-  { staff: "Breakfast is from 7 to 10.", triggers: ["breakfast_time"], answer: "thank_you" },
-  { staff: "Anything else?", triggers: ["anything_else"], answer: "more_towels" },
+  { staff: "Breakfast is from 7 to 10.", triggers: ["breakfast_time"], answer: "checkout_time" },
+  { staff: "Checkout is at 11.", triggers: ["checkout_time"], answer: "late_checkout" },
+  { staff: "Late checkout is fine, until 1 PM.", triggers: ["late_checkout"], answer: "more_towels" },
   { staff: "I'll send towels to your room. Anything else?", triggers: ["anything_else"], answer: "no_thanks" },
-  { staff: "Enjoy your stay!", triggers: ["enjoy_stay"], answer: "thank_you" },
+  { staff: "Enjoy your stay!", triggers: ["enjoy_stay"], answer: null },
 ];
 
 /**
- * Script mode: if the receptionist's last intent is a trigger of the current step, expect exactly that
- * step's answer and move to the next step; otherwise (off-script sentence) fall back to expectedAfter
- * and stay on the same step.
+ * Script mode: the current step decides, whatever the receptionist's intents were (skip: that step has no guest
+ * answer, no guest turn). After the last step, fall back to expectedAfter.
  */
 export function scriptedExpected(
   step: number,
   intents: readonly StaffIntentId[],
   previous: Expected = null,
-): { expected: Expected; nextStep: number; scripted: boolean } {
+): { expected: Expected; nextStep: number; scripted: boolean; skip: boolean } {
   const current = DEMO_SCRIPT[step];
-  const last = [...intents].reverse().find((id) => id !== "unknown");
-  if (current && last && current.triggers.includes(last)) {
-    return { expected: toLabels([current.answer]), nextStep: step + 1, scripted: true };
+  if (current) {
+    return current.answer
+      ? { expected: toLabels([current.answer]), nextStep: step + 1, scripted: true, skip: false }
+      : { expected: null, nextStep: step + 1, scripted: true, skip: true };
   }
-  return { expected: expectedAfter(intents, previous), nextStep: step, scripted: false };
+  return { expected: expectedAfter(intents, previous), nextStep: step, scripted: false, skip: false };
 }

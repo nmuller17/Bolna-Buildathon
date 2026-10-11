@@ -17,7 +17,7 @@ test("full cycle: receptionist, guest answer spoken, back to the receptionist", 
   assert.deepEqual(next.expected, [["YES"], ["NO"], ["YES", "RESERVATION"], ["YES", "NAME"]]);
   s = run(
     [
-      { type: "requested", ...next, now: 4600 },
+      { type: "requested", expected: next.expected, scriptStep: next.scriptStep, scripted: next.scripted, now: 4600 },
       { type: "turnStart", now: 4700 },
       { type: "utterance", text: "Yes, my name is Sam.", now: 9000 },
       { type: "turnEnd", empty: false, now: 9010 },
@@ -86,7 +86,7 @@ test("script mode: one expected answer per step, then the next step", () => {
   assert.equal(next.scriptStep, 1);
   s = run(
     [
-      { type: "requested", ...next, now: 600 },
+      { type: "requested", expected: next.expected, scriptStep: next.scriptStep, scripted: next.scripted, now: 600 },
       { type: "turnStart", now: 700 },
       { type: "utterance", text: "Yes, my name is Sam.", now: 5000 },
       { type: "spoken", now: 7000 },
@@ -95,7 +95,18 @@ test("script mode: one expected answer per step, then the next step", () => {
     s,
   );
   next = nextExpected(s, true);
-  assert.deepEqual(next.expected, [["WHERE", "ELEVATOR"]]);
+  assert.deepEqual(next.expected, [["YES"]], "step 2: Can I see your ID? -> YES");
   assert.equal(next.scriptStep, 2);
   assert.equal(turnsReducer(s, { type: "resetScript", now: 1 }).scriptStep, 0);
+});
+
+test("script: the closing step has no guest turn", () => {
+  let s = { ...initialTurns(0), scriptStep: 9 };
+  s = turnsReducer(s, { type: "staffSigned", intents: ["enjoy_stay"], now: 0 });
+  const next = nextExpected(s, true);
+  assert.equal(next.skip, true);
+  s = turnsReducer(s, { type: "skipTurn", scriptStep: next.scriptStep, now: 600 });
+  assert.equal(s.phase, "frontDesk");
+  assert.equal(s.staffSigned, false);
+  assert.equal(s.scriptStep, 10);
 });

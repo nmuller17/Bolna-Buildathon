@@ -42,6 +42,7 @@ GUEST_INTENTS = [
     # Demo: the guest answers the reservation question with their name, fingerspelled after NAME
     # (S-A-M is not a classifier class: its windows are absorbed by the NAME segment).
     (["YES", "NAME"], "Yes, my name is Sam."),
+    (["THANK-YOU", "WHERE", "ELEVATOR"], "Thank you. Where is the elevator?"),
 ]
 MIN_PROB = 0.0
 

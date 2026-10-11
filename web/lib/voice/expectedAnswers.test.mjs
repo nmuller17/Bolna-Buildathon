@@ -44,23 +44,29 @@ test("repeat keeps the previous answers, unknown and numbers do not restrict", (
   assert.equal(expectedAfter(intentsOf("The pool is on the roof.")), null);
 });
 
-test("each demo script sentence triggers its step, and its answer is allowed after it", () => {
+test("each demo script sentence carries its intent, and its answer is allowed after it", () => {
+  for (const s of DEMO_SCRIPT) {
+    const intents = intentsOf(s.staff).filter((i) => i !== "unknown");
+    assert.ok(s.triggers.includes(intents.at(-1)), `"${s.staff}" -> ${intents.join(", ")}`);
+    if (s.answer === null) continue;
+    const allowed = EXPECTED_AFTER[intents.at(-1)];
+    assert.ok(Array.isArray(allowed) && allowed.includes(s.answer), `${s.answer} not expected after "${s.staff}"`);
+  }
+});
+
+test("script mode follows the steps whatever was transcribed, and skips steps without an answer", () => {
   let step = 0;
   for (const s of DEMO_SCRIPT) {
-    const intents = intentsOf(s.staff);
-    const r = scriptedExpected(step, intents);
-    assert.ok(r.scripted, `"${s.staff}" -> ${intents.join(", ")} does not trigger step ${step + 1}`);
-    assert.deepEqual(r.expected, [[...GUEST_ANSWERS[s.answer]]]);
-    const allowed = EXPECTED_AFTER[intents.filter((i) => i !== "unknown").at(-1)];
-    assert.ok(Array.isArray(allowed) && allowed.includes(s.answer), `${s.answer} not expected after "${s.staff}"`);
+    const r = scriptedExpected(step, intentsOf("It's like a shampoo or something"));
+    assert.ok(r.scripted);
+    if (s.answer === null) {
+      assert.ok(r.skip);
+      assert.equal(r.expected, null);
+    } else assert.deepEqual(r.expected, [[...GUEST_ANSWERS[s.answer]]]);
     step = r.nextStep;
   }
   assert.equal(step, DEMO_SCRIPT.length);
-});
-
-test("an off-script sentence falls back to the table and keeps the step", () => {
-  const r = scriptedExpected(0, intentsOf("Parking is downstairs."));
-  assert.equal(r.scripted, false);
-  assert.equal(r.nextStep, 0);
-  assert.deepEqual(r.expected, [["THANK-YOU"]]);
+  const after = scriptedExpected(step, intentsOf("Parking is downstairs."));
+  assert.equal(after.scripted, false, "after the script: back to the table");
+  assert.deepEqual(after.expected, [["THANK-YOU"]]);
 });

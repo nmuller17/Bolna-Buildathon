@@ -94,7 +94,7 @@ export default function SignBridgePage() {
         console.warn(`[signbridge] could not sign "${sentence.text}":`, err);
       }
       setActiveIndex(null);
-      intents = sentence.intents ?? [];
+      if (sentence.intents?.length) intents = sentence.intents; // a trailing unknown sentence keeps the last known intents
     }
     setPlaying(false);
     draining.current = false;
@@ -198,7 +198,11 @@ export default function SignBridgePage() {
       apply({ type: "tick", now, busy: busy.current || draining.current });
       if (!guestTurnDue(turnsRef.current, now)) return;
       const next = nextExpected(turnsRef.current, script.current);
-      apply({ type: "requested", ...next, now });
+      if (next.skip) {
+        apply({ type: "skipTurn", scriptStep: next.scriptStep, now }); // e.g. "Enjoy your stay!": no guest answer
+        return;
+      }
+      apply({ type: "requested", expected: next.expected, scriptStep: next.scriptStep, scripted: next.scripted, now });
       fetch(`${RECOGNIZER_URL}/turn`, {
         method: "POST",
         // context: the answers the question alone allows, for the rehearsal check in the recognizer's log.

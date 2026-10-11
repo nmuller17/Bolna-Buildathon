@@ -56,7 +56,7 @@ Signs are captured with a neutral face. The marker is sent as the first gloss to
 | 19 | Anything else? | `BROWS-UP OTHER QUESTION` | brows-up |
 | 20 | Enjoy your stay! | `ENJOY YOUR STAY` | |
 
-## 2. Guest to staff, 21 intents (recognition)
+## 2. Guest to staff, 22 intents (recognition)
 | # | Guest signs | Spoken sentence |
 |---|---|---|
 | 1 | `YES` | Yes. |
@@ -80,6 +80,7 @@ Signs are captured with a neutral face. The marker is sent as the first gloss to
 | 19 | `RESTAURANT TIME` | When is the restaurant open? |
 | 20 | `NO THANK-YOU` | No, that's all, thank you. |
 | 21 | `YES NAME` + name fingerspelled (S-A-M) | Yes, my name is Sam. (demo guest name) |
+| 22 | `THANK-YOU WHERE ELEVATOR` | Thank you. Where is the elevator? |
 
 ## 3. Classifier classes (22)
 Each class: 4 signers x 20 takes (15 if time is short). Default capture window 2 s, use 3 s for the fingerspelled and compound classes.

@@ -29,6 +29,7 @@ export type TurnEvent =
   | { type: "staffIdle"; now: number } // bellhop queue empty and mic quiet
   | { type: "tick"; now: number; busy?: boolean } // busy: bellhop signing or mic hearing / translating
   | { type: "requested"; expected: Expected; scriptStep: number; scripted: boolean; now: number }
+  | { type: "skipTurn"; scriptStep: number; now: number } // script step without a guest answer: stay at the desk
   | { type: "requestFailed"; now: number }
   | { type: "turnStart"; now: number }
   | { type: "utterance"; text: string; now: number }
@@ -70,12 +71,15 @@ export const guestTurnDue = (s: TurnState, now: number) =>
  * Expected answers for the guest turn about to start (script mode: the script step, else the question), with the
  * script step to keep afterwards. The result is the payload of the "requested" event.
  */
-export function nextExpected(s: TurnState, scriptMode: boolean): { expected: Expected; scriptStep: number; scripted: boolean } {
+export function nextExpected(
+  s: TurnState,
+  scriptMode: boolean,
+): { expected: Expected; scriptStep: number; scripted: boolean; skip: boolean } {
   if (scriptMode) {
     const r = scriptedExpected(s.scriptStep, s.lastIntents, s.expected);
-    return { expected: r.expected, scriptStep: r.nextStep, scripted: r.scripted };
+    return { expected: r.expected, scriptStep: r.nextStep, scripted: r.scripted, skip: r.skip };
   }
-  return { expected: expectedAfter(s.lastIntents, s.expected), scriptStep: s.scriptStep, scripted: false };
+  return { expected: expectedAfter(s.lastIntents, s.expected), scriptStep: s.scriptStep, scripted: false, skip: false };
 }
 
 export function turnsReducer(s: TurnState, e: TurnEvent): TurnState {
@@ -100,6 +104,8 @@ export function turnsReducer(s: TurnState, e: TurnEvent): TurnState {
     case "requested":
       if (s.phase !== "frontDesk") return s;
       return to(s, "requesting", e.now, { expected: e.expected, scriptStep: e.scriptStep, scripted: e.scripted });
+    case "skipTurn":
+      return s.phase === "frontDesk" ? { ...s, staffSigned: false, idleSince: null, scriptStep: e.scriptStep } : s;
     case "requestFailed":
       return s.phase === "requesting" ? to(s, "frontDesk", e.now, { offline: true, staffSigned: false }) : s;
     case "turnStart":
