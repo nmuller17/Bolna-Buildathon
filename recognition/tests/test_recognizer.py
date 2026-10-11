@@ -122,13 +122,33 @@ def test_pin_model_rewrites_only_the_constant(ckpt, tmp_path):
     exec(pin.read_text(), ns)
     assert ns["EXPECTED_SHA256"] == digest == sha256_bytes(ckpt.read_bytes())
     pin_model.write_pin(None, pin)
+    ns = {}
+    exec(pin.read_text(), ns)
+    assert ns["EXPECTED_SHA256"] is None
+    committed = {}
+    exec(Path(model_pin.__file__).read_text(), committed)
+    pin_model.write_pin(committed["EXPECTED_SHA256"], pin)
     assert pin.read_text() == Path(model_pin.__file__).read_text()
     with pytest.raises(ValueError):
         pin_model.write_pin("not-a-hash", pin)
 
 
+def committed_pin():
+    """EXPECTED_SHA256 as committed in model_pin.py (conftest sets the live value aside for the tests)."""
+    ns = {}
+    exec(Path(model_pin.__file__).read_text(), ns)
+    return ns["EXPECTED_SHA256"]
+
+
 def test_committed_pin_is_none_or_a_digest():
-    assert model_pin.EXPECTED_SHA256 is None or len(model_pin.EXPECTED_SHA256) == 64
+    assert committed_pin() is None or len(committed_pin()) == 64
+
+
+def test_committed_model_matches_the_committed_pin():
+    model_pt = ROOT / "recognition" / "models" / "model.pt"
+    if committed_pin() is None or not model_pt.is_file():
+        pytest.skip("no committed pin or no committed model.pt")
+    assert sha256_bytes(model_pt.read_bytes()) == committed_pin()
 
 
 def test_server_import_does_not_import_mediapipe():
