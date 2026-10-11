@@ -1,0 +1,11 @@
+newmtl tripo_material_617330a5_f84a_4be4_9ce5_183e42a7997c
+Kd 1.000000000 1.000000000 1.000000000
+d 1.000000000
+illum 2
+map_Kd cartoon+bellhop+3d+model_basecolor.jpg
+Pr 1.000000000
+Pm 1.000000000
+map_Pr cartoon+bellhop+3d+model_roughness.png
+map_Pm cartoon+bellhop+3d+model_metallic.png
+norm cartoon+bellhop+3d+model_normal.png
+
