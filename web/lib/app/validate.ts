@@ -364,6 +364,7 @@ function exactKeys(o: Record<string, unknown>, required: string[], optional: str
 const isId = (v: unknown): v is string => typeof v === "string" && ID_RE.test(v);
 const isIntentId = (v: unknown): v is GuestIntentId => isInt(v, 1, 20);
 const CHOICES = ["sign", "type", "interpreter", "text_only"] as const;
+const SIGN_CONTROL_CMDS = ["record", "undo", "end"] as const;
 const FIXES = ["sign_again", "type", "interpreter", "not_this"] as const;
 const REPLIES = ["please_repeat", "dont_understand", "please_type", "wait_please", "slower", "show_on_paper"] as const;
 const PRESSURE = ["nominal", "fair", "serious", "critical"] as const;
@@ -382,6 +383,8 @@ export function validateGuestAction(raw: unknown): Valid<GuestAction> | Invalid 
   switch (t) {
     case "guest_choice":
       return exactKeys(raw, ["n", "type", "choice"]) && inList(CHOICES, raw.choice) ? ok({ n: raw.n, type: t, choice: raw.choice }) : bad("bad guest_choice");
+    case "sign_control":
+      return exactKeys(raw, ["n", "type", "cmd"]) && inList(SIGN_CONTROL_CMDS, raw.cmd) ? ok({ n: raw.n, type: t, cmd: raw.cmd }) : bad("bad sign_control");
     case "stop_signing":
     case "interpreter_request":
     case "emergency":

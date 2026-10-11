@@ -86,7 +86,12 @@ export function speakLocal(text: string): Promise<number | null> {
 }
 
 /** Fixed sentence: /api/tts first (Piper or the vendor voice), then the on-device voice, else silence. */
-export async function voiceFixed(text: string): Promise<Voiced> {
+export async function voiceFixed(text: string, useTts = true): Promise<Voiced> {
+  if (!useTts) {
+    // /api/tts has no voice configured (no ElevenLabs key, Piper off): go straight to the on-device voice.
+    const started = await speakLocal(text);
+    return started ? { how: "local", startedAt: started } : { how: "none", startedAt: null };
+  }
   try {
     return { how: "tts", startedAt: await playTts(text, 4_000) };
   } catch {

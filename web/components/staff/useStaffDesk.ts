@@ -7,6 +7,7 @@ import { openEventStream, postJson } from "@/lib/channel";
 import type {
   AlertKind,
   BusEnvelope,
+  CapturePhase,
   CheckinItemStatus,
   GuestMode,
   GuestProposal,
@@ -28,13 +29,14 @@ import { helpTone, speakLocal, unlockAudio, voiceFixed } from "./audio";
 
 export type DeskConn = "idle" | "connecting" | "open" | "retrying" | "unauthorized";
 
-export type EvidenceItem = { sign: StaffSignView; simulated: boolean };
+export type EvidenceItem = { sign: StaffSignView; simulated: boolean; undone?: boolean };
 
 export type StaffUi = {
   started: boolean;
   conn: DeskConn;
   claimError: string | null;
-  voice: "off" | "warming" | "ready" | "failed";
+  /** "local" = /api/tts has no voice configured, so fixed sentences use the on-device voice. */
+  voice: "off" | "warming" | "ready" | "failed" | "local";
   status: StaffStatus | null;
   sessionState: SessionState;
   log: LogEntry[];
@@ -44,6 +46,8 @@ export type StaffUi = {
   /** Signs of the utterance in progress, shown the moment each is recognised. */
   live: EvidenceItem[];
   liveClosed: boolean;
+  /** live_key.py recording phase (key-triggered signing), with the local time it arrived. */
+  capture: (CapturePhase & { at: number }) | null;
   warnings: SafetyWarning[];
   pending: (GuestProposal & { simulatedSource?: boolean }) | null;
   emergency: { count: number; at: number } | null;
@@ -73,6 +77,7 @@ const INITIAL: StaffUi = {
   evidence: [],
   live: [],
   liveClosed: true,
+  capture: null,
   warnings: [],
   pending: null,
   emergency: null,
@@ -204,15 +209,25 @@ function reduce(ui: StaffUi, a: Act): StaffUi {
         evidence: upsertEvidence(ui.evidence, item),
         live: ui.liveClosed ? [item] : [...ui.live, item].slice(-8),
         liveClosed: false,
+        capture: null,
       };
     }
+    case "live_sign_undone":
+      return {
+        ...ui,
+        live: ui.live.filter((l) => l.sign.seq !== msg.seq),
+        // Only the newest sign with that number: numbers restart when the recognizer restarts.
+        evidence: ((last) => ui.evidence.map((e, i) => (i === last ? { ...e, undone: true } : e)))(ui.evidence.findLastIndex((e) => e.sign.seq === msg.seq && !e.simulated)),
+      };
+    case "capture":
+      return { ...ui, capture: { phase: msg.phase, countdown: msg.countdown, duration: msg.duration, at: Date.now() } };
     case "framing":
       return msg.rejectedSeq !== null ? { ...ui, log: [...ui.log, sys(`Sign #${msg.rejectedSeq}: camera missed it (framing).`)] } : ui;
     case "recognition": {
       const simulated = msg.source === "simulated";
       let evidence = ui.evidence;
       for (const sign of msg.signs) evidence = upsertEvidence(evidence, { sign, simulated });
-      const base = { ...ui, evidence, live: msg.signs.map((sign) => ({ sign, simulated })), liveClosed: true };
+      const base = { ...ui, evidence, live: msg.signs.map((sign) => ({ sign, simulated })), liveClosed: true, capture: null };
       if (msg.outcome === "ignored_pending") return { ...base, live: ui.live, log: [...ui.log, sys("Camera saw a movement while the guest was choosing; ignored.")] };
       if (msg.outcome === "held") return { ...base, liveClosed: false, live: ui.live };
       if (msg.outcome === "repeat")
@@ -343,6 +358,7 @@ export function useStaffDesk() {
   const uiRef = useRef(ui);
   uiRef.current = ui;
   const streamRef = useRef<{ close: () => void } | null>(null);
+  const ttsRef = useRef(true);
 
   const staffAction = useCallback(async (action: StaffAction): Promise<StaffActionResponse | null> => {
     const { status, data } = await postJson<StaffActionResponse>("/api/staff/action", action);
@@ -360,7 +376,7 @@ export function useStaffDesk() {
     async (entry: Extract<LogEntry, { kind: "guest" }>, force = false) => {
       const plan = entry.speak;
       if (plan.mode === "tts") {
-        const v = await voiceFixed(plan.fixedText);
+        const v = await voiceFixed(plan.fixedText, ttsRef.current);
         dispatch({ t: "spoken", seq: entry.seq, at: v.startedAt, how: v.how });
         if (!force && v.startedAt) void staffAction({ type: "speak_done", ref: entry.proposalId, how: v.how, startedAt: v.startedAt });
         return;
@@ -445,15 +461,28 @@ export function useStaffDesk() {
       { watchdogMs: 15_000, retryMs: 2_000 },
     );
 
-    // Nath's warm-up: Piper pre-generates the fixed sentences before the guest arrives (C1-16).
-    try {
-      const { warmUpVoice } = await import("@/components/speakSigns");
-      await warmUpVoice();
-      dispatch({ t: "set", patch: { voice: "ready" } });
-    } catch {
-      dispatch({ t: "set", patch: { voice: "failed" } });
-    }
   }, [onEnvelope]);
+
+  // Nath's warm-up (C1-16), once the server said whether /api/tts has a voice at all. Without one the
+  // header says so instead of "ready", and fixed sentences go straight to the on-device voice.
+  const ttsFlag = ui.status ? ui.status.flags.ttsAvailable !== false : null;
+  ttsRef.current = ttsFlag !== false;
+  useEffect(() => {
+    if (ttsFlag === null || ui.voice !== "warming") return;
+    if (!ttsFlag) {
+      dispatch({ t: "set", patch: { voice: "local" } });
+      return;
+    }
+    void (async () => {
+      try {
+        const { warmUpVoice } = await import("@/components/speakSigns");
+        await warmUpVoice();
+        dispatch({ t: "set", patch: { voice: "ready" } });
+      } catch {
+        dispatch({ t: "set", patch: { voice: "failed" } });
+      }
+    })();
+  }, [ttsFlag, ui.voice]);
 
   useEffect(() => () => streamRef.current?.close(), []);
 

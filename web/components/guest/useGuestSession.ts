@@ -12,6 +12,7 @@ import {
   LIMITS,
   type ApiError,
   type BusEnvelope,
+  type CapturePhase,
   type FramingStatus,
   type GuestEvent,
   type GuestHello,
@@ -50,6 +51,8 @@ export type GuestUi = {
   /** The next live sign starts a new row (set after a proposal, repeat or echo). */
   liveClosed: boolean;
   framing: FramingStatus | null;
+  /** live_key.py recording phase with the local time it arrived (key-triggered signing only). */
+  capture: (CapturePhase & { at: number }) | null;
   pending: GuestProposal | null;
   repeat: GuestRepeatRequest | null;
   echo: GuestUtteranceEcho | null;
@@ -76,6 +79,7 @@ const INITIAL: GuestUi = {
   live: [],
   liveClosed: true,
   framing: null,
+  capture: null,
   pending: null,
   repeat: null,
   echo: null,
@@ -187,14 +191,21 @@ function reduce(ui: GuestUi, a: Act): GuestUi {
     case "live_sign": {
       const live = ui.liveClosed ? [msg] : [...ui.live, msg].slice(-LIMITS.maxSigns);
       // A new utterance has started: the previous echo or repeat is finished with.
-      return ui.pending ? ui : { ...ui, live, liveClosed: false, echo: ui.liveClosed ? null : ui.echo, repeat: ui.liveClosed ? null : ui.repeat };
+      return ui.pending
+        ? ui
+        : { ...ui, live, liveClosed: false, capture: null, echo: ui.liveClosed ? null : ui.echo, repeat: ui.liveClosed ? null : ui.repeat };
     }
+    case "live_sign_undone":
+      return { ...ui, live: ui.live.filter((l) => l.sign.seq !== msg.seq) };
+    case "capture":
+      // Local receive time: the countdown runs on this screen's clock, never the recognizer's.
+      return { ...ui, capture: { phase: msg.phase, countdown: msg.countdown, duration: msg.duration, at: Date.now() } };
     case "framing":
       return { ...ui, framing: msg.status };
     case "repeat_request":
-      return { ...ui, repeat: msg, pending: null, echo: null, liveClosed: true };
+      return { ...ui, repeat: msg, pending: null, echo: null, liveClosed: true, capture: null };
     case "guest_proposal":
-      return { ...ui, pending: msg, repeat: null, echo: null, liveClosed: true };
+      return { ...ui, pending: msg, repeat: null, echo: null, liveClosed: true, capture: null };
     case "guest_utterance":
       return {
         ...ui,

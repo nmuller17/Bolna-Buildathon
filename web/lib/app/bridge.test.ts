@@ -10,11 +10,11 @@ import { validateBridgeEvent } from "./validate.ts";
 
 const T0 = 1_760_112_000_000;
 
-function setup(opts: { status?: boolean } = { status: true }) {
+function setup(opts: { status?: boolean; controlPort?: number } = { status: true }) {
   let now = T0;
   let n = 0;
   const deps: StoreDeps = { now: () => now, randomHex: (bytes) => (++n).toString(16).padStart(bytes * 2, "0") };
-  const store = new Store(defaultConfig({ profile: "stage", mode0GuestInputRequested: true }), deps);
+  const store = new Store(defaultConfig({ profile: "stage", mode0GuestInputRequested: true, signControlPort: opts.controlPort ?? null }), deps);
   store.startNewGuest();
   const opened = store.openGuestWindow();
   const code = new URL(String(opened.body.guestUrl)).hash.slice(3);
@@ -155,4 +155,80 @@ test("an utterance with no sign events at all is never spoken on invented confid
   // Both signs unjoined with no score: two weak signs, so a repeat, not a proposal.
   assert.equal(r.body.outcome, "repeat");
   assert.equal(store.session?.pending ?? null, null);
+});
+
+/* ------------- live_key.py driven through the app (control port) ------------- */
+
+test("live_key control: an answering control port makes Sign available without a status event", () => {
+  const { store, act, tick } = setup({ status: false, controlPort: 8765 });
+  assert.equal(store.hello().signTrigger, "key");
+  assert.equal(act({ type: "guest_choice", choice: "sign" }).status, 409);
+  store.noteControlHealth(true);
+  assert.equal(store.signingAvailable, true);
+  assert.equal(act({ type: "guest_choice", choice: "sign" }).status, 200);
+  // The probe stops answering: 5 s later signing is unavailable again.
+  store.noteControlHealth(false);
+  tick(5_001);
+  store.updateSigningAvailable();
+  assert.equal(store.signingAvailable, false);
+});
+
+test("live_key control: a status event still wins over the probe (mock is never ok)", () => {
+  const { store, send } = setup({ status: false, controlPort: 8765 });
+  assert.equal(send({ type: "status", fps: 0, recognizer: "mock", t: T0 / 1000 }).status, 200);
+  store.noteControlHealth(true);
+  assert.equal(store.recognizer.mode, "mock");
+  assert.equal(store.signingAvailable, false);
+});
+
+test("live_key control: commands need the consent gate and no waiting sentence", () => {
+  const { store, act, send } = setup({ status: false, controlPort: 8765 });
+  store.noteControlHealth(true);
+  assert.equal(act({ type: "sign_control", cmd: "record" }).status, 409, "not before the guest chose Sign");
+  act({ type: "guest_choice", choice: "sign" });
+  const r = act({ type: "sign_control", cmd: "record" });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.forward, "record");
+  send({ type: "sign", seq: 1, top: [{ label: "YES", conf: 0.93 }] });
+  send({ type: "sign", seq: 2, top: [{ label: "RESERVATION", conf: 0.9 }] });
+  assert.equal(send({ type: "utterance", raw: ["YES", "RESERVATION"], labels: ["YES", "RESERVATION"], text: null, snapped: false }).body.outcome, "proposal");
+  assert.equal(act({ type: "sign_control", cmd: "record" }).status, 409, "a sentence is waiting for Say it / Text only / Fix");
+});
+
+test("live_key control: without a control port the command is refused", () => {
+  const { act } = setup();
+  act({ type: "guest_choice", choice: "sign" });
+  assert.equal(act({ type: "sign_control", cmd: "record" }).status, 409);
+});
+
+test("live_key control: undo drops the newest sign from the sentence join", () => {
+  const { store, act, send } = setup({ status: false, controlPort: 8765 });
+  store.noteControlHealth(true);
+  act({ type: "guest_choice", choice: "sign" });
+  send({ type: "sign", seq: 1, top: [{ label: "MORE", conf: 0.9 }] });
+  send({ type: "sign", seq: 2, top: [{ label: "TOWEL", conf: 0.91 }] });
+  send({ type: "sign", seq: 3, top: [{ label: "TOWEL", conf: 0.4 }] });
+  assert.equal(act({ type: "sign_control", cmd: "undo" }).status, 200);
+  store.noteSignControl("undo", true);
+  assert.deepEqual(store.runs.recognizer?.sentence, [1, 2]);
+  send({ type: "sign", seq: 4, top: [{ label: "PLEASE", conf: 0.88 }] });
+  const r = send({ type: "utterance", raw: ["MORE", "TOWEL", "PLEASE"], labels: ["MORE", "TOWEL", "PLEASE"], text: null, snapped: false });
+  assert.equal(r.body.outcome, "proposal", "the strong TOWEL (#2) is joined, not the undone weak one (#3)");
+});
+
+test("live_key control: a failed forward marks the control port down and tells staff", () => {
+  const { store } = setup({ status: false, controlPort: 8765 });
+  store.noteControlHealth(true);
+  store.noteSignControl("record", false);
+  assert.equal(store.recognizer.controlUp, false);
+  assert.ok(store.session?.log.some((e) => e.kind === "system" && /did not answer/.test(e.text)));
+});
+
+test("live_key control: the guest can only name one of three commands (no path, no host, no body)", async () => {
+  const { validateGuestAction } = await import("./validate.ts");
+  const n = "0".repeat(32);
+  assert.equal(validateGuestAction({ n, type: "sign_control", cmd: "record" }).ok, true);
+  for (const bad of [{ cmd: "../health" }, { cmd: "sign" }, { cmd: "record", port: 22 }, { cmd: "record", path: "/x" }, {}]) {
+    assert.equal(validateGuestAction({ n, type: "sign_control", ...bad }).ok, false, JSON.stringify(bad));
+  }
 });

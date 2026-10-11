@@ -113,7 +113,14 @@ function Header({ desk }: { desk: Desk }) {
   const hasSession = ui.sessionState !== "NO_SESSION";
   const device = st?.guest.device ?? null;
   const guestWhere = device ? (st?.mode === "mode0" ? "this laptop (Mode 0)" : `${device.deviceClass}, ${device.address}`) : hasSession ? "not connected yet" : "none";
-  const recWords = rec ? (rec.state === "down" ? "down" : (rec.mode ?? rec.state)) : "unknown";
+  const keyTrigger = rec?.trigger === "key";
+  const recWords = rec
+    ? keyTrigger && rec.controlUp === false
+      ? "live_key not answering"
+      : rec.state === "down"
+        ? "down"
+        : `${rec.mode ?? rec.state}${keyTrigger ? ", live_key (tap to record)" : ""}`
+    : "unknown";
   const simulated = rec?.source === "simulated";
 
   return (
@@ -174,13 +181,13 @@ function Header({ desk }: { desk: Desk }) {
         <div data-level={rec?.framing && rec.framing !== "OK" ? "amber" : "ok"}>
           <dt>Framing</dt>
           <dd>
-            {rec?.framing ? rec.framing.replace(/_/g, " ").toLowerCase() : "—"}
+            {rec?.framing ? rec.framing.replace(/_/g, " ").toLowerCase() : keyTrigger ? "not reported" : "—"}
             {framingBadFor !== null && framingBadFor > LIMITS.framingStuckHintMs && `, not OK for ${Math.round(framingBadFor / 1000)} s`}
           </dd>
         </div>
-        <div data-level={ui.voice === "ready" ? "ok" : "amber"}>
+        <div data-level={ui.voice === "ready" || ui.voice === "local" ? "ok" : "amber"}>
           <dt>Voice</dt>
-          <dd>{ui.voice === "warming" ? "warming up" : ui.voice === "ready" ? "ready" : ui.voice === "failed" ? "local voice only" : "off"}</dd>
+          <dd>{ui.voice === "warming" ? "warming up" : ui.voice === "ready" ? "ready" : ui.voice === "failed" ? "local voice only" : ui.voice === "local" ? "on-device only" : "off"}</dd>
         </div>
         <div>
           <dt>Vendor keys</dt>
@@ -212,7 +219,8 @@ function FallbackBand({ status }: { status: StaffStatus | null }) {
   }
   const silent = r.lastEventAt === null || now - r.lastEventAt > 5_000;
   let why: string | null = null;
-  if (r.mode === "no_model") why = "the recognizer reports no model";
+  if (r.trigger === "key" && r.controlUp === false) why = "live_key.py does not answer on its control port (start it with --no-preview --control-port and --post)";
+  else if (r.mode === "no_model") why = "the recognizer reports no model";
   else if (r.mode === "mock") why = "the recognizer is in mock mode (invented signs, never spoken)";
   else if (r.state === "down" || (r.signingAvailable === false && silent) || (r.signingAvailable === undefined && silent))
     why = r.lastEventAt === null ? "no recognizer has connected yet" : "the recognizer has sent nothing for over 5 seconds";
@@ -607,7 +615,7 @@ function Middle({ desk }: { desk: Desk }) {
       <Pending desk={desk} />
       <div className={s.liveStrip} aria-label="Live signs">
         <span className={s.liveLabel}>Live signs</span>
-        {ui.live.length === 0 && <span className={s.hint}>none yet</span>}
+        {ui.live.length === 0 && !ui.capture && <span className={s.hint}>none yet</span>}
         {liveSimulated && <SimulatedBadge />}
         {ui.live.map(({ sign }, i) => (
           <span key={`${sign.seq}-${i}`} className={s.signChip}>
@@ -616,6 +624,11 @@ function Middle({ desk }: { desk: Desk }) {
             <span className={s.score}>{sign.top[0]?.conf.toFixed(2)}</span>
           </span>
         ))}
+        {ui.capture && (
+          <span className={s.hint} role="status">
+            {ui.capture.phase === "processing" ? "reading the sign…" : `recording: ${ui.capture.countdown ?? 0} s countdown, ${ui.capture.duration ?? 2} s window`}
+          </span>
+        )}
         {ui.repeats.count > 0 && <span className={s.hint}>repeats this guest: {ui.repeats.count}</span>}
       </div>
       {latestGuest && (

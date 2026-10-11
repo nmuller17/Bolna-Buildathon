@@ -204,3 +204,12 @@ The alternative app now has its server routes (plan 12.1a). What changes for the
 | 1 | Nath | `/api/tts` also accepts `{ "id": n }` (a guest intent 1 to 20, not NAME). With `{ text }`, only a fixed table sentence is ever sent to ElevenLabs; any other text goes to local Piper (`PIPER_FALLBACK=1`) or gets 500. Vendor error bodies are no longer logged | RT5, no guest text to vendors (D8), SRV-12 |
 | 2 | Nath, P1 | `/api/tts`, `/api/english`, `/api/gloss` and `/api/transcribe` now need the staff cookie `sb_staff` and Host `127.0.0.1:PORT` (through `lib/app/guard.ts`). Open `/p1-test` on `http://127.0.0.1:3000` after claiming the staff link the server prints | SRV-10, decision record D6: loopback alone is not authentication |
 | 3 | Everyone | `npm run dev:lan` and `start:lan` are gone; `node server.mjs --lan` exits with an error | D3, SRV-2a |
+
+## 2026-10-11, from P4 (talha/app-shell builder B, local branch) to P3: the guest screen drives live_key.py through the app server
+
+This branch now supports the single-screen demo path from ad90509. Start `server.mjs` with `LIVE_KEY_CONTROL_PORT=8765` and the same `BRIDGE_KEY` as the recognizer, then `python -m recognition.live_key --no-preview --control-port 8765 --post http://127.0.0.1:3000/api/guest/signs`. The guest's Record / Finish / Undo buttons go to the app server, which checks consent and forwards to `127.0.0.1:8765` (the browser never calls the control port, so the open CORS on it is not used). The server's 1-second `GET /health` probe stands in for a `status` event, so request 1 of the previous table is no longer blocking when the control port is used; it is still wanted for the OpenCV-window mode.
+
+| # | To | What | Why |
+|---|---|---|---|
+| 1 | P3 | Optional: have `/health` answer `no_model` (or a non-200) when the pinned model did not load | The probe cannot tell a running live_key without a model from a working one |
+| 2 | P3 | Optional: emit a `capture` `{"phase": "cancelled"}` when a recording is dropped (Q, or no frames) | The guest screen's buttons otherwise wait up to 8 s before coming back |
