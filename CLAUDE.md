@@ -10,7 +10,7 @@ ConversAI is a two-way interpreter between a hotel receptionist (spoken English)
 - **Staff to guest**: the receptionist speaks, a skeleton avatar signs the sentence in ASL for the guest, with English captions.
 - **Guest to staff**: the guest signs in front of a webcam, the system recognizes the signs, turns them into a natural English sentence and speaks it aloud.
 
-**Context**: 15-hour hackathon, 4 developers, each using Claude Code.
+**Context**: 24-hour hackathon, 4 developers, each using Claude Code.
 **Goal**: a convincing LIVE demo where a team member plays a Deaf guest checking into a hotel.
 **Rule of thumb**: if a feature does not appear in the demo script (section 9), do not build it.
 
@@ -264,7 +264,7 @@ Guest names are typed on a keyboard on the guest screen, not fingerspelled.
 | **H10** | **Checkpoint 2**: full demo script runs end to end |
 | H10-H13 | Error handling, visuals, generic gloss path |
 | **H13** | **Checkpoint 3**: record a full backup video of the demo, freeze features |
-| H13-H15 | Rehearsal, pitch |
+| H13-H24 | Rehearsal, pitch |
 
 ## 11. Git workflow
 - GitHub repo: `github.com/nmuller17/CamelHack`.
@@ -292,7 +292,7 @@ uvicorn recognition.server:app --port 8000 --reload   # classifier server
 3. Develop against `fixtures/` and simple mocks so you are never blocked by another module.
 4. Keep Python normalization (`capture/landmarks.py`, `recognition/features.py`) and TS normalization (`web/lib/recognition/features.ts`) strictly identical.
 5. API keys stay server-side (Next.js API routes). Never expose them to the browser.
-6. Prefer the simplest working solution. This is a 15-hour demo, not production.
+6. Prefer the simplest working solution. This is a 24-hour demo, not production.
 7. Every live step needs a fallback: Web Speech API for Whisper, Piper then `speechSynthesis` for ElevenLabs, MP4 playback for the avatar, manual retry for recognition.
 8. Do not build features outside the demo script without asking your human.
 9. When you finish a task, update the relevant part of this file only if your human agrees.
