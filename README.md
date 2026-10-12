@@ -1,6 +1,6 @@
 # ConversAI
 
-> 🏆 **Winner of CamelHack 2026.** ConversAI was built in 15 hours by Maya, Cosme, Roni, Talha and Nath during the
+> 🏆 **Winner of CamelHack 2026.** ConversAI was built in 24 hours by Maya, Cosme, Roni, Talha and Nath during the
 > CamelHack 2026 hackathon (October 2026), where it took first place.
 
 **A two-way front-desk interpreter between a hearing hotel receptionist and a Deaf guest who signs in American Sign
