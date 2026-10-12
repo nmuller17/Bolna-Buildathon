@@ -206,4 +206,5 @@ training data: [capture/README.md](capture/README.md). Training and evaluating t
 | Avatar rendering and retargeting, app shell, voice | Nath |
 | Sign classifier, recognition server, benchmarks | Talha, Roni |
 
-Everyone recorded training data. License: MIT ([LICENSE](LICENSE)).
+Everyone recorded training data. License: [PolyForm Noncommercial 1.0.0](LICENSE): free for noncommercial use (personal, study, research, nonprofit and education).
+For commercial use, contact muller17@mit.edu.
