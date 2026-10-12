@@ -39,7 +39,7 @@ type Bus = {
   nextId: number;
 };
 
-const KEY = Symbol.for("signbridge.guestBus");
+const KEY = Symbol.for("conversai.guestBus");
 
 export function guestBus(): Bus {
   const g = globalThis as unknown as Record<symbol, Bus | undefined>;

@@ -1,6 +1,6 @@
 import "./globals.css";
 
-export const metadata = { title: "SignBridge AI" };
+export const metadata = { title: "ConversAI" };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

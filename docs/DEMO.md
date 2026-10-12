@@ -1,4 +1,4 @@
-# Running the SignBridge demo
+# Running the ConversAI demo
 
 One laptop, one screen facing the Deaf guest. The receptionist has no screen: they hold **Space** while talking,
 the bellhop avatar signs it, then the guest answers in ASL in front of the webcam and the laptop says the answer

@@ -1,4 +1,4 @@
-// P2: the "concierge" style: Sam, the SignBridge hotel receptionist (an original character), soft 3D cartoon.
+// P2: the "concierge" style: Sam, the ConversAI hotel receptionist (an original character), soft 3D cartoon.
 // Built only from Three.js geometry and dressed on the landmark skeleton every frame: all motion comes from the landmarks.
 // Cartoon proportions: a big head resting on the shoulders. The face points turn it and drive the features
 // (eyes, brows, mouth), which are laid out on the front of the head. Arms and fingers are continuous smooth tubes.
@@ -268,7 +268,7 @@ function blazerTexture() {
   return texture;
 }
 
-/** Gold name badge: "SAM", and "SignBridge" below. */
+/** Gold name badge: "SAM", and "ConversAI" below. */
 function badgeTexture() {
   const W = 512;
   const H = 192;
@@ -292,7 +292,7 @@ function badgeTexture() {
   g.font = "800 104px system-ui, 'Segoe UI', Arial, sans-serif";
   g.fillText("SAM", W / 2, 84);
   g.font = "600 38px system-ui, 'Segoe UI', Arial, sans-serif";
-  g.fillText("SignBridge", W / 2, 150);
+  g.fillText("ConversAI", W / 2, 150);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 8;

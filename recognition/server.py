@@ -170,7 +170,7 @@ def create_app(model_path=None, mock=None, allowed_origins=None, token=None, all
                                                          token.encode("utf-8")):
             raise HTTPException(status_code=401, detail="missing or wrong X-Recognition-Token")
 
-    api = FastAPI(title="SignBridge recognition", docs_url=None, redoc_url=None, openapi_url=None)
+    api = FastAPI(title="ConversAI recognition", docs_url=None, redoc_url=None, openapi_url=None)
     # Added inner to outer: Guard, CORS, the Host check, then (without a token) the loopback check outermost.
     api.add_middleware(Guard, max_bytes=MAX_BODY_BYTES, max_inflight=MAX_INFLIGHT)
     api.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_methods=["GET", "POST"],

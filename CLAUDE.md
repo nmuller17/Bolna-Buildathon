@@ -1,11 +1,11 @@
-# SignBridge AI — Project guide for Claude Code agents
+# ConversAI — Project guide for Claude Code agents
 
 This file is the shared source of truth for the 4-person team and their Claude Code agents.
 Read it fully before writing code. If something here conflicts with a request, ask the human before acting.
 
 ## 1. What we are building
 
-SignBridge AI is a two-way interpreter between a hotel receptionist (spoken English) and a Deaf guest (ASL), running on a laptop plus a guest-facing screen at a hotel front desk.
+ConversAI is a two-way interpreter between a hotel receptionist (spoken English) and a Deaf guest (ASL), running on a laptop plus a guest-facing screen at a hotel front desk.
 
 - **Staff to guest**: the receptionist speaks, a skeleton avatar signs the sentence in ASL for the guest, with English captions.
 - **Guest to staff**: the guest signs in front of a webcam, the system recognizes the signs, turns them into a natural English sentence and speaks it aloud.
@@ -37,7 +37,7 @@ LIVE: GUEST ──► STAFF
   ─► confidence check ─► /api/english (Claude) ─► /api/tts (ElevenLabs, Piper backup) ─► speaker + staff screen
 ```
 
-Two browser windows on the same machine: `/staff` (laptop screen) and `/guest` (external monitor facing the guest, webcam on top). They sync through a `BroadcastChannel` named `signbridge`.
+Two browser windows on the same machine: `/staff` (laptop screen) and `/guest` (external monitor facing the guest, webcam on top). They sync through a `BroadcastChannel` named `conversai`.
 
 ## 3. Team and ownership
 
@@ -118,7 +118,7 @@ CamelHack/
 | Landmarks (live) | MediaPipe for web (`@mediapipe/tasks-vision`) | Use HolisticLandmarker if available in the installed version, else Pose + Hand + Face landmarkers |
 | Classifier | PyTorch GRU, served by FastAPI + uvicorn | `http://localhost:8000/predict` |
 | Avatar rendering | Three.js | Spheres for joints, lines for bones |
-| Screen sync | `BroadcastChannel("signbridge")` | Same machine, two windows |
+| Screen sync | `BroadcastChannel("conversai")` | Same machine, two windows |
 | Public sign videos | ASL Citizen or WLASL | Check license and download size first |
 
 ### Text to speech: ElevenLabs, with Piper as backup

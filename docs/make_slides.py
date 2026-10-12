@@ -1,6 +1,6 @@
-"""SignBridge slides (2 pages, 16:9): overview + technical workflow.
+"""ConversAI slides (2 pages, 16:9): overview + technical workflow.
 
-    python docs/make_slides.py docs/SignBridge-workflow     # writes .pdf and .json (then: node docs/make_slides.js)
+    python docs/make_slides.py docs/ConversAI-workflow     # writes .pdf and .json (then: node docs/make_slides.js)
 
 The layout is computed once as a list of drawing operations (canvas 1280 x 720 pt, origin bottom-left), then
 rendered to PDF with reportlab here, and to an editable .pptx by docs/make_slides.js from the .json, so the two
@@ -125,7 +125,7 @@ def simple_box(x, y, w, h, step, title, line, tool, color, intent=False):
 
 # ==== slide 1: overview ============================================================================================
 new_slide()
-header("SignBridge — how it works")
+header("ConversAI — how it works")
 lane(440, 150, "The receptionist speaks   →   the guest sees ASL", BLUE, [
     ("1", "Speak", "The receptionist holds Space and talks", "Microphone", False),
     ("2", "Transcribe", "The speech becomes text", "OpenAI Whisper", False),
@@ -151,7 +151,7 @@ for i, (big, label) in enumerate([("87", "signs the avatar can play, recorded by
 
 # ==== slide 2: technical workflow ==================================================================================
 new_slide()
-header("SignBridge — technical workflow")
+header("ConversAI — technical workflow")
 lane(506, 124, "RECEPTIONIST → GUEST   speech to ASL", BLUE, [
     ("1", "Push-to-talk", "Space held = record", [
         "MacBook built-in mic, chosen automatically (AirPods / iPhone avoided)",
@@ -291,8 +291,8 @@ def render_pdf(path):
     from reportlab.lib.colors import HexColor
     from reportlab.pdfgen import canvas
     c = canvas.Canvas(path, pagesize=(W, H))
-    c.setTitle("SignBridge - workflow")
-    c.setAuthor("SignBridge team")
+    c.setTitle("ConversAI - workflow")
+    c.setAuthor("ConversAI team")
     for page in slides:
         for o in page:
             if o["t"] == "rect":
@@ -334,7 +334,7 @@ def render_pdf(path):
 
 
 if __name__ == "__main__":
-    base = sys.argv[1] if len(sys.argv) > 1 else "docs/SignBridge-workflow"
+    base = sys.argv[1] if len(sys.argv) > 1 else "docs/ConversAI-workflow"
     render_pdf(base + ".pdf")
     with open(base + ".json", "w") as f:
         json.dump({"w": W, "h": H, "slides": slides}, f)

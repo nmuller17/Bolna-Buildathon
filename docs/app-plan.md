@@ -1,8 +1,8 @@
-# SignBridge app plan (P4, branch p4-app)
+# ConversAI app plan (P4, branch p4-app)
 
-This is the build plan for the SignBridge web app: the staff screen on the laptop, the guest screen on a phone or a second laptop, the server that connects them, and the security and privacy controls around them. Two builders should be able to work in parallel from this document and from the shared types in `web/lib/app/types.ts`. Where this plan changes a protected contract from CLAUDE.md section 6, the change is listed in section 15 and logged in `docs/requests.md`.
+This is the build plan for the ConversAI web app: the staff screen on the laptop, the guest screen on a phone or a second laptop, the server that connects them, and the security and privacy controls around them. Two builders should be able to work in parallel from this document and from the shared types in `web/lib/app/types.ts`. Where this plan changes a protected contract from CLAUDE.md section 6, the change is listed in section 15 and logged in `docs/requests.md`.
 
-Throughout the product and this plan, SignBridge is a "front-desk communication aid". The software is never called an "interpreter"; the only interpreter is the human one the guest can ask for.
+Throughout the product and this plan, ConversAI is a "front-desk communication aid". The software is never called an "interpreter"; the only interpreter is the human one the guest can ask for.
 
 ---
 
@@ -78,7 +78,7 @@ The staff screen is a three-column dashboard that a receptionist can read at a g
 
 ```
 +--------------------------------------------------------------------------------------------------+
-| SignBridge  front-desk communication aid      Guest phone: connected   Recognizer: up   [End guest] |
+| ConversAI  front-desk communication aid      Guest phone: connected   Recognizer: up   [End guest] |
 |                                               Idle wipe in 1:42                                    |
 +-------------------------------+----------------------------------------+-------------------------+
 | Talk to the guest             | Conversation (memory only)             | Last signs              |
@@ -134,7 +134,7 @@ The guest token is kept in memory and in `sessionStorage` of that tab only (wrap
 ```
  PHONE 390x844                         LAPTOP 1440x900
 +----------------------------+        +-------------------------------------------------------------+
-| SignBridge · front desk    |        | SignBridge front desk                     [Emergency: staff] |
+| ConversAI · front desk    |        | ConversAI front desk                     [Emergency: staff] |
 |                            |        |                                                             |
 | How would you like to talk |        |  How would you like to talk with the front desk?            |
 | with the front desk?       |        |                                                             |
@@ -318,7 +318,7 @@ A name is normalized to NFC, trimmed, has inner whitespace collapsed to one spac
      └──────────────────────────────── WIPED ◄──────────────────────┘
 ```
 
-There is at most one session. The store lives on `globalThis[Symbol.for("signbridge.store.v1")]` so it survives dev hot reloads, and it holds the session (pairing code hash and expiry, guest token, mode, speak-aloud setting, pending proposal, log, counters, the ring of SSE subscribers) plus server-lifetime privacy counters and the recognizer status.
+There is at most one session. The store lives on `globalThis[Symbol.for("conversai.store.v1")]` so it survives dev hot reloads, and it holds the session (pairing code hash and expiry, guest token, mode, speak-aloud setting, pending proposal, log, counters, the ring of SSE subscribers) plus server-lifetime privacy counters and the recognizer status.
 
 Activity is any guest action except `ack`, any staff action, and any accepted signs batch. SSE heartbeats, acks, status polls and stream reconnects are not activity. A sweeper (`setInterval`, `unref`'d, every second) sends `idle_warning` 30 seconds before the wipe and wipes after `IDLE_WIPE_MS` (default 120000) without activity. The idle timer runs only in ACTIVE; in AWAITING_PAIR the pairing code's own expiry applies.
 
@@ -409,7 +409,7 @@ Everything below is P4-owned per the task brief. P1, P2 and P3 paths are only re
 | `web/lib/app/store.ts` | Session lifecycle, sweeper logic, proposals, counters, with injected clock, id generator and fetch | yes |
 | `web/lib/app/bus.ts` | Subscribers, envelopes, guest and staff projections, SSE encoding | yes |
 | `web/lib/app/ingest.ts` | `ingestSigns(store, payload, source)` | yes |
-| `web/lib/app/store.server.ts` | `import "server-only"`; the singleton on `globalThis[Symbol.for("signbridge.store.v1")]`, wiring real clock, crypto and config into `store.ts` | — |
+| `web/lib/app/store.server.ts` | `import "server-only"`; the singleton on `globalThis[Symbol.for("conversai.store.v1")]`, wiring real clock, crypto and config into `store.ts` | — |
 | `web/lib/app/guard.server.ts` | `guard(req, policy)` for route handlers | partly |
 | `web/lib/app/recognizer.server.ts`, `benchmark.server.ts`, `tts.server.ts`, `english.server.ts`, `config.server.ts` | Health poll; report reader; ElevenLabs with memory cache; Anthropic fallback (load the `claude-api` skill before writing it); env parsing | partly |
 | `web/lib/app/client/` (`useBus.ts`, `actions.ts`, `speech.ts`, `alarm.ts`) | EventSource hook, POST helpers, local voice selection and audio unlock, WebAudio alert tone | — |
@@ -476,7 +476,7 @@ Rehearsal without the camera uses the simulator: buttons 3, 4, 5, 6, 7, 8, 10 (w
 
 ## 15. Contract changes (also logged in `docs/requests.md`)
 
-1. Screen sync moves from `BroadcastChannel("signbridge")` (CLAUDE.md 2 and 6.7) to the server SSE bus, because the guest screen is now on another device.
+1. Screen sync moves from `BroadcastChannel("conversai")` (CLAUDE.md 2 and 6.7) to the server SSE bus, because the guest screen is now on another device.
 2. Message types are extended (section 6); the 6.7 messages gain fields but keep their names.
 3. Guest-to-staff recognition moves from the browser webcam (CLAUDE.md 7.2 steps 1 to 3) to a desk camera with Python MediaPipe on the laptop. P3's process posts to `POST /api/guest/signs` with `X-Bridge-Key`, in either payload shape, and may poll `GET /api/guest/signs` for `{accepting}` to switch the camera off when the guest is not signing. P3 is asked to expose `GET /health` on the recognizer.
 4. CLAUDE.md 7.2 step 5 changes: the scripted path uses the fixed sentence table instead of Claude; `/api/english` becomes an optional fallback behind `ENGLISH_FALLBACK=1`, labels only, always confirmed by the guest.

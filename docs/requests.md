@@ -43,7 +43,7 @@ Fingerspelling C-H-E-C-K-O-U-T (8 letters) in 3 s was too long to sign consisten
 
 ## 2026-10-10, from P4 (Nath) to all: BroadcastChannel addition (CLAUDE.md 6.7), backward compatible
 - New message `{ type: "staff_status", state: "idle" | "listening" | "processing" }`, sent by `/staff` around push-to-talk so `/guest` can show that the receptionist is speaking. The three 6.7 messages are unchanged.
-- Types and a `useSignbridgeChannel(onMessage)` hook are in `web/lib/channel.ts`, with the turn type shared by both directions: `{ from: "staff" | "guest", text, gloss?, signs?, at }`.
+- Types and a `useConversaiChannel(onMessage)` hook are in `web/lib/channel.ts`, with the turn type shared by both directions: `{ from: "staff" | "guest", text, gloss?, signs?, at }`.
 
 ## 2026-10-10, from P4 (Nath) to P1: push-to-talk recorder lives in web/components for now
 `web/lib/voice/recorder.ts` and `client.ts` were still empty, so `/staff` uses `web/components/usePushToTalk.ts` (MediaRecorder webm for `/api/transcribe`, plus the browser's Web Speech recognition in parallel as the Whisper fallback) and calls `/api/transcribe` and `/api/gloss` itself. P1 can move both into `web/lib/voice/` and P4 will switch the imports.

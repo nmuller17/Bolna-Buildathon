@@ -1,4 +1,4 @@
-# SignBridge vocabulary
+# ConversAI vocabulary
 
 Source of truth for every sign the product uses. Lives at `docs/vocabulary.md`.
 Sign IDs below are the exact keys used in `signs/index.json`, sign file names, gloss tokens and classifier labels.

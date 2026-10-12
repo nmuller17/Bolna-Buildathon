@@ -1,4 +1,4 @@
-// SignBridge app (P4): shared types for the server, the staff screen and the guest screen.
+// ConversAI app (P4): shared types for the server, the staff screen and the guest screen.
 //
 // Rules for this file:
 // - Erasable TypeScript only (no enums, no namespaces, no parameter properties), so that

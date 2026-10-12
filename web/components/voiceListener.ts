@@ -42,7 +42,7 @@ const OUT_RATE = 16000;
 
 // Collects audio in the audio thread and posts it in blocks of BLOCK samples.
 const WORKLET = `
-class SignbridgeTap extends AudioWorkletProcessor {
+class ConversaiTap extends AudioWorkletProcessor {
   constructor() { super(); this.buf = new Float32Array(${BLOCK}); this.n = 0; }
   process(inputs) {
     const ch = inputs[0] && inputs[0][0];
@@ -53,7 +53,7 @@ class SignbridgeTap extends AudioWorkletProcessor {
     return true;
   }
 }
-registerProcessor("signbridge-tap", SignbridgeTap);
+registerProcessor("conversai-tap", ConversaiTap);
 `;
 
 export type ListenerEvents = {
@@ -87,7 +87,7 @@ export class VoiceListener {
     const url = URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }));
     await this.context.audioWorklet.addModule(url);
     URL.revokeObjectURL(url);
-    this.node = new AudioWorkletNode(this.context, "signbridge-tap");
+    this.node = new AudioWorkletNode(this.context, "conversai-tap");
     this.node.port.onmessage = (event: MessageEvent<Float32Array>) => this.block(event.data);
     this.context.createMediaStreamSource(this.stream).connect(this.node);
     const track = this.stream.getAudioTracks()[0];

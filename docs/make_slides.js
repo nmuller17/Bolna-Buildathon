@@ -1,14 +1,14 @@
-// SignBridge slides as an editable .pptx, from the drawing operations written by docs/make_slides.py.
+// ConversAI slides as an editable .pptx, from the drawing operations written by docs/make_slides.py.
 //
-//   python docs/make_slides.py docs/SignBridge-workflow   # .pdf + .json
-//   node docs/make_slides.js docs/SignBridge-workflow     # .pptx (needs pptxgenjs)
+//   python docs/make_slides.py docs/ConversAI-workflow   # .pdf + .json
+//   node docs/make_slides.js docs/ConversAI-workflow     # .pptx (needs pptxgenjs)
 //
 // Canvas 1280 x 720 (origin bottom-left) -> 13.333 x 7.5 in (LAYOUT_WIDE, origin top-left). Every card, label and
 // arrow stays a native shape or text box, so the deck can be edited in PowerPoint or Keynote.
 const fs = require("fs");
 const PptxGenJS = require("pptxgenjs");
 
-const base = process.argv[2] || "docs/SignBridge-workflow";
+const base = process.argv[2] || "docs/ConversAI-workflow";
 const spec = JSON.parse(fs.readFileSync(base + ".json", "utf8"));
 const IN = 13.333 / spec.w; // inches per canvas unit
 const PT = IN * 72; // points per canvas unit (font sizes, line widths)
@@ -16,8 +16,8 @@ const H = spec.h;
 
 const pres = new PptxGenJS();
 pres.layout = "LAYOUT_WIDE";
-pres.title = "SignBridge - workflow";
-pres.author = "SignBridge team";
+pres.title = "ConversAI - workflow";
+pres.author = "ConversAI team";
 
 for (const ops of spec.slides) {
   const slide = pres.addSlide();

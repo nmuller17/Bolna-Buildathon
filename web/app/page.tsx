@@ -1,5 +1,5 @@
 "use client";
-// SignBridge: the single screen, facing the Deaf guest. The receptionist has no screen: they talk, and they hear
+// ConversAI: the single screen, facing the Deaf guest. The receptionist has no screen: they talk, and they hear
 // the guest's answers out loud.
 //
 // Front desk turn: the receptionist holds Space while talking (push-to-talk: a noisy room is never transcribed;
@@ -31,7 +31,7 @@ const SIGN_TIMEOUT_MS_PER_TOKEN = 4000; // longest a sign (or a fingerspelled wo
 const TICK_MS = 150;
 const TURN_REQUEST_TIMEOUT_MS = 2000;
 
-export default function SignBridgePage() {
+export default function ConversAIPage() {
   const stageRef = useRef<HTMLDivElement>(null);
   const [webgl, setWebgl] = useState(true);
   const [caption, setCaption] = useState<SignedSentence>({ text: "", gloss: [] });
@@ -92,7 +92,7 @@ export default function SignBridgePage() {
           new Promise((resolve) => setTimeout(resolve, SIGN_TIMEOUT_MS_PER_TOKEN * sentence.gloss.length + 6000)),
         ]);
       } catch (err) {
-        console.warn(`[signbridge] could not sign "${sentence.text}":`, err);
+        console.warn(`[conversai] could not sign "${sentence.text}":`, err);
       }
       setActiveIndex(null);
       if (sentence.intents?.length) intents = sentence.intents; // a trailing unknown sentence keeps the last known intents
@@ -140,7 +140,7 @@ export default function SignBridgePage() {
       const text = recording ? await transcribeRecording(recording) : "";
       if (text) signHeard(await toSignedSentences(text));
     } catch (err) {
-      console.warn("[signbridge] push-to-talk failed:", err);
+      console.warn("[conversai] push-to-talk failed:", err);
     } finally {
       setTalk((t) => (t === "blocked" ? t : "idle"));
     }
@@ -298,7 +298,7 @@ async function transcribeRecording(recording: Recording): Promise<string> {
     const text = await transcribe(recording.audio, "speech.webm");
     return /^(you|bye|\.+)[.!]*$/i.test(text) ? "" : text; // Whisper's inventions on a silent press
   } catch (err) {
-    console.warn("[signbridge] Whisper failed, using the browser transcript:", err);
+    console.warn("[conversai] Whisper failed, using the browser transcript:", err);
     return (await recording.browserText).trim();
   }
 }

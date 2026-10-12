@@ -21,7 +21,7 @@ export const THEME = {
   particles: { count: 1800, size: 3.2 },
   bloom: { strength: 0.6, radius: 0.3, threshold: 0 },
 
-  // ---- "concierge" style: Sam, the SignBridge receptionist (original character), soft 3D cartoon ----
+  // ---- "concierge" style: Sam, the ConversAI receptionist (original character), soft 3D cartoon ----
   concierge: {
     skin: 0xeba57c,
     skinShade: 0xdb8e66, // nose
@@ -38,7 +38,7 @@ export const THEME = {
     seam: 0x101c40,
     shirt: 0xf7f9fc,
     shirtShade: 0xc9d2de,
-    tie: 0x10a596, // SignBridge teal
+    tie: 0x10a596, // ConversAI teal
     tieShade: 0x0b7a70,
     gold: 0xe3b53f,
     goldShade: 0xa27b1c,

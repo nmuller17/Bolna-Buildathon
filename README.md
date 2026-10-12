@@ -1,10 +1,11 @@
-# SignBridge
+# ConversAI
+
+> 🏆 **Winner of CamelHack 2026.** ConversAI was built in 15 hours by Maya, Cosme, Roni, Talha and Nath during the
+> CamelHack 2026 hackathon (October 2026), where it took first place.
 
 **A two-way front-desk interpreter between a hearing hotel receptionist and a Deaf guest who signs in American Sign
 Language (ASL).** The receptionist speaks and a 3D bellhop signs the sentence in ASL, with captions. The guest signs
 back in front of a webcam, and the laptop says the answer out loud.
-
-Built in 15 hours at CamelHack (October 2026) by Maya, Cosme, Roni, Talha and Nath.
 
 > **Run the demo:** [docs/DEMO.md](docs/DEMO.md) (setup, commands, demo script, troubleshooting).
 
@@ -13,7 +14,7 @@ Built in 15 hours at CamelHack (October 2026) by Maya, Cosme, Roni, Talha and Na
 ## Goal
 
 At a hotel front desk, a Deaf guest and a receptionist who does not sign usually fall back on pen and paper.
-SignBridge lets them hold a short check-in conversation, each in their own language, on one laptop with one screen
+ConversAI lets them hold a short check-in conversation, each in their own language, on one laptop with one screen
 facing the guest:
 
 - **Receptionist -> guest (speech to signs):** speech is transcribed, turned into an ASL gloss, and signed by an
@@ -50,7 +51,7 @@ What the receptionist says also tells the app which answers to expect from the g
 | English text -> ASL gloss | *no ML model*: rules in `web/lib/voice/intents.ts` | keyword + similarity matching | Next.js server | word by word, fingerspelling |
 | Gloss -> signing avatar | 87 recorded signs + **bellhop** 3D model (Tripo mesh, Mixamo rig) | animation retargeting | browser (Three.js) | none needed |
 | Guest video -> landmarks | Google **MediaPipe Holistic Landmarker** (float16) | pose, hand and face landmarks | laptop CPU | none |
-| Landmarks -> signs | SignBridge **sign classifier** (logistic regression, trained by the team) | 22-class classifier | laptop CPU (PyTorch) | none |
+| Landmarks -> signs | ConversAI **sign classifier** (logistic regression, trained by the team) | 22-class classifier | laptop CPU (PyTorch) | none |
 | Signs -> guest sentence | continuous decoding over the expected sentences | dynamic programming, no training | laptop | none |
 | Unknown sign sequence -> English | Anthropic **Claude** `claude-haiku-5-5` | language model | Anthropic API | sign words read in order |
 | English -> speech | **ElevenLabs** `eleven_flash_v2_5`, voice "Sarah" | text to speech | ElevenLabs API | browser voice; optional local Piper |
