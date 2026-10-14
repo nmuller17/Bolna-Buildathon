@@ -2,12 +2,12 @@
 
 > **PLUMBING SMOKE TEST.** Generated clips with no real signing. These numbers mean nothing about accuracy. Track B status: **awaiting real held-out recordings**; no Track B result exists.
 
-6 clips in total; every system is scored on the 5 clips that ALL systems answered. No-answer rate per system (on all clips): `manual_demo` 0.1667, `ours_gru` 0.0
+6 clips in total; every system is scored on all of them, and a clip without an answer counts as wrong (5 clips were answered by every system). No-answer rate per system: `manual_demo` 0.1667, `ours_gru` 0.0
 
 | system | test set | #signers | #clips | signer-held-out | top-1 [95% CI] | macro-F1 [95% CI] | open-set false accept [95% CI] | coverage@0.6 | accuracy@0.6 | wrong sign spoken | p50 latency | training data | data that leaves the device |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `manual_demo` | team clips (smoke) | 1 | 4 | per recording protocol | 0.500 [0.500, 0.500] | 0.556 [0.556, 0.556] | 0.000 [0.000, 0.000] (n=1) | - | - | 0.250 | - | competitor product (unknown) | whatever that product sends; check its terms |
-| `ours_gru` | team clips (smoke) | 1 | 4 | per recording protocol | 0.250 [0.250, 0.250] | 0.167 [0.167, 0.167] | 0.000 [0.000, 0.000] (n=1) | 0.000 | - | 0.000 | 0.2 ms | the checkpoint in the Track B manifest | nothing: landmarks only, processed locally |
+| `manual_demo` | team clips (smoke) | 1 | 5 | per recording protocol | 0.400 [0.400, 0.400] | 0.444 [0.444, 0.444] | 0.000 [0.000, 0.000] (n=1) | - | - | 0.400 | - | competitor product (unknown) | whatever that product sends; check its terms |
+| `ours_gru` | team clips (smoke) | 1 | 5 | per recording protocol | 0.400 [0.400, 0.400] | 0.356 [0.356, 0.356] | 0.000 [0.000, 0.000] (n=1) | 0.000 | - | 0.000 | 1.6 ms | the checkpoint in the Track B manifest | nothing: landmarks only, processed locally |
 
 ## What each number means
 

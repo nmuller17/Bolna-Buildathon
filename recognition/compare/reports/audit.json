@@ -1,5 +1,5 @@
 {
-  "created": "2026-10-11T00:00:43+00:00",
+  "created": "2026-10-11T13:32:02+00:00",
   "release_approved": false,
   "index": {
     "errors": [],
@@ -5858,16 +5858,86 @@
   },
   "protocol_run": {
     "run_dir": "data/compare/track_a_v1",
-    "manifests": 0,
+    "manifests": 41,
     "expected_manifests": 41
   },
   "release_blockers": [
     "Pretrained reference provenance: SEPARATE by participant ID (none of its 21 training IDs is one of the 10 test IDs); that IDs are different people is UNVERIFIED; 4 test signers (public leaderboard) influenced the winner's model selection. It may only appear as a separately labelled reference, never as a matched comparison.",
     "Pretrained OOV rejection is not a matched unseen-vocabulary test: all 30 outside signs belong to its original 250-label training vocabulary. PROTOCOL.md excludes it from every OOV comparison.",
-    "The pretrained max-other rejection rule was selected after comparing results. PROTOCOL.md pre-specifies the sum rule; max-other is exploratory only.",
+    "Both pretrained R8 rejection rules were fixed after alternatives had been examined (max-other after comparing results; the sum rule afterwards, with p_none_sum already stored). No pretrained R8 figure is cleared (AMENDMENTS.md item 15).",
     "Legacy islr1st_retrained used a fixed 60 epochs informed by a global pilot whose validation signer (48118) is an outer test fold. PROTOCOL.md replaces it with nested per-fold early stopping; the legacy run must not be reported.",
     "Track A omits the live segmenter and framing gate and covers only seven hotel-vocabulary signs, not the 22-class product.",
-    "Track B has no real held-out hotel-sign recordings. The extractor now uses the capture-parity path, but no result exists until recordings are made.",
-    "The legacy runs did not store per-job manifests; the protocol report refuses them. A protocol re-run is required before any figure is used."
-  ]
+    "Track B has no real held-out hotel-sign recordings. Our rows now replay recognition.stream (segmenter, extent, framing gate, clean) on the capture-parity landmarks, checked against SignStream.push/flush on the same MediaPipe results (synthetic results; no real video exists), and pre-cleaned files are refused; no Track B result exists until recordings are made.",
+    "PROTOCOL.md (endpoint and -0.05 margin) was written after the legacy exploratory results on the same clips were seen, so Track A v1 is not a blind pre-registration (AMENDMENTS.md item 10). Talha has not confirmed the margin.",
+    "The protocol caps every network at 60 epochs; the winner trained for 300. The 200-epoch-cap sensitivity analysis (AMENDMENTS.md item 11) is done and printed next to the primary; the winner's fixed 300-epoch setting without early stopping, its AWP and its seeds remain untested.",
+    "With 10 signers the confidence-interval method can decide the non-inferiority verdict; per-signer t and cluster-robust t intervals and an exact sign-flip test are printed next to the registered bootstrap (AMENDMENTS.md item 12).",
+    "The legacy runs did not store per-job manifests; the protocol report refuses them. The protocol re-run (data/compare/track_a_v1, 41 manifests) replaces them; only its figures, as worded in the cleared sentences, may be used."
+  ],
+  "clearance": {
+    "cleared": [
+      "[Integrity only; no accuracy claim] On the GISLR rerun Track A set (10 participant IDs, 1,105 in-vocabulary clips, 225 outside-vocabulary test clips), an independent re-check of all 41 protocol manifests (40 trained jobs and the pretrained reference) found that every compared system trained on the identical clip list per fold, never saw the held-out signer or any of the 15 test-only outside signs, used the same inner split, and used one set of training code; PROTOCOL.md sha256 ac59252a...6413f was unchanged.",
+      "[Exploratory, legacy-equivalent; our training recipe retrained per fold on 9 GISLR participants; NOT the shipped model, NOT the live pipeline, NOT our 22-sign hotel vocabulary] On 7 signs shared with GISLR, our GRU recipe trained on 9 GISLR participants and tested on the 10th reached 92.1% forced-choice top-1 (95% CI over signers 87.0-95.8%; 10 participant IDs, 1,105 clips, signer-held-out).",
+      "[Same scope] On those clips our GRU recipe was 4.3 percentage points more accurate than our logistic-regression baseline (paired on identical clips, 95% CI over signers +1.9 to +7.2; 10 signers, 1,105 clips, signer-held-out).",
+      "[Same scope, must be quoted together with the two sentences above] When the product rule speaks a sign only at confidence >=0.6, our GRU recipe spoke a wrong in-vocabulary sign on 3.2% of clips (95% CI 1.5-6.0%; 10 signers, 1,105 clips), and spoke one of our signs for 16.0% of clips of 15 unseen outside signs (95% CI 11.3-21.1%; 10 signers, 225 clips).",
+      "[Reference only, not a matched comparison] The published GISLR 1st-place ensemble, a much larger model trained on about 94k clips of 250 signs from 21 other participant IDs (that the IDs are different people is unverified; 4 of the 10 test signers influenced its selection), reached 97.9% forced-choice top-1 on the same 7 signs (95% CI 95.7-99.2%; 10 signers, 1,105 clips), and 98.0% on the 6 private-leaderboard signers only (95% CI 94.8-99.6%; 737 clips).",
+      "[Primary endpoint, DESCRIPTIVE ONLY (no verdict); endpoint and margin chosen after exploratory results on the same test set were seen; margin not yet confirmed by Talha; our training recipe retrained per fold on 9 GISLR participants; NOT the shipped model, NOT the live pipeline, NOT our 22-sign hotel vocabulary; competitor = PyTorch port of the GISLR 1st-place network and recipe, at most 60 epochs, 1 seed, no AWP, CPU, about 1,200 training clips per fold; quote the whole paragraph or none of it] On the 7 shared signs, our GRU recipe's forced-choice top-1 minus the retrained winner recipe's was +0.6 percentage points (95% CI over signers -2.9 to +4.8 by the registered pooled signer bootstrap; -6.6 to +6.7 for the unweighted per-signer mean; exact sign-flip p = 0.7812; 10 signers, 1,105 clips, signer-held-out). With the competitor recipe allowed up to 200 epochs (sensitivity analysis, same rule) the difference was +1.4 points (bootstrap 95% CI -2.2 to +5.5), and +1.4 points (-2.3 to +5.5) when both were allowed 200 epochs. In the product setting (speak only at confidence >=0.6, never NONE), ours spoke a wrong sign on 3.2% (1.5-6.0%) and the retrained winner recipe on 1.5% (0.4-2.9%) of 1,105 in-vocabulary clips, and they spoke one of our signs for 16.0% (11.3-21.1%) and 10.7% (5.4-16.1%) of 225 outside-vocabulary clips (10 signers).",
+      "[Secondary, descriptive; endpoint chosen after exploratory results on the same test set were seen; our training recipe retrained per fold on 9 GISLR participants; NOT the shipped model, NOT the live pipeline, NOT our 22-sign hotel vocabulary; quote the whole paragraph or none of it] Keeping our features and training code and changing only the network to the 1st-place architecture changed forced-choice top-1 by -0.2 percentage points (95% CI over signers -1.3 to +1.2; 10 signers, 1,105 clips, signer-held-out). With both allowed up to 200 epochs the change was -0.9 points (-1.9 to +0.2). Under the product rule it spoke a wrong sign on 2.4% (1.2-3.9%) of in-vocabulary clips and one of our signs for 13.3% (9.4-17.8%) of 225 outside-vocabulary clips, against 3.2% and 16.0% for our GRU recipe."
+    ],
+    "not_cleared": [
+      "The non-inferiority VERDICT of the primary (registered rule: \"ours_gru not worse by more than 0.05 (CI lower bound above -0.05); no detectable difference\"; reading across interval methods: \"not worse by more than 5 points under the pre-registered pooled bootstrap only; inconclusive under per-signer weighting\"): not cleared until Talha confirms the -0.05 margin; even then it carries the labels above.",
+      "\"Our model is as accurate as / matches / beats the Kaggle winner\", in any form. The pretrained winner is not a matched comparison; the retrained one is a constrained port.",
+      "Any pretrained R8 / 8-way number (sum rule or max-other): both rules were fixed after alternatives were examined.",
+      "Any pretrained open-set / outside-vocabulary / false-accept number: all 30 outside signs are in its 250-sign training vocabulary.",
+      "Any statement that GISLR test signers are \"distinct people\" from the winner's training signers (verified by participant ID only).",
+      "Any statement about product, live-pipeline or hotel-vocabulary (22-class) accuracy from Track A.",
+      "Any Track B accuracy, false-accept or wrong-sign number: there are no real held-out recordings.",
+      "Latency numbers measured on the shared, loaded machine.",
+      "C7 (forced-choice) accuracy quoted without the R8 wrong-sign-spoken and false-accept rates next to it.",
+      "Any \"pre-registered\" label on Track A v1 results without the disclosure that the legacy results were visible when PROTOCOL.md was written.",
+      "Partial-fold numbers of any system or of the epoch-cap sensitivity run."
+    ],
+    "pending": [],
+    "finding_outcomes": [
+      {
+        "finding": "PROTOCOL.md written after the legacy results were seen",
+        "outcome": "accepted",
+        "how": "Re-verified: v1 ours_gru and islr1st_ourfeat equal the legacy predictions (top-1 and confidences), ours_baseline the same top-1. AMENDMENTS.md item 10 discloses it; every primary quote carries the label."
+      },
+      {
+        "finding": "Only the competitor's training rule changed (60-epoch cap vs 300)",
+        "outcome": "accepted",
+        "how": "Re-verified (fold 11672 inner loss still falling near best epoch 42; islr1st_ourfeat 14938 best epoch 54 of 60). AMENDMENTS.md item 11: every network re-run with a 200-epoch cap (recognition/compare/epoch_cap.py), reported next to the primary; qualifier attached to islr1st_retrained. Result: all 30 cap-200 jobs finished; under the nested rule early stopping, not the cap, ended training (islr1st_retrained ran 30-66 epochs, best 18-54); the primary difference moved from +0.6 to +1.4 points and its verdict category did not change. A fixed 300-epoch run without early stopping (the winner's own setting) remains untested."
+      },
+      {
+        "finding": "With 10 signers the CI method decides the verdict",
+        "outcome": "accepted",
+        "how": "Re-verified exactly on the legacy data (bootstrap -0.039, cluster-robust t -0.043, per-signer t -0.078, sign-flip p 0.914). AMENDMENTS.md item 12: all three printed next to the registered bootstrap, with the prescribed wording when they disagree."
+      },
+      {
+        "finding": "Product-relevant outside-vocabulary error is only secondary",
+        "outcome": "accepted",
+        "how": "AMENDMENTS.md item 13: the primary is always printed with R8 wrong-sign-spoken and open-set false accept (signer CIs, paired differences); wrong-sign-spoken now has a CI in every table."
+      },
+      {
+        "finding": "Protocol and margin launched without Talha's sign-off",
+        "outcome": "partly accepted",
+        "how": "Still unconfirmed and labelled on every primary quote (AMENDMENTS.md item 14). Not applied: holding back the read until he confirms. He is asleep and asked for the run to finish overnight, the margin is frozen in the hashed file and amendments, and any later change is labelled post hoc. The non-inferiority VERDICT stays uncleared until he confirms."
+      },
+      {
+        "finding": "Pretrained sum rule labelled pre-specified",
+        "outcome": "accepted",
+        "how": "Re-verified (sum 0.823 vs max-other 0.900 on the legacy raw file). AMENDMENTS.md item 15: label withdrawn, both rules printed side by side, no pretrained R8 figure cleared."
+      },
+      {
+        "finding": "Track B parity test is plumbing on synthetic landmarks",
+        "outcome": "accepted (partly limited)",
+        "how": "prepare() now replays the real recognition.stream.SignStream; new tests check it frame for frame against SignStream.push/flush (one sign, resting hands, two signs, framing rejection); pre-cleaned files refused outside smoke. Limit: the results are still synthetic; no real video recording exists."
+      },
+      {
+        "finding": "Track A ours_gru is a recipe, not the product",
+        "outcome": "accepted",
+        "how": "Scope label on every Track A claim and in the report header; data/gislr/MANIFEST.json identity and licence notes corrected."
+      }
+    ]
+  }
 }

@@ -8,41 +8,41 @@
  "n_common_clips": 5,
  "systems": {
   "manual_demo": {
-   "n_clips": 4,
+   "n_clips": 5,
    "n_signers": 1,
    "metrics": {
-    "n": 4,
-    "accuracy": 0.5,
-    "top3_accuracy": 0.5,
-    "macro_f1": 0.5556,
+    "n": 5,
+    "accuracy": 0.4,
+    "top3_accuracy": 0.4,
+    "macro_f1": 0.4444,
     "per_class_recall": {
      "NONE": 0.0,
-     "THANK-YOU": 1.0,
+     "THANK-YOU": 0.5,
      "YES": 0.5
     },
     "confusion": null,
     "ece": null,
     "coverage_at_threshold": null,
     "accuracy_on_accepted": null,
-    "no_answer_rate": 0.0,
-    "wrong_sign_spoken_rate": 0.25
+    "no_answer_rate": 0.2,
+    "wrong_sign_spoken_rate": 0.4
    },
    "top1_ci95": [
-    0.5,
-    0.5
+    0.4,
+    0.4
    ],
    "top3_ci95": [
-    0.5,
-    0.5
+    0.4,
+    0.4
    ],
    "macro_f1_ci95": [
-    0.5556,
-    0.5556
+    0.4444,
+    0.4444
    ],
    "per_signer_top1": {
     "smoke": {
-     "n": 4,
-     "top1": 0.5
+     "n": 5,
+     "top1": 0.4
     }
    },
    "n_oov_clips": 1,
@@ -55,17 +55,17 @@
    "latency_p50_ms": null
   },
   "ours_gru": {
-   "n_clips": 4,
+   "n_clips": 5,
    "n_signers": 1,
    "metrics": {
-    "n": 4,
-    "accuracy": 0.25,
-    "top3_accuracy": 0.5,
-    "macro_f1": 0.1667,
+    "n": 5,
+    "accuracy": 0.4,
+    "top3_accuracy": 0.4,
+    "macro_f1": 0.3556,
     "per_class_recall": {
      "NONE": 1.0,
      "THANK-YOU": 0.0,
-     "YES": 0.0
+     "YES": 0.5
     },
     "confusion": null,
     "ece": null,
@@ -75,21 +75,21 @@
     "wrong_sign_spoken_rate": 0.0
    },
    "top1_ci95": [
-    0.25,
-    0.25
+    0.4,
+    0.4
    ],
    "top3_ci95": [
-    0.5,
-    0.5
+    0.4,
+    0.4
    ],
    "macro_f1_ci95": [
-    0.1667,
-    0.1667
+    0.3556,
+    0.3556
    ],
    "per_signer_top1": {
     "smoke": {
-     "n": 4,
-     "top1": 0.25
+     "n": 5,
+     "top1": 0.4
     }
    },
    "n_oov_clips": 1,
@@ -99,7 +99,7 @@
     0.0
    ],
    "open_set_per_sign": {},
-   "latency_p50_ms": 0.22
+   "latency_p50_ms": 1.61
   }
  }
 }

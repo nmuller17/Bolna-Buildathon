@@ -2,14 +2,15 @@
 
 Clips: <clips>/<LABEL>/<signer>_<n>.mp4, LABEL one of the 22 classifier labels (NONE included), or
 <clips>/_OOV/<signer>_<sign>_<n>.mp4 for real signs outside the vocabulary (scored as open-set:
-the right answer is NONE). An optional <name>.json next to an mp4 (Frame[] or SignFile) is used
-instead of running MediaPipe. Keep the clips in the gitignored data/ folder.
+the right answer is NONE). A <name>.json next to an mp4 (pre-cleaned Frame[] or SignFile) is accepted only by the
+smoke test: it carries no framing information and bypasses the live path, so real runs refuse it. Our models are
+scored on what recognition.stream would classify (replay_stream). Keep the clips in the gitignored data/ folder.
 
     python -m recognition.compare.track_b_video extract --clips data/track_b/clips [--frames 16 8]
     python -m recognition.compare.track_b_video ours --clips data/track_b/clips --checkpoint recognition/models/model.pt --name ours_gru
     python -m recognition.compare.track_b_video claude --clips data/track_b/clips --model claude-sonnet-5 --frames 16 --i-have-consent
-    python -m recognition.compare.track_b_video template --clips data/track_b/clips --system rylo > data/track_b/rylo.csv
-    python -m recognition.compare.track_b_video manual --csv data/track_b/rylo.csv --system rylo
+    python -m recognition.compare.track_b_video template --clips data/track_b/clips --system rylo --sheet data/track_b/blind/rylo.csv
+    python -m recognition.compare.track_b_video manual --csv data/track_b/blind/rylo.csv --clips data/track_b/clips --system rylo --key data/compare/track_b/blind_keys/rylo_key.json
     python -m recognition.compare.report --track b --tag team
     python -m recognition.compare.track_b_video smoke      # plumbing test on generated clips (no accuracy meaning)
 
@@ -68,26 +69,98 @@ def extract(clips_dir, frames=()):
     subprocess.run(cmd, check=True)
 
 
-def prepare(doc, gate=True, waist="hips"):
+class _SavedFraming:
+    """Stands in for recognition.framing inside recognition.stream during a replay: check() returns the framing
+    status tb_extract saved for that frame; everything else is the real module."""
+
+    def __getattr__(self, name):
+        from recognition import framing
+        return getattr(framing, name)
+
+    @staticmethod
+    def check(result, aspect, waist):
+        return result[1]
+
+
+class _Recorder:
+    """Recognizer stand-in for a replay: keeps the frames the live stream would classify."""
+
+    def __init__(self):
+        self.got = []
+
+    def predict(self, frames):
+        self.got.append(frames)
+        return [{"label": NONE, "conf": 0.0}]
+
+
+def replay_stream(doc, gate=True, waist="hips"):
+    """Run the REAL recognition.stream.SignStream (segmenter, segment extent, framing gate with the COME_CLOSER
+    memory, capture.clean.clean, MAX_FRAMES) over one clip's saved per-frame capture-parity frames and framing
+    statuses, constructed as classify_video/live construct it. Only the two per-frame computations that need the
+    raw MediaPipe result (FrameAdapter and framing.check) are replaced by their saved outputs; a test checks
+    the replay against SignStream.push/flush on the raw results. Returns one entry per sign the live stream would
+    emit, in order: {"frames": [...]} (classified) or {"rejected": framing status}."""
+    from recognition import stream as live
+    if not doc.get("image_size"):
+        raise ValueError("landmark file has no image_size; re-run track_b_video extract")
+    rec = _Recorder()
+    st = live.SignStream(rec, tuple(doc["image_size"]), waist=waist, gate=gate)
+    st.adapter = lambda result: result[0]
+    statuses = doc["framing"][waist]
+    events = []
+    saved, live.framing = live.framing, _SavedFraming()
+    try:
+        for frame, status, t in zip(doc["frames"], statuses, doc["t_ms"]):
+            events += st.push((frame, status), t / 1000.0)
+        events += st.flush()
+    finally:
+        live.framing = saved
+    out, k = [], 0
+    for ev in events:
+        if ev.get("type") == "sign":
+            out.append({"frames": rec.got[k]})
+            k += 1
+        elif ev.get("type") == "framing" and "rejected_seq" in ev:
+            out.append({"rejected": ev["status"]})
+    return out
+
+
+def prepare(doc, gate=True, waist="hips", how="stream", allow_precleaned=False):
     """One clip's landmark document -> (frames for Recognizer.predict or None, outcome).
 
-    Uncleaned capture-parity documents (tb_extract.PIPELINE) go through what recognition.stream does
-    for one sign: the framing gate over the hand-visible span (at least framing.MIN_OK_FRACTION of the
-    frames OK, else rejected), then capture.clean.clean(frames, capture times in ms), at most MAX_FRAMES.
-    A clip is one take, as capture.py records it, so the live segmenter is not part of this path.
-    Pre-cleaned capture.py SignFiles are passed through unchanged (no framing information)."""
+    how="stream" (default, AMENDMENTS.md item 16): replay_stream(), i.e. what recognition.stream gives the
+    recognizer live. One sign event -> "ok"; several -> "split:N" and the longest classified segment is used;
+    no sign event -> "no_sign_event"; every segment rejected by the framing gate -> "framing_rejected:<status>".
+    how="take" (sensitivity analysis): the whole clip as one capture.py take: framing gate over the
+    hand-visible span (at least framing.MIN_OK_FRACTION OK), then capture.clean.clean(frames, t_ms), MAX_FRAMES.
+    Pre-cleaned capture.py SignFiles carry no framing information and bypass the live path, so they are refused
+    unless allow_precleaned (smoke runs only)."""
     from recognition import framing, mediapipe_adapter as mpa
     from recognition.compare.tb_extract import PIPELINE
     from recognition.recognizer import MAX_FRAMES
     if isinstance(doc, list) or doc.get("stage") == "cleaned":
+        if not allow_precleaned:
+            raise ValueError("pre-cleaned landmark file (no framing information, bypasses the live path): refused "
+                             "outside smoke runs; remove the <name>.json next to the mp4 and re-run extract")
         frames = doc if isinstance(doc, list) else doc["frames"]
         return (frames or None), ("precleaned" if frames else "empty")
     if doc.get("pipeline") != PIPELINE:
         raise ValueError("landmarks were not made by the capture-parity extractor; re-run track_b_video extract")
+    if how not in ("stream", "take"):
+        raise ValueError("how must be 'stream' or 'take'")
     frames, t_ms = doc["frames"], doc["t_ms"]
     hands = [i for i, f in enumerate(frames) if f is not None and (f["lh"] is not None or f["rh"] is not None)]
     if not hands:
         return None, "no_hands"            # live: no sign event, nothing spoken
+    if how == "stream":
+        segs = replay_stream(doc, gate, waist)
+        done = [x for x in segs if x.get("frames")]
+        if not segs:
+            return None, "no_sign_event"
+        if not done:
+            return None, f"framing_rejected:{segs[0]['rejected']}"
+        best = max(done, key=lambda x: len(x["frames"]))
+        return best["frames"], ("ok" if len(segs) == 1 else f"split:{len(segs)}")
     if gate:
         statuses = doc["framing"][waist][hands[0]:hands[-1] + 1]
         if not framing.segment_ok(statuses):
@@ -97,11 +170,12 @@ def prepare(doc, gate=True, waist="hips"):
     return (out or None), ("ok" if out else "empty_after_clean")
 
 
-def run_ours(clips_dir, checkpoint, name, gate=True, waist="hips", allow_unpinned=False):
+def run_ours(clips_dir, checkpoint, name, gate=True, waist="hips", allow_unpinned=False, how="stream",
+             allow_precleaned=False):
     """Our recognizer exactly as live uses it: prepare() then Recognizer(checkpoint).predict (model
     hash pin, validate, NONE without enough hands/pose). A clip the live path would not speak (no
-    hands, framing rejected) is recorded as NONE with confidence 0, plus its outcome.
-    allow_unpinned: development and smoke tests only (the report refuses unpinned non-smoke rows)."""
+    hands, no sign event, framing rejected) is recorded as NONE with confidence 0, plus its outcome.
+    allow_unpinned / allow_precleaned: development and smoke tests only (the report refuses such non-smoke rows)."""
     import inspect
 
     from recognition import model_pin
@@ -119,7 +193,7 @@ def run_ours(clips_dir, checkpoint, name, gate=True, waist="hips", allow_unpinne
             outcomes["no_landmarks"] = outcomes.get("no_landmarks", 0) + 1
             continue
         t0 = time.perf_counter()
-        frames, outcome = prepare(json.loads(lm.read_text()), gate, waist)
+        frames, outcome = prepare(json.loads(lm.read_text()), gate, waist, how, allow_precleaned)
         top = rec.predict(frames) if frames else [{"label": NONE, "conf": 0.0}]
         ms = (time.perf_counter() - t0) * 1000
         outcomes[outcome.split(":")[0]] = outcomes.get(outcome.split(":")[0], 0) + 1
@@ -128,10 +202,11 @@ def run_ours(clips_dir, checkpoint, name, gate=True, waist="hips", allow_unpinne
     path = OUT / "preds" / f"{name}.jsonl"
     common.write_jsonl(path, recs)
     manifest.write(OUT / "preds" / f"{name}.manifest.json", {
-        "pipeline": "capture-parity-v1", "system": name, "created": manifest.now(),
+        "pipeline": "capture-parity-v1", "segmentation": "stream-replay-v1" if how == "stream" else "whole-clip-take",
+        "system": name, "created": manifest.now(),
         "checkpoint": {"path": str(checkpoint), "sha256": sha, "pinned": pinned},
-        "framing_gate": gate, "waist": waist, "outcomes": outcomes, "n_clips": len(recs),
-        "preds_sha256": manifest.sha256_file(path), "code_sha256": manifest.code_hashes(),
+        "framing_gate": gate, "waist": waist, "allow_precleaned": bool(allow_precleaned), "outcomes": outcomes,
+        "n_clips": len(recs), "preds_sha256": manifest.sha256_file(path), "code_sha256": manifest.code_hashes(),
         "git": manifest.git_info(), "versions": manifest.versions()})
     print(f"{name}: {len(recs)} clips -> {path}; outcomes {outcomes}")
 
@@ -171,48 +246,82 @@ def run_claude(clips_dir, model, n_frames, consent):
 
 
 def map_text(text):
-    """Free text -> (label or None, note). None = no answer (empty output)."""
+    """Free text -> (labels in order of first mention, note). [] = no answer (empty output); ["NONE"] = the
+    text names none of our signs. Several signs are kept (never turned into NONE): a sentence that names our
+    signs is something the product said, so on an outside-vocabulary clip it is a false accept."""
     t = " " + re.sub(r"[^a-z0-9\- ]+", " ", (text or "").lower()) + " "
+    t = re.sub(r" +", " ", t)
     if not t.strip():
-        return None, "empty"
-    hits = sorted({lab for lab, ps in PHRASES.items() if any(f" {p} " in t for p in ps)})
-    if len(hits) == 1:
-        return hits[0], "mapped"
-    if not hits:
-        return NONE, "no-match"
-    return NONE, "ambiguous:" + "|".join(hits)
+        return [], "empty"
+    pos = {}
+    for lab, ps in PHRASES.items():
+        hits = [t.find(f" {p} ") for p in ps if f" {p} " in t]
+        if hits:
+            pos[lab] = min(hits)
+    labs = sorted(pos, key=lambda l: (pos[l], l))
+    if not labs:
+        return [NONE], "no-match"
+    return labs, ("mapped" if len(labs) == 1 else "multi:" + "|".join(labs))
 
 
-def template(clips_dir, system):
-    w = csv.writer(sys.stdout)
-    w.writerow(["clip_id", "system", "output_text", "mapped_label", "notes"])
-    for clip_id, *_ in clips_of(clips_dir):
-        w.writerow([clip_id, system, "", "", ""])
+def template(clips_dir, system, sheet, key_dir=None):
+    """Write a BLINDED results sheet for a human who records another product's output by hand: the clips are
+    copied under random tokens next to the sheet (no label, signer or file name in it, shuffled order), and the
+    token -> clip key goes to a separate folder (default data/compare/track_b/blind_keys/) that the person filling
+    the sheet must not open. Returns the key path."""
+    import random
+    import secrets
+    import shutil
+    sheet = Path(sheet)
+    clip_dir = sheet.parent / f"{system}_clips"
+    clip_dir.mkdir(parents=True, exist_ok=True)
+    clips = clips_of(clips_dir)
+    tokens = {}
+    for clip_id, *_rest, mp4 in clips:
+        tok = secrets.token_hex(4)
+        while tok in tokens:
+            tok = secrets.token_hex(4)
+        tokens[tok] = clip_id
+        shutil.copyfile(mp4, clip_dir / f"{tok}{mp4.suffix}")
+    order = list(tokens)
+    random.SystemRandom().shuffle(order)
+    with open(sheet, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["token", "system", "output_text", "mapped_label", "notes"])
+        for tok in order:
+            w.writerow([tok, system, "", "", ""])
+    key = Path(key_dir or OUT / "blind_keys") / f"{system}_key.json"
+    key.parent.mkdir(parents=True, exist_ok=True)
+    key.write_text(json.dumps({"system": system, "sheet": str(sheet), "tokens": tokens}, indent=1))
+    print(f"blinded sheet {sheet} + clips in {clip_dir}; key (do not show to the person filling the sheet): {key}")
+    return key
 
 
-def manual(csv_path, clips_dir, system):
-    """Import a human-recorded results sheet. mapped_label (if filled) overrides the automatic mapping;
-    an empty output_text and mapped_label means the product gave no answer."""
+def manual(csv_path, clips_dir, system, key=None):
+    """Import a human-recorded results sheet (blinded: rows carry a token and `key` maps it back; unblinded:
+    rows carry clip_id). mapped_label (if filled) overrides the automatic mapping; an empty output_text and
+    mapped_label means the product gave no answer, which the report counts as wrong."""
     truth = {c[0]: c for c in clips_of(clips_dir)}
+    tokens = json.loads(Path(key).read_text())["tokens"] if key else None
     recs, notes = [], {}
     with open(csv_path) as f:
         for row in csv.DictReader(f):
             if row.get("system") and row["system"] != system:
                 continue
-            clip_id = row["clip_id"]
+            clip_id = tokens.get(row.get("token", "")) if tokens is not None else row.get("clip_id")
             if clip_id not in truth:
-                print(f"WARNING: {clip_id} not under {clips_dir}; ignored", file=sys.stderr)
+                print(f"WARNING: {row.get('token') or clip_id} not under {clips_dir}; ignored", file=sys.stderr)
                 continue
             _, signer, label, oov, _ = truth[clip_id]
             manual_label = (row.get("mapped_label") or "").strip().upper()
             if manual_label:
                 if manual_label not in CLASSES:
                     sys.exit(f"{clip_id}: mapped_label {manual_label!r} is not one of the 22 labels")
-                pred, note = manual_label, "human-mapped"
+                preds, note = [manual_label], "human-mapped"
             else:
-                pred, note = map_text(row.get("output_text"))
+                preds, note = map_text(row.get("output_text"))
             notes[note.split(":")[0]] = notes.get(note.split(":")[0], 0) + 1
-            recs.append(common.record(system, clip_id, signer, label, top=[(pred, None)] if pred else [],
+            recs.append(common.record(system, clip_id, signer, label, top=[(p_, None) for p_ in preds],
                                       track="B", oov=oov, output_text=row.get("output_text"), map_note=note))
     common.write_jsonl(OUT / "preds" / f"{system}.jsonl", recs)
     print(f"{system}: {len(recs)} rows imported, mapping {notes}")
@@ -247,7 +356,7 @@ def smoke():
     ck = ROOT / "recognition/models/model.pt"
     if not ck.exists():
         sys.exit("smoke needs a checkpoint at recognition/models/model.pt")
-    run_ours(clips, ck, "ours_gru", allow_unpinned=True)   # smoke only: the dev model may be unpinned
+    run_ours(clips, ck, "ours_gru", allow_unpinned=True, allow_precleaned=True)   # smoke only
     run_claude(clips, "claude-sonnet-5", 8, consent=False)
     sheet = base / "manual.csv"
     with open(sheet, "w", newline="") as f:
@@ -274,6 +383,8 @@ def main(argv=None):
     o.add_argument("--no-gate", action="store_true", help="sensitivity analysis only: skip the framing gate")
     o.add_argument("--waist", choices=["hips", "none"], default="hips")
     o.add_argument("--allow-unpinned", action="store_true", help="development only; the report refuses unpinned rows")
+    o.add_argument("--how", choices=["stream", "take"], default="stream",
+                   help="stream (default): replay recognition.stream on the clip; take: whole clip as one take (sensitivity)")
     c = sub.add_parser("claude")
     c.add_argument("--clips", required=True)
     c.add_argument("--model", default="claude-sonnet-5", choices=["claude-sonnet-5", "claude-opus-5-5"])
@@ -282,22 +393,25 @@ def main(argv=None):
     t = sub.add_parser("template")
     t.add_argument("--clips", required=True)
     t.add_argument("--system", required=True)
+    t.add_argument("--sheet", required=True, help="where to write the blinded sheet (clips are copied next to it)")
     m = sub.add_parser("manual")
     m.add_argument("--csv", required=True)
     m.add_argument("--clips", required=True)
     m.add_argument("--system", required=True)
+    m.add_argument("--key", help="the blinding key written by template (rows then carry tokens, not clip IDs)")
     sub.add_parser("smoke")
     a = ap.parse_args(argv)
     if a.cmd == "extract":
         extract(a.clips, a.frames)
     elif a.cmd == "ours":
-        run_ours(a.clips, a.checkpoint, a.name, gate=not a.no_gate, waist=a.waist, allow_unpinned=a.allow_unpinned)
+        run_ours(a.clips, a.checkpoint, a.name, gate=not a.no_gate, waist=a.waist, allow_unpinned=a.allow_unpinned,
+                 how=a.how)
     elif a.cmd == "claude":
         run_claude(a.clips, a.model, a.frames, a.i_have_consent)
     elif a.cmd == "template":
-        template(a.clips, a.system)
+        template(a.clips, a.system, a.sheet)
     elif a.cmd == "manual":
-        manual(a.csv, a.clips, a.system)
+        manual(a.csv, a.clips, a.system, a.key)
     else:
         smoke()
 
